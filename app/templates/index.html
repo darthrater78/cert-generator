@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cert Generator</title>
+<style>
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface-hover: #22263a;
+  --border: #2a2e3e;
+  --text: #e4e4e7;
+  --text-dim: #8b8fa3;
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --success: #22c55e;
+  --danger: #ef4444;
+  --danger-hover: #f87171;
+  --warning: #f59e0b;
+  --radius: 8px;
+  --shadow: 0 4px 24px rgba(0,0,0,0.3);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+.app { display: flex; height: 100vh; }
+
+.sidebar {
+  width: 260px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.sidebar-header {
+  padding: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.sidebar-header .version {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+.sidebar-section {
+  padding: 12px;
+  flex: 1;
+  overflow-y: auto;
+}
+.sidebar-section h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  padding: 0 8px;
+}
+.ca-list { list-style: none; }
+.ca-item {
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  transition: background 0.15s;
+}
+.ca-item:hover { background: var(--surface-hover); }
+.ca-item.active { background: var(--accent); color: white; }
+.ca-item .dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+}
+.ca-item .ca-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.btn-new-ca {
+  margin: 12px;
+  padding: 10px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+.btn-new-ca:hover { background: var(--accent-hover); }
+
+.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.main-header {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.main-header h2 { font-size: 16px; font-weight: 600; }
+.main-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  text-align: center;
+  color: var(--text-dim);
+}
+.empty-state .icon { font-size: 48px; margin-bottom: 16px; opacity: 0.4; }
+.empty-state p { font-size: 14px; max-width: 320px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.card h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.form-row.full { grid-template-columns: 1fr; }
+.form-group { display: flex; flex-direction: column; gap: 4px; }
+.form-group label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+.form-group input, .form-group select, .form-group textarea {
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+  border-color: var(--accent);
+}
+.form-group textarea { resize: vertical; min-height: 60px; }
+
+.btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  transition: background 0.15s, opacity 0.15s;
+}
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: white; }
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn-danger { background: var(--danger); color: white; }
+.btn-danger:hover:not(:disabled) { background: var(--danger-hover); }
+.btn-ghost {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+.btn-ghost:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+
+.btn-group { display: flex; gap: 8px; margin-top: 12px; }
+
+.cert-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.cert-table th {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  font-weight: 500;
+}
+.cert-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.cert-table tr:hover td { background: var(--surface-hover); }
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.badge-active { background: rgba(34,197,94,0.15); color: var(--success); }
+.badge-revoked { background: rgba(239,68,68,0.15); color: var(--danger); }
+.badge-expired { background: rgba(245,158,11,0.15); color: var(--warning); }
+.badge-algo { background: rgba(99,102,241,0.15); color: var(--accent); }
+
+.ca-info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.info-item label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+.info-item span {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.export-section {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.export-section select {
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+
+.modal-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+}
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  width: 480px;
+  max-width: 90vw;
+  box-shadow: var(--shadow);
+}
+.modal h3 { font-size: 16px; margin-bottom: 16px; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+
+.hidden { display: none !important; }
+
+.toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.toast {
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  box-shadow: var(--shadow);
+  animation: toast-in 0.3s ease;
+}
+.toast-success { background: #065f46; color: #d1fae5; }
+.toast-error { background: #7f1d1d; color: #fecaca; }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <h1>Cert Generator</h1>
+      <div class="version">v0.1.0</div>
+    </div>
+    <div class="sidebar-section">
+      <h3>Certificate Authorities</h3>
+      <ul class="ca-list" id="caList"></ul>
+    </div>
+    <button class="btn-new-ca" onclick="showCreateCA()">+ New CA</button>
+  </div>
+
+  <div class="main">
+    <div id="welcomeView" class="main-content">
+      <div class="empty-state">
+        <div class="icon">&#x1f512;</div>
+        <p>Create a Certificate Authority to start issuing certificates for your posture demos.</p>
+        <button class="btn btn-primary" style="margin-top: 16px" onclick="showCreateCA()">Create CA</button>
+      </div>
+    </div>
+
+    <div id="caView" class="hidden">
+      <div class="main-header">
+        <h2 id="caViewTitle"></h2>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" onclick="showIssueCert()">+ Issue Certificate</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteCurrentCA()">Delete CA</button>
+        </div>
+      </div>
+      <div class="main-content">
+        <div class="card">
+          <h3>CA Details</h3>
+          <div class="ca-info-grid" id="caInfo"></div>
+          <div class="export-section">
+            <span style="font-size:12px;color:var(--text-dim)">Export CA:</span>
+            <select id="caExportFormat">
+              <option value="pem">PEM</option>
+              <option value="der">DER</option>
+              <option value="pkcs12">PKCS12 (.pfx)</option>
+            </select>
+            <select id="caExportPart">
+              <option value="both">Certificate + Key</option>
+              <option value="public">Certificate Only</option>
+              <option value="private">Private Key Only</option>
+            </select>
+            <button class="btn btn-ghost btn-sm" onclick="exportCA()">Download</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Issued Certificates</h3>
+          <div id="certTableContainer">
+            <table class="cert-table">
+              <thead>
+                <tr>
+                  <th>Common Name</th>
+                  <th>SANs</th>
+                  <th>Algorithm</th>
+                  <th>Expires</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="certTableBody"></tbody>
+            </table>
+          </div>
+          <div id="noCerts" class="hidden" style="text-align:center;padding:24px;color:var(--text-dim);font-size:13px">
+            No certificates issued yet.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="createCAModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>Create Certificate Authority</h3>
+    <div class="form-row full">
+      <div class="form-group">
+        <label>Domain Name</label>
+        <input type="text" id="caDomain" placeholder="example.com">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>CA Name</label>
+        <input type="text" id="caName" placeholder="My Root CA (auto-generated if empty)">
+      </div>
+      <div class="form-group">
+        <label>Algorithm</label>
+        <select id="caAlgorithm">
+          <option value="ecdsa-p384">ECDSA P-384</option>
+          <option value="ecdsa-p256">ECDSA P-256</option>
+          <option value="ed25519">Ed25519</option>
+          <option value="rsa-4096">RSA 4096</option>
+          <option value="rsa-2048">RSA 2048</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row full">
+      <div class="form-group">
+        <label>Lifetime (days)</label>
+        <input type="number" id="caLifetime" value="3650" min="1" max="36500">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="hideModal('createCAModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="createCA()">Create CA</button>
+    </div>
+  </div>
+</div>
+
+<div id="issueCertModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>Issue Certificate</h3>
+    <div class="form-row full">
+      <div class="form-group">
+        <label>Common Name (CN)</label>
+        <input type="text" id="certCN" placeholder="app.example.com">
+      </div>
+    </div>
+    <div class="form-row full">
+      <div class="form-group">
+        <label>Subject Alternative Names (comma-separated)</label>
+        <input type="text" id="certSANs" placeholder="app.example.com, *.app.example.com">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Algorithm</label>
+        <select id="certAlgorithm">
+          <option value="ecdsa-p384">ECDSA P-384</option>
+          <option value="ecdsa-p256">ECDSA P-256</option>
+          <option value="ed25519">Ed25519</option>
+          <option value="rsa-4096">RSA 4096</option>
+          <option value="rsa-2048">RSA 2048</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Lifetime (days)</label>
+        <input type="number" id="certLifetime" value="365" min="1" max="36500">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="hideModal('issueCertModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="issueCert()">Issue Certificate</button>
+    </div>
+  </div>
+</div>
+
+<div id="exportCertModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>Export Certificate</h3>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Format</label>
+        <select id="certExportFormat">
+          <option value="pem">PEM</option>
+          <option value="der">DER</option>
+          <option value="pkcs12">PKCS12 (.pfx)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Include</label>
+        <select id="certExportPart">
+          <option value="both">Certificate + Key</option>
+          <option value="public">Certificate Only</option>
+          <option value="private">Private Key Only</option>
+          <option value="chain">Full Chain (cert + CA)</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row full" id="pfxPasswordRow">
+      <div class="form-group">
+        <label>PFX Password (optional)</label>
+        <input type="password" id="certExportPassword" placeholder="Leave empty for no password">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="hideModal('exportCertModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="doExportCert()">Download</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-container" id="toasts"></div>
+
+<script>
+let currentCAId = null;
+let exportCertId = null;
+
+async function api(url, opts = {}) {
+  const res = await fetch(url, {
+    headers: { 'Content-Type': 'application/json', ...opts.headers },
+    ...opts,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Request failed' }));
+    throw new Error(err.error || 'Request failed');
+  }
+  return res;
+}
+
+function toast(msg, type = 'success') {
+  const el = document.createElement('div');
+  el.className = 'toast toast-' + type;
+  el.textContent = msg;
+  document.getElementById('toasts').appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+function showModal(id) { document.getElementById(id).classList.remove('hidden'); }
+function hideModal(id) { document.getElementById(id).classList.add('hidden'); }
+
+function showCreateCA() { showModal('createCAModal'); document.getElementById('caDomain').focus(); }
+function showIssueCert() { showModal('issueCertModal'); document.getElementById('certCN').focus(); }
+
+async function loadCAs() {
+  const res = await api('/api/ca');
+  const cas = await res.json();
+  const list = document.getElementById('caList');
+  list.innerHTML = '';
+  cas.forEach(ca => {
+    const li = document.createElement('li');
+    li.className = 'ca-item' + (ca.id === currentCAId ? ' active' : '');
+    li.innerHTML = '<span class="dot"></span><span class="ca-name">' +
+      escapeHtml(ca.name) + '</span>';
+    li.onclick = () => selectCA(ca.id);
+    list.appendChild(li);
+  });
+  if (cas.length === 0) {
+    document.getElementById('welcomeView').classList.remove('hidden');
+    document.getElementById('caView').classList.add('hidden');
+  }
+}
+
+async function selectCA(caId) {
+  currentCAId = caId;
+  const res = await api('/api/ca/' + caId);
+  const ca = await res.json();
+
+  document.getElementById('welcomeView').classList.add('hidden');
+  document.getElementById('caView').classList.remove('hidden');
+  document.getElementById('caViewTitle').textContent = ca.name;
+
+  const expired = new Date(ca.not_after) < new Date();
+  document.getElementById('caInfo').innerHTML =
+    infoItem('Domain', escapeHtml(ca.domain)) +
+    infoItem('Algorithm', '<span class="badge badge-algo">' + escapeHtml(ca.algorithm) + '</span>') +
+    infoItem('Serial', escapeHtml(ca.serial.substring(0, 16)) + '...') +
+    infoItem('Created', formatDate(ca.not_before)) +
+    infoItem('Expires', formatDate(ca.not_after)) +
+    infoItem('Status', expired
+      ? '<span class="badge badge-expired">Expired</span>'
+      : '<span class="badge badge-active">Active</span>');
+
+  loadCerts(caId);
+  loadCAs();
+}
+
+async function loadCerts(caId) {
+  const res = await api('/api/ca/' + caId + '/certs');
+  const certs = await res.json();
+  const tbody = document.getElementById('certTableBody');
+  const noCerts = document.getElementById('noCerts');
+
+  if (certs.length === 0) {
+    tbody.innerHTML = '';
+    noCerts.classList.remove('hidden');
+    document.getElementById('certTableContainer').querySelector('table').classList.add('hidden');
+    return;
+  }
+
+  noCerts.classList.add('hidden');
+  document.getElementById('certTableContainer').querySelector('table').classList.remove('hidden');
+
+  tbody.innerHTML = certs.map(c => {
+    const expired = new Date(c.not_after) < new Date();
+    let status = '';
+    if (c.revoked) status = '<span class="badge badge-revoked">Revoked</span>';
+    else if (expired) status = '<span class="badge badge-expired">Expired</span>';
+    else status = '<span class="badge badge-active">Active</span>';
+
+    return '<tr>' +
+      '<td>' + escapeHtml(c.common_name) + '</td>' +
+      '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(c.san_domains) + '</td>' +
+      '<td><span class="badge badge-algo">' + escapeHtml(c.algorithm) + '</span></td>' +
+      '<td>' + formatDate(c.not_after) + '</td>' +
+      '<td>' + status + '</td>' +
+      '<td>' +
+        '<button class="btn btn-ghost btn-sm" onclick="showExportCert(' + c.id + ')">Export</button> ' +
+        (!c.revoked ? '<button class="btn btn-ghost btn-sm" onclick="revokeCert(' + c.id + ')">Revoke</button> ' : '') +
+        '<button class="btn btn-danger btn-sm" onclick="deleteCert(' + c.id + ')">Delete</button>' +
+      '</td></tr>';
+  }).join('');
+}
+
+async function createCA() {
+  const domain = document.getElementById('caDomain').value.trim();
+  if (!domain) { toast('Domain is required', 'error'); return; }
+
+  try {
+    const res = await api('/api/ca', {
+      method: 'POST',
+      body: JSON.stringify({
+        domain,
+        name: document.getElementById('caName').value.trim(),
+        algorithm: document.getElementById('caAlgorithm').value,
+        lifetime_days: parseInt(document.getElementById('caLifetime').value),
+      }),
+    });
+    const ca = await res.json();
+    hideModal('createCAModal');
+    document.getElementById('caDomain').value = '';
+    document.getElementById('caName').value = '';
+    toast('CA created: ' + ca.name);
+    selectCA(ca.id);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function deleteCurrentCA() {
+  if (!currentCAId) return;
+  if (!confirm('Delete this CA and all its certificates?')) return;
+  try {
+    await api('/api/ca/' + currentCAId, { method: 'DELETE' });
+    currentCAId = null;
+    document.getElementById('caView').classList.add('hidden');
+    document.getElementById('welcomeView').classList.remove('hidden');
+    toast('CA deleted');
+    loadCAs();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function issueCert() {
+  const cn = document.getElementById('certCN').value.trim();
+  if (!cn) { toast('Common name is required', 'error'); return; }
+
+  try {
+    const res = await api('/api/ca/' + currentCAId + '/certs', {
+      method: 'POST',
+      body: JSON.stringify({
+        common_name: cn,
+        san_domains: document.getElementById('certSANs').value.trim() || cn,
+        algorithm: document.getElementById('certAlgorithm').value,
+        lifetime_days: parseInt(document.getElementById('certLifetime').value),
+      }),
+    });
+    const cert = await res.json();
+    hideModal('issueCertModal');
+    document.getElementById('certCN').value = '';
+    document.getElementById('certSANs').value = '';
+    toast('Certificate issued: ' + cert.common_name);
+    loadCerts(currentCAId);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function showExportCert(certId) {
+  exportCertId = certId;
+  showModal('exportCertModal');
+}
+
+async function doExportCert() {
+  const fmt = document.getElementById('certExportFormat').value;
+  const part = document.getElementById('certExportPart').value;
+  const password = document.getElementById('certExportPassword').value;
+  const url = '/api/export/cert/' + exportCertId + '?format=' + fmt + '&part=' + part;
+  await downloadViaFetch(url, password);
+  hideModal('exportCertModal');
+}
+
+async function exportCA() {
+  const fmt = document.getElementById('caExportFormat').value;
+  const part = document.getElementById('caExportPart').value;
+  const url = '/api/export/ca/' + currentCAId + '?format=' + fmt + '&part=' + part;
+  await downloadViaFetch(url);
+}
+
+async function downloadViaFetch(url, password) {
+  const headers = { 'X-Requested-With': 'CertGenerator' };
+  if (password) headers['X-Export-Password'] = password;
+  const res = await fetch(url, { headers });
+  if (!res.ok) { toast('Export failed', 'error'); return; }
+  const blob = await res.blob();
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename=(.+)/);
+  const filename = match ? match[1] : 'export';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function revokeCert(certId) {
+  if (!confirm('Revoke this certificate?')) return;
+  try {
+    await api('/api/certs/' + certId + '/revoke', { method: 'POST' });
+    toast('Certificate revoked');
+    loadCerts(currentCAId);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function deleteCert(certId) {
+  if (!confirm('Permanently delete this certificate?')) return;
+  try {
+    await api('/api/certs/' + certId, { method: 'DELETE' });
+    toast('Certificate deleted');
+    loadCerts(currentCAId);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+document.getElementById('certExportFormat').addEventListener('change', function() {
+  document.getElementById('pfxPasswordRow').style.display =
+    this.value === 'pkcs12' ? '' : 'none';
+});
+
+function infoItem(label, value) {
+  return '<div class="info-item"><label>' + label + '</label><span>' + value + '</span></div>';
+}
+
+function formatDate(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = s || '';
+  return div.innerHTML;
+}
+
+loadCAs();
+</script>
+</body>
+</html>
