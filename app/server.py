@@ -14,6 +14,14 @@ VALID_CA_PARTS = ("both", "public", "private")
 VALID_CERT_PARTS = ("both", "public", "private", "chain")
 DOMAIN_RE = re.compile(r"^[\w.*-]{1,253}$")
 
+_bound_port: int | None = None
+
+
+def set_bound_port(port: int) -> None:
+    global _bound_port
+    _bound_port = port
+
+
 app = Flask(
     __name__,
     template_folder=str(Path(__file__).parent / "templates"),
@@ -30,7 +38,10 @@ def _csrf_check() -> Response | None:
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return None
     origin = request.headers.get("Origin", "")
-    if origin and "127.0.0.1:5174" not in origin and "localhost:5174" not in origin:
+    if not origin:
+        return None
+    port = _bound_port or 5174
+    if f"127.0.0.1:{port}" not in origin and f"localhost:{port}" not in origin:
         return jsonify({"error": "Forbidden"}), 403
     return None
 

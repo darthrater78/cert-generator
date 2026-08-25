@@ -10,3 +10,4 @@ venv/
 *.db
 *.sqlite
 data/
+*.spec

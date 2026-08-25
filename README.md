@@ -26,7 +26,18 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Desktop app (pywebview)
+### Standalone EXE (recommended)
+
+Build a single-file Windows EXE:
+
+```bash
+pip install pyinstaller
+python build.py
+```
+
+The EXE is written to `dist/CertGenerator.exe`. Double-click to run — no Python installation needed on the target machine.
+
+### Desktop app (from source)
 
 ```bash
 python -m app.main
@@ -41,6 +52,16 @@ flask --app app.server run --port 5174
 ```
 
 Then open `http://localhost:5174` in your browser.
+
+## Server hardening
+
+The embedded web server is hardened for desktop use:
+
+- **Loopback only** — binds to `127.0.0.1`, never exposed to the network
+- **Random port** — uses an ephemeral port each launch, not a fixed port
+- **CSRF protection** — POST/DELETE/PUT requests must originate from the bound address
+- **Auto-shutdown** — the server thread is daemonic and shuts down when the window closes
+- **Process exit** — `os._exit(0)` ensures no orphan threads survive after the UI closes
 
 ### Quick start
 
