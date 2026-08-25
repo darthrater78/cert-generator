@@ -123,6 +123,9 @@ def get_ca(ca_id: int):
     if not ca:
         return jsonify({"error": "CA not found"}), 404
     safe = {k: v for k, v in ca.items() if k not in ("cert_pem", "key_pem")}
+    child_cas = [c for c in db.list_cas() if c.get("parent_ca_id") == ca_id]
+    safe["child_cas"] = child_cas
+    safe["is_root"] = ca.get("parent_ca_id") is None
     return jsonify(safe)
 
 
@@ -131,6 +134,53 @@ def delete_ca(ca_id: int):
     if db.delete_ca(ca_id):
         return jsonify({"ok": True})
     return jsonify({"error": "CA not found"}), 404
+
+
+@app.post("/api/ca/<int:ca_id>/intermediate")
+def create_intermediate(ca_id: int):
+    parent = db.get_ca(ca_id)
+    if not parent:
+        return jsonify({"error": "Parent CA not found"}), 404
+
+    data = request.get_json()
+    domain: str = data.get("domain", "").strip()
+    name: str = data.get("name", "").strip()
+    algorithm: str = data.get("algorithm", "ecdsa-p384")
+    lifetime_days = _parse_int(data.get("lifetime_days"), 1825)
+
+    if not domain or not DOMAIN_RE.match(domain):
+        return jsonify({"error": "A valid domain name is required"}), 400
+    if not name:
+        name = f"{domain} Intermediate CA"
+    if len(name) > 200:
+        return jsonify({"error": "CA name too long"}), 400
+    if algorithm not in crypto_engine.ALGORITHMS:
+        return jsonify({"error": f"Invalid algorithm. Choose from: {crypto_engine.ALGORITHMS}"}), 400
+    if lifetime_days is None or lifetime_days < 1 or lifetime_days > 36500:
+        return jsonify({"error": "Lifetime must be an integer between 1 and 36500 days"}), 400
+
+    cert_pem, key_pem, serial, not_before, not_after = crypto_engine.create_intermediate_ca(
+        parent_cert_pem=parent["cert_pem"],
+        parent_key_pem=parent["key_pem"],
+        domain=domain,
+        name=name,
+        algorithm=algorithm,
+        lifetime_days=lifetime_days,
+    )
+
+    ca_id_new = db.save_ca(
+        name=name,
+        domain=domain,
+        algorithm=algorithm,
+        not_before=not_before,
+        not_after=not_after,
+        serial=serial,
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        parent_ca_id=ca_id,
+    )
+
+    return jsonify({"id": ca_id_new, "name": name, "domain": domain, "serial": serial}), 201
 
 
 @app.post("/api/ca/<int:ca_id>/certs")
@@ -275,6 +325,10 @@ def export_cert(cert_id: int):
         chain = cert["cert_pem"]
         if ca_cert_pem:
             chain += ca_cert_pem
+        if ca and ca.get("parent_ca_id"):
+            root = db.get_ca(ca["parent_ca_id"])
+            if root:
+                chain += root["cert_pem"]
         data, filename = chain, "fullchain.pem"
     else:
         password = request.headers.get("X-Export-Password")

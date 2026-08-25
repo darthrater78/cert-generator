@@ -88,6 +88,16 @@ body {
   flex-shrink: 0;
 }
 .ca-item .ca-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ca-item.intermediate { padding-left: 28px; font-size: 12px; }
+.ca-item.intermediate .dot { background: var(--accent); width: 6px; height: 6px; }
+.ca-type-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(99,102,241,0.15);
+  color: var(--accent);
+  flex-shrink: 0;
+}
 
 .btn-new-ca {
   margin: 12px;
@@ -357,6 +367,7 @@ body {
       <div class="main-header">
         <h2 id="caViewTitle"></h2>
         <div class="header-actions">
+          <button class="btn btn-ghost btn-sm" id="btnCreateIntermediate" onclick="showCreateIntermediate()">+ Intermediate CA</button>
           <button class="btn btn-ghost btn-sm" onclick="showIssueCert()">+ Issue Certificate</button>
           <button class="btn btn-danger btn-sm" onclick="deleteCurrentCA()">Delete CA</button>
         </div>
@@ -517,6 +528,56 @@ body {
   </div>
 </div>
 
+<div id="createIntermediateModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>Create Intermediate CA</h3>
+    <div class="form-row full">
+      <div class="form-group">
+        <label>Parent CA</label>
+        <input type="text" id="intermediateParent" disabled style="opacity:0.7">
+      </div>
+    </div>
+    <div class="form-row full">
+      <div class="form-group">
+        <label>Domain Name</label>
+        <input type="text" id="intermediateDomain" placeholder="sub.example.com">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>CA Name</label>
+        <input type="text" id="intermediateName" placeholder="Intermediate CA (auto-generated if empty)">
+      </div>
+      <div class="form-group">
+        <label>Algorithm</label>
+        <select id="intermediateAlgorithm">
+          <option value="ecdsa-p384">ECDSA P-384</option>
+          <option value="ecdsa-p256">ECDSA P-256</option>
+          <option value="ed25519">Ed25519</option>
+          <option value="rsa-4096">RSA 4096</option>
+          <option value="rsa-2048">RSA 2048</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row full">
+      <div class="form-group">
+        <label>Lifetime</label>
+        <div class="lifetime-input">
+          <input type="number" id="intermediateLifetime" value="5" min="1">
+          <select id="intermediateLifetimeUnit">
+            <option value="years" selected>Years</option>
+            <option value="days">Days</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="hideModal('createIntermediateModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="createIntermediate()">Create Intermediate CA</button>
+    </div>
+  </div>
+</div>
+
 <div id="exportCertModal" class="modal-backdrop hidden">
   <div class="modal">
     <h3>Export Certificate</h3>
@@ -604,14 +665,28 @@ async function loadCAs() {
   const cas = await res.json();
   const list = document.getElementById('caList');
   list.innerHTML = '';
-  cas.forEach(ca => {
+
+  const roots = cas.filter(c => !c.parent_ca_id);
+  const childrenOf = (pid) => cas.filter(c => c.parent_ca_id === pid);
+
+  roots.forEach(ca => {
     const li = document.createElement('li');
     li.className = 'ca-item' + (ca.id === currentCAId ? ' active' : '');
     li.innerHTML = '<span class="dot"></span><span class="ca-name">' +
       escapeHtml(ca.name) + '</span>';
     li.onclick = () => selectCA(ca.id);
     list.appendChild(li);
+
+    childrenOf(ca.id).forEach(child => {
+      const cli = document.createElement('li');
+      cli.className = 'ca-item intermediate' + (child.id === currentCAId ? ' active' : '');
+      cli.innerHTML = '<span class="dot"></span><span class="ca-name">' +
+        escapeHtml(child.name) + '</span>';
+      cli.onclick = () => selectCA(child.id);
+      list.appendChild(cli);
+    });
   });
+
   if (cas.length === 0) {
     document.getElementById('welcomeView').classList.remove('hidden');
     document.getElementById('caView').classList.add('hidden');
@@ -627,8 +702,15 @@ async function selectCA(caId) {
   document.getElementById('caView').classList.remove('hidden');
   document.getElementById('caViewTitle').textContent = ca.name;
 
+  const isRoot = ca.is_root;
+  document.getElementById('btnCreateIntermediate').classList.toggle('hidden', !isRoot);
+
   const expired = new Date(ca.not_after) < new Date();
+  const typeBadge = isRoot
+    ? '<span class="badge badge-active">Root</span>'
+    : '<span class="badge badge-algo">Intermediate</span>';
   document.getElementById('caInfo').innerHTML =
+    infoItem('Type', typeBadge) +
     infoItem('Domain', escapeHtml(ca.domain)) +
     infoItem('Algorithm', '<span class="badge badge-algo">' + escapeHtml(ca.algorithm) + '</span>') +
     infoItem('Serial', escapeHtml(ca.serial.substring(0, 16)) + '...') +
@@ -723,6 +805,37 @@ async function deleteCurrentCA() {
     document.getElementById('welcomeView').classList.remove('hidden');
     toast('CA deleted');
     loadCAs();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function showCreateIntermediate() {
+  document.getElementById('intermediateParent').value = document.getElementById('caViewTitle').textContent;
+  showModal('createIntermediateModal');
+  document.getElementById('intermediateDomain').focus();
+}
+
+async function createIntermediate() {
+  const domain = document.getElementById('intermediateDomain').value.trim();
+  if (!domain) { toast('Domain is required', 'error'); return; }
+
+  try {
+    const res = await api('/api/ca/' + currentCAId + '/intermediate', {
+      method: 'POST',
+      body: JSON.stringify({
+        domain,
+        name: document.getElementById('intermediateName').value.trim(),
+        algorithm: document.getElementById('intermediateAlgorithm').value,
+        lifetime_days: lifetimeDaysFromInputs('intermediateLifetime', 'intermediateLifetimeUnit'),
+      }),
+    });
+    const ca = await res.json();
+    hideModal('createIntermediateModal');
+    document.getElementById('intermediateDomain').value = '';
+    document.getElementById('intermediateName').value = '';
+    toast('Intermediate CA created: ' + ca.name);
+    selectCA(ca.id);
   } catch (e) {
     toast(e.message, 'error');
   }
