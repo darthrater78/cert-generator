@@ -345,7 +345,7 @@ body {
   <div class="sidebar">
     <div class="sidebar-header">
       <h1>Cert Generator</h1>
-      <div class="version">v1.0.0</div>
+      <div class="version">v1.1.0</div>
     </div>
     <div class="sidebar-section">
       <h3>Certificate Authorities</h3>
@@ -889,8 +889,7 @@ async function doExportCert() {
   const fmt = document.getElementById('certExportFormat').value;
   const part = document.getElementById('certExportPart').value;
   const password = document.getElementById('certExportPassword').value;
-  const url = '/api/export/cert/' + exportCertId + '?format=' + fmt + '&part=' + part;
-  await downloadViaFetch(url, password);
+  await saveExport('/api/export/cert/' + exportCertId, { format: fmt, part, password: password || undefined });
   hideModal('exportCertModal');
 }
 
@@ -898,8 +897,7 @@ async function exportCA() {
   const fmt = document.getElementById('caExportFormat').value;
   const part = document.getElementById('caExportPart').value;
   const password = document.getElementById('caExportPassword').value;
-  const url = '/api/export/ca/' + currentCAId + '?format=' + fmt + '&part=' + part;
-  await downloadViaFetch(url, password);
+  await saveExport('/api/export/ca/' + currentCAId, { format: fmt, part, password: password || undefined });
 }
 
 function updateCaPasswordVisibility() {
@@ -910,20 +908,14 @@ function updateCaPasswordVisibility() {
   if (!show) document.getElementById('caExportPassword').value = '';
 }
 
-async function downloadViaFetch(url, password) {
-  const headers = { 'X-Requested-With': 'CertGenerator' };
-  if (password) headers['X-Export-Password'] = password;
-  const res = await fetch(url, { headers });
-  if (!res.ok) { toast('Export failed', 'error'); return; }
-  const blob = await res.blob();
-  const disposition = res.headers.get('Content-Disposition') || '';
-  const match = disposition.match(/filename=(.+)/);
-  const filename = match ? match[1] : 'export';
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
+async function saveExport(url, body) {
+  try {
+    const res = await api(url, { method: 'POST', body: JSON.stringify(body) });
+    const result = await res.json();
+    toast('Saved to ' + result.path);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
 }
 
 async function revokeCert(certId) {

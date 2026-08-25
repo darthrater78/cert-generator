@@ -268,14 +268,39 @@ def delete_cert(cert_id: int):
     return jsonify({"error": "Certificate not found"}), 404
 
 
-@app.get("/api/export/ca/<int:ca_id>")
+def _downloads_dir() -> Path:
+    downloads = Path.home() / "Downloads"
+    downloads.mkdir(exist_ok=True)
+    return downloads
+
+
+def _safe_filename(name: str) -> str:
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name).strip('. ')
+
+
+def _save_export(data: bytes, filename: str) -> str:
+    safe_name = _safe_filename(filename)
+    out = _downloads_dir() / safe_name
+    counter = 1
+    while out.exists():
+        stem = Path(safe_name).stem
+        suffix = Path(safe_name).suffix
+        out = _downloads_dir() / f"{stem} ({counter}){suffix}"
+        counter += 1
+    out.write_bytes(data)
+    return str(out)
+
+
+@app.post("/api/export/ca/<int:ca_id>")
 def export_ca(ca_id: int):
     ca = db.get_ca(ca_id)
     if not ca:
         return jsonify({"error": "CA not found"}), 404
 
-    fmt = request.args.get("format", "pem")
-    part = request.args.get("part", "both")
+    data = request.get_json()
+    fmt = data.get("format", "pem")
+    part = data.get("part", "both")
+    password = data.get("password") or None
 
     if fmt not in VALID_FORMATS:
         return jsonify({"error": f"Invalid format. Choose from: {VALID_FORMATS}"}), 400
@@ -283,31 +308,28 @@ def export_ca(ca_id: int):
         return jsonify({"error": f"Invalid part. Choose from: {VALID_CA_PARTS}"}), 400
 
     if part == "public":
-        data, filename = crypto_engine.export_public_only(ca["cert_pem"], fmt)
+        export_data, filename = crypto_engine.export_public_only(ca["cert_pem"], fmt)
     elif part == "private":
-        data, filename = crypto_engine.export_private_only(ca["key_pem"], fmt)
+        export_data, filename = crypto_engine.export_private_only(ca["key_pem"], fmt)
     else:
-        password = request.headers.get("X-Export-Password")
-        data, filename = crypto_engine.export_certificate(
+        export_data, filename = crypto_engine.export_certificate(
             ca["cert_pem"], ca["key_pem"], fmt, password=password,
         )
 
-    return send_file(
-        io.BytesIO(data),
-        as_attachment=True,
-        download_name=f"ca-{ca['domain']}-{filename}",
-        mimetype="application/octet-stream",
-    )
+    saved = _save_export(export_data, f"ca-{ca['domain']}-{filename}")
+    return jsonify({"path": saved})
 
 
-@app.get("/api/export/cert/<int:cert_id>")
+@app.post("/api/export/cert/<int:cert_id>")
 def export_cert(cert_id: int):
     cert = db.get_cert(cert_id)
     if not cert:
         return jsonify({"error": "Certificate not found"}), 404
 
-    fmt = request.args.get("format", "pem")
-    part = request.args.get("part", "both")
+    data = request.get_json()
+    fmt = data.get("format", "pem")
+    part = data.get("part", "both")
+    password = data.get("password") or None
 
     if fmt not in VALID_FORMATS:
         return jsonify({"error": f"Invalid format. Choose from: {VALID_FORMATS}"}), 400
@@ -318,9 +340,9 @@ def export_cert(cert_id: int):
     ca_cert_pem = ca["cert_pem"] if ca else None
 
     if part == "public":
-        data, filename = crypto_engine.export_public_only(cert["cert_pem"], fmt)
+        export_data, filename = crypto_engine.export_public_only(cert["cert_pem"], fmt)
     elif part == "private":
-        data, filename = crypto_engine.export_private_only(cert["key_pem"], fmt)
+        export_data, filename = crypto_engine.export_private_only(cert["key_pem"], fmt)
     elif part == "chain":
         chain = cert["cert_pem"]
         if ca_cert_pem:
@@ -329,17 +351,12 @@ def export_cert(cert_id: int):
             root = db.get_ca(ca["parent_ca_id"])
             if root:
                 chain += root["cert_pem"]
-        data, filename = chain, "fullchain.pem"
+        export_data, filename = chain, "fullchain.pem"
     else:
-        password = request.headers.get("X-Export-Password")
-        data, filename = crypto_engine.export_certificate(
+        export_data, filename = crypto_engine.export_certificate(
             cert["cert_pem"], cert["key_pem"], fmt,
             ca_cert_pem=ca_cert_pem, password=password,
         )
 
-    return send_file(
-        io.BytesIO(data),
-        as_attachment=True,
-        download_name=f"{cert['common_name']}-{filename}",
-        mimetype="application/octet-stream",
-    )
+    saved = _save_export(export_data, f"{cert['common_name']}-{filename}")
+    return jsonify({"path": saved})

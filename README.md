@@ -5,7 +5,8 @@ A Windows desktop tool for creating Certificate Authorities and issuing self-sig
 ## Features
 
 - **Create Certificate Authorities** with configurable domain, name, algorithm, and lifetime
-- **Issue leaf certificates** signed by your CA, with SAN (Subject Alternative Name) support including wildcards
+- **Intermediate CAs** — create subordinate CAs from any root CA; intermediates can issue their own certificates
+- **Issue leaf certificates** signed by any CA (root or intermediate), with SAN (Subject Alternative Name) support including wildcards
 - **Certificate templates** matching Windows CA templates — Web Server, Computer, Client Authentication, Code Signing, Email (S/MIME) — each with the correct key usage and extended key usage extensions
 - **Track all certificates** — view status (active/revoked/expired), details, and metadata
 - **Export in multiple formats** — PEM, DER, PKCS12 (.pfx)
@@ -64,7 +65,7 @@ The embedded web server is hardened for desktop use:
 - **Random port** — uses an ephemeral port each launch, not a fixed port
 - **CSRF protection** — POST/DELETE/PUT requests must originate from the bound address
 - **Auto-shutdown** — the server thread is daemonic and shuts down when the window closes
-- **Process exit** — `os._exit(0)` ensures no orphan threads survive after the UI closes
+- **Clean exit** — `sys.exit(0)` after the UI closes ensures proper cleanup
 
 ### Quick start
 
@@ -96,13 +97,25 @@ Export options per certificate:
 - **Certificate + Key** — full bundle
 - **Certificate Only** — public certificate
 - **Private Key Only** — private key
-- **Full Chain** — leaf cert + CA cert (PEM only, for leaf certs)
+- **Full Chain** — leaf cert + issuing CA cert + root CA cert (PEM only, for leaf certs)
 
 ## Data storage
 
 All CAs and certificates are stored in a SQLite database at `~/.cert-generator/certs.db`. The directory is created with restrictive permissions (owner-only access).
 
 ## Version history
+
+### v1.1.0 — 2026-08-25
+
+- Intermediate CA support — create subordinate CAs from any root CA that can issue their own certificates
+- Hierarchical sidebar tree view showing root and intermediate CAs
+- Full chain export now includes the complete chain (leaf + intermediate + root)
+- Cascade delete — removing a root CA also deletes its intermediates and their certificates
+- Days/Years unit selector for certificate lifetime inputs
+- Fixed export/download — certificates now save directly to the Downloads folder
+- Fixed responsive layout issues with header wrapping and modal clipping
+- Sanitized export filenames to prevent path traversal
+- Replaced `os._exit(0)` with `sys.exit(0)` for proper cleanup on exit
 
 ### v1.0.0 — 2026-08-25
 
