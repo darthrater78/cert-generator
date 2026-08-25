@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 import socket
+import sys
 import threading
 
 import webview
@@ -40,7 +40,7 @@ def main() -> None:
     window.events.closing += on_closing
     webview.start()
 
-    os._exit(0)
+    sys.exit(0)
 
 
 if __name__ == "__main__":

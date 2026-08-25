@@ -160,7 +160,7 @@ def create_ca(
         .not_valid_before(now)
         .not_valid_after(not_after)
         .add_extension(
-            x509.BasicConstraints(ca=True, path_length=0),
+            x509.BasicConstraints(ca=True, path_length=None),
             critical=True,
         )
         .add_extension(
@@ -185,6 +185,83 @@ def create_ca(
 
     hash_alg = _signing_hash(algorithm)
     cert = builder.sign(key, hash_alg)
+
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+
+    return (
+        cert_pem,
+        key_pem,
+        hex(serial),
+        now.isoformat(),
+        not_after.isoformat(),
+    )
+
+
+def create_intermediate_ca(
+    parent_cert_pem: bytes,
+    parent_key_pem: bytes,
+    domain: str,
+    name: str,
+    algorithm: Algorithm,
+    lifetime_days: int,
+) -> tuple[bytes, bytes, str, str, str]:
+    parent_cert = x509.load_pem_x509_certificate(parent_cert_pem)
+    parent_key = serialization.load_pem_private_key(parent_key_pem, password=None)
+
+    key = _generate_key(algorithm)
+    now = datetime.now(timezone.utc)
+    not_after = now + timedelta(days=lifetime_days)
+    serial = _serial_number()
+
+    subject = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, name),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, domain),
+    ])
+
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(parent_cert.subject)
+        .public_key(key.public_key())
+        .serial_number(serial)
+        .not_valid_before(now)
+        .not_valid_after(not_after)
+        .add_extension(
+            x509.BasicConstraints(ca=True, path_length=0),
+            critical=True,
+        )
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                key_cert_sign=True,
+                crl_sign=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(parent_cert.public_key()),
+            critical=False,
+        )
+    )
+
+    parent_algorithm = _detect_algorithm(parent_key)
+    hash_alg = _signing_hash(parent_algorithm)
+    cert = builder.sign(parent_key, hash_alg)
 
     cert_pem = cert.public_bytes(serialization.Encoding.PEM)
     key_pem = key.private_bytes(

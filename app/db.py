@@ -11,16 +11,17 @@ DB_PATH = DB_DIR / "certs.db"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS certificate_authorities (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT    NOT NULL,
-    domain      TEXT    NOT NULL,
-    algorithm   TEXT    NOT NULL,
-    not_before  TEXT    NOT NULL,
-    not_after   TEXT    NOT NULL,
-    serial      TEXT    NOT NULL UNIQUE,
-    cert_pem    BLOB    NOT NULL,
-    key_pem     BLOB    NOT NULL,
-    created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_ca_id  INTEGER REFERENCES certificate_authorities(id),
+    name          TEXT    NOT NULL,
+    domain        TEXT    NOT NULL,
+    algorithm     TEXT    NOT NULL,
+    not_before    TEXT    NOT NULL,
+    not_after     TEXT    NOT NULL,
+    serial        TEXT    NOT NULL UNIQUE,
+    cert_pem      BLOB    NOT NULL,
+    key_pem       BLOB    NOT NULL,
+    created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
 CREATE TABLE IF NOT EXISTS certificates (
@@ -57,6 +58,9 @@ def _connect() -> sqlite3.Connection:
 def init_db() -> None:
     with _connect() as conn:
         conn.executescript(_SCHEMA)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(certificate_authorities)").fetchall()}
+        if "parent_ca_id" not in cols:
+            conn.execute("ALTER TABLE certificate_authorities ADD COLUMN parent_ca_id INTEGER REFERENCES certificate_authorities(id)")
 
 
 def save_ca(
@@ -68,13 +72,14 @@ def save_ca(
     serial: str,
     cert_pem: bytes,
     key_pem: bytes,
+    parent_ca_id: int | None = None,
 ) -> int:
     with _connect() as conn:
         cursor = conn.execute(
             """INSERT INTO certificate_authorities
-               (name, domain, algorithm, not_before, not_after, serial, cert_pem, key_pem)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (name, domain, algorithm, not_before, not_after, serial, cert_pem, key_pem),
+               (parent_ca_id, name, domain, algorithm, not_before, not_after, serial, cert_pem, key_pem)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (parent_ca_id, name, domain, algorithm, not_before, not_after, serial, cert_pem, key_pem),
         )
         return cursor.lastrowid
 
@@ -82,7 +87,7 @@ def save_ca(
 def list_cas() -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, name, domain, algorithm, not_before, not_after, serial, created_at "
+            "SELECT id, parent_ca_id, name, domain, algorithm, not_before, not_after, serial, created_at "
             "FROM certificate_authorities ORDER BY created_at DESC"
         ).fetchall()
         return [dict(r) for r in rows]
@@ -98,6 +103,12 @@ def get_ca(ca_id: int) -> dict[str, Any] | None:
 
 def delete_ca(ca_id: int) -> bool:
     with _connect() as conn:
+        child_ids = [r[0] for r in conn.execute(
+            "SELECT id FROM certificate_authorities WHERE parent_ca_id = ?", (ca_id,)
+        ).fetchall()]
+        for child_id in child_ids:
+            conn.execute("DELETE FROM certificates WHERE ca_id = ?", (child_id,))
+            conn.execute("DELETE FROM certificate_authorities WHERE id = ?", (child_id,))
         conn.execute("DELETE FROM certificates WHERE ca_id = ?", (ca_id,))
         cursor = conn.execute("DELETE FROM certificate_authorities WHERE id = ?", (ca_id,))
         return cursor.rowcount > 0
