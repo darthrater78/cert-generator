@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 APP_DIR = ROOT / "app"
 TEMPLATES_DIR = APP_DIR / "templates"
+ICON_PATH = APP_DIR / "icon.ico"
 
 
 def main() -> None:
@@ -18,7 +19,9 @@ def main() -> None:
         "--onefile",
         "--windowed",
         "--name", "CertGenerator",
+        "--icon", str(ICON_PATH),
         "--add-data", f"{TEMPLATES_DIR}{os.pathsep}{Path('app', 'templates')}",
+        "--add-data", f"{ICON_PATH}{os.pathsep}app",
         "--hidden-import", "app",
         "--hidden-import", "app.server",
         "--hidden-import", "app.crypto_engine",
