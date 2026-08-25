@@ -6,12 +6,15 @@ A Windows desktop tool for creating Certificate Authorities and issuing self-sig
 
 - **Create Certificate Authorities** with configurable domain, name, algorithm, and lifetime
 - **Issue leaf certificates** signed by your CA, with SAN (Subject Alternative Name) support including wildcards
+- **Certificate templates** matching Windows CA templates — Web Server, Computer, Client Authentication, Code Signing, Email (S/MIME) — each with the correct key usage and extended key usage extensions
 - **Track all certificates** — view status (active/revoked/expired), details, and metadata
 - **Export in multiple formats** — PEM, DER, PKCS12 (.pfx)
 - **Export parts individually** — full bundle, certificate only, private key only, or full chain (cert + CA)
+- **Password-protected exports** — optionally encrypt the private key (PEM) or the whole bundle (PKCS12) with a password
 - **Modern crypto algorithms** — Ed25519, ECDSA P-256, ECDSA P-384, RSA-2048, RSA-4096
 - **Revoke certificates** to mark them as no longer trusted
 - **Native Windows app** — runs as a desktop window via pywebview, no browser needed
+- **Standalone EXE** — package as a single-file Windows executable, no Python required to run it
 
 ## Requirements
 
@@ -100,6 +103,17 @@ Export options per certificate:
 All CAs and certificates are stored in a SQLite database at `~/.cert-generator/certs.db`. The directory is created with restrictive permissions (owner-only access).
 
 ## Version history
+
+### v1.0.0 — 2026-08-25
+
+First stable release with a distributable Windows EXE.
+
+- Certificate templates (Web Server, Computer, Client Auth, Code Signing, Email) with correct X.509 extensions
+- Password-protected exports for PEM private keys and PKCS12 bundles
+- Hardened embedded server: random ephemeral port, loopback-only, CSRF origin check, clean shutdown on window close
+- Standalone single-file Windows EXE via PyInstaller (`build.py`)
+- App icon
+- Responsive UI layout for narrow window widths
 
 ### v0.1.0 — 2026-08-25
 
