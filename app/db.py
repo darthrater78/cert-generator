@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS certificates (
     common_name TEXT    NOT NULL,
     san_domains TEXT    NOT NULL,
     algorithm   TEXT    NOT NULL,
+    template    TEXT    NOT NULL DEFAULT 'web-server',
     not_before  TEXT    NOT NULL,
     not_after   TEXT    NOT NULL,
     serial      TEXT    NOT NULL UNIQUE,
@@ -107,6 +108,7 @@ def save_cert(
     common_name: str,
     san_domains: str,
     algorithm: str,
+    template: str,
     not_before: str,
     not_after: str,
     serial: str,
@@ -116,9 +118,9 @@ def save_cert(
     with _connect() as conn:
         cursor = conn.execute(
             """INSERT INTO certificates
-               (ca_id, common_name, san_domains, algorithm, not_before, not_after, serial, cert_pem, key_pem)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (ca_id, common_name, san_domains, algorithm, not_before, not_after, serial, cert_pem, key_pem),
+               (ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, cert_pem, key_pem)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, cert_pem, key_pem),
         )
         return cursor.lastrowid
 
@@ -127,13 +129,13 @@ def list_certs(ca_id: int | None = None) -> list[dict[str, Any]]:
     with _connect() as conn:
         if ca_id is not None:
             rows = conn.execute(
-                "SELECT id, ca_id, common_name, san_domains, algorithm, not_before, not_after, serial, revoked, created_at "
+                "SELECT id, ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, revoked, created_at "
                 "FROM certificates WHERE ca_id = ? ORDER BY created_at DESC",
                 (ca_id,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, ca_id, common_name, san_domains, algorithm, not_before, not_after, serial, revoked, created_at "
+                "SELECT id, ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, revoked, created_at "
                 "FROM certificates ORDER BY created_at DESC"
             ).fetchall()
         return [dict(r) for r in rows]

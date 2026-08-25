@@ -21,6 +21,9 @@ app = Flask(
 )
 app.secret_key = secrets.token_hex(32)
 
+with app.app_context():
+    db.init_db()
+
 
 @app.before_request
 def _csrf_check() -> Response | None:
@@ -47,6 +50,15 @@ def index():
 @app.get("/api/algorithms")
 def get_algorithms():
     return jsonify(crypto_engine.ALGORITHMS)
+
+
+@app.get("/api/templates")
+def get_templates():
+    return jsonify({
+        k: {"label": v["label"], "description": v["description"], "default_days": v["default_days"],
+             "include_email": v.get("include_email", False)}
+        for k, v in crypto_engine.CERT_TEMPLATES.items()
+    })
 
 
 @app.post("/api/ca")
@@ -120,12 +132,16 @@ def issue_cert(ca_id: int):
     common_name: str = data.get("common_name", "").strip()
     san_domains_raw: str = data.get("san_domains", "").strip()
     algorithm: str = data.get("algorithm", "ecdsa-p384")
+    template: str = data.get("template", "web-server")
+    email: str = data.get("email", "").strip() or None
     lifetime_days = _parse_int(data.get("lifetime_days"), 365)
 
     if not common_name or len(common_name) > 253:
         return jsonify({"error": "A valid common name is required (max 253 chars)"}), 400
     if algorithm not in crypto_engine.ALGORITHMS:
         return jsonify({"error": f"Invalid algorithm. Choose from: {crypto_engine.ALGORITHMS}"}), 400
+    if template not in crypto_engine.CERT_TEMPLATES:
+        return jsonify({"error": f"Invalid template. Choose from: {list(crypto_engine.CERT_TEMPLATES.keys())}"}), 400
     if lifetime_days is None or lifetime_days < 1 or lifetime_days > 36500:
         return jsonify({"error": "Lifetime must be an integer between 1 and 36500 days"}), 400
 
@@ -138,6 +154,8 @@ def issue_cert(ca_id: int):
         san_domains=san_list,
         algorithm=algorithm,
         lifetime_days=lifetime_days,
+        template=template,
+        email=email,
     )
 
     cert_id = db.save_cert(
@@ -145,6 +163,7 @@ def issue_cert(ca_id: int):
         common_name=common_name,
         san_domains=",".join(san_list),
         algorithm=algorithm,
+        template=template,
         not_before=not_before,
         not_after=not_after,
         serial=serial,

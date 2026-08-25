@@ -15,6 +15,99 @@ Algorithm = Literal["ed25519", "ecdsa-p256", "ecdsa-p384", "rsa-2048", "rsa-4096
 ALGORITHMS: list[Algorithm] = ["ed25519", "ecdsa-p256", "ecdsa-p384", "rsa-2048", "rsa-4096"]
 
 
+CERT_TEMPLATES: dict[str, dict] = {
+    "web-server": {
+        "label": "Web Server",
+        "description": "Server Authentication",
+        "key_usage": {
+            "digital_signature": True,
+            "key_encipherment": True,
+            "content_commitment": False,
+            "data_encipherment": False,
+            "key_agreement": False,
+            "key_cert_sign": False,
+            "crl_sign": False,
+            "encipher_only": False,
+            "decipher_only": False,
+        },
+        "extended_key_usage": [x509.oid.ExtendedKeyUsageOID.SERVER_AUTH],
+        "default_days": 365,
+    },
+    "computer": {
+        "label": "Computer",
+        "description": "Client Authentication, Server Authentication",
+        "key_usage": {
+            "digital_signature": True,
+            "key_encipherment": True,
+            "content_commitment": False,
+            "data_encipherment": False,
+            "key_agreement": False,
+            "key_cert_sign": False,
+            "crl_sign": False,
+            "encipher_only": False,
+            "decipher_only": False,
+        },
+        "extended_key_usage": [
+            x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH,
+            x509.oid.ExtendedKeyUsageOID.SERVER_AUTH,
+        ],
+        "default_days": 365,
+    },
+    "client-auth": {
+        "label": "Client Authentication",
+        "description": "Client Authentication",
+        "key_usage": {
+            "digital_signature": True,
+            "key_encipherment": False,
+            "content_commitment": False,
+            "data_encipherment": False,
+            "key_agreement": False,
+            "key_cert_sign": False,
+            "crl_sign": False,
+            "encipher_only": False,
+            "decipher_only": False,
+        },
+        "extended_key_usage": [x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH],
+        "default_days": 365,
+    },
+    "code-signing": {
+        "label": "Code Signing",
+        "description": "Code Signing",
+        "key_usage": {
+            "digital_signature": True,
+            "key_encipherment": False,
+            "content_commitment": False,
+            "data_encipherment": False,
+            "key_agreement": False,
+            "key_cert_sign": False,
+            "crl_sign": False,
+            "encipher_only": False,
+            "decipher_only": False,
+        },
+        "extended_key_usage": [x509.oid.ExtendedKeyUsageOID.CODE_SIGNING],
+        "default_days": 365,
+    },
+    "email": {
+        "label": "Email (S/MIME)",
+        "description": "Email Protection",
+        "key_usage": {
+            "digital_signature": True,
+            "key_encipherment": True,
+            "content_commitment": True,
+            "data_encipherment": False,
+            "key_agreement": False,
+            "key_cert_sign": False,
+            "crl_sign": False,
+            "encipher_only": False,
+            "decipher_only": False,
+        },
+        "extended_key_usage": [x509.oid.ExtendedKeyUsageOID.EMAIL_PROTECTION],
+        "default_days": 365,
+        "include_email": True,
+    },
+}
+
+
 def _generate_key(algorithm: Algorithm):
     if algorithm == "ed25519":
         return ed25519.Ed25519PrivateKey.generate()
@@ -116,7 +209,11 @@ def issue_certificate(
     san_domains: list[str],
     algorithm: Algorithm,
     lifetime_days: int,
+    template: str = "web-server",
+    email: str | None = None,
 ) -> tuple[bytes, bytes, str, str, str]:
+    tmpl = CERT_TEMPLATES.get(template, CERT_TEMPLATES["web-server"])
+
     ca_cert = x509.load_pem_x509_certificate(ca_cert_pem)
     ca_key = serialization.load_pem_private_key(ca_key_pem, password=None)
 
@@ -125,16 +222,17 @@ def issue_certificate(
     not_after = now + timedelta(days=lifetime_days)
     serial = _serial_number()
 
-    subject = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, common_name),
-    ])
+    name_attrs = [x509.NameAttribute(NameOID.COMMON_NAME, common_name)]
+    if email and tmpl.get("include_email"):
+        name_attrs.append(x509.NameAttribute(NameOID.EMAIL_ADDRESS, email))
+
+    subject = x509.Name(name_attrs)
 
     san_entries: list[x509.GeneralName] = []
     for d in san_domains:
-        if d.startswith("*."):
-            san_entries.append(x509.DNSName(d))
-        else:
-            san_entries.append(x509.DNSName(d))
+        san_entries.append(x509.DNSName(d))
+    if email and tmpl.get("include_email"):
+        san_entries.append(x509.RFC822Name(email))
 
     builder = (
         x509.CertificateBuilder()
@@ -149,24 +247,11 @@ def issue_certificate(
             critical=True,
         )
         .add_extension(
-            x509.KeyUsage(
-                digital_signature=True,
-                key_encipherment=True,
-                content_commitment=False,
-                data_encipherment=False,
-                key_agreement=False,
-                key_cert_sign=False,
-                crl_sign=False,
-                encipher_only=False,
-                decipher_only=False,
-            ),
+            x509.KeyUsage(**tmpl["key_usage"]),
             critical=True,
         )
         .add_extension(
-            x509.ExtendedKeyUsage([
-                x509.oid.ExtendedKeyUsageOID.SERVER_AUTH,
-                x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH,
-            ]),
+            x509.ExtendedKeyUsage(tmpl["extended_key_usage"]),
             critical=False,
         )
         .add_extension(
