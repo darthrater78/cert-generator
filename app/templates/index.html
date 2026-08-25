@@ -347,16 +347,18 @@ body {
           <div class="ca-info-grid" id="caInfo"></div>
           <div class="export-section">
             <span style="font-size:12px;color:var(--text-dim)">Export CA:</span>
-            <select id="caExportFormat">
+            <select id="caExportFormat" onchange="updateCaPasswordVisibility()">
               <option value="pem">PEM</option>
               <option value="der">DER</option>
               <option value="pkcs12">PKCS12 (.pfx)</option>
             </select>
-            <select id="caExportPart">
+            <select id="caExportPart" onchange="updateCaPasswordVisibility()">
               <option value="both">Certificate + Key</option>
               <option value="public">Certificate Only</option>
               <option value="private">Private Key Only</option>
             </select>
+            <input type="password" id="caExportPassword" placeholder="Password (optional)"
+              style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;width:160px;outline:none;display:none">
             <button class="btn btn-ghost btn-sm" onclick="exportCA()">Download</button>
           </div>
         </div>
@@ -569,6 +571,7 @@ async function selectCA(caId) {
       ? '<span class="badge badge-expired">Expired</span>'
       : '<span class="badge badge-active">Active</span>');
 
+  updateCaPasswordVisibility();
   loadCerts(caId);
   loadCAs();
 }
@@ -677,6 +680,7 @@ async function issueCert() {
 
 function showExportCert(certId) {
   exportCertId = certId;
+  updateCertPasswordVisibility();
   showModal('exportCertModal');
 }
 
@@ -692,8 +696,17 @@ async function doExportCert() {
 async function exportCA() {
   const fmt = document.getElementById('caExportFormat').value;
   const part = document.getElementById('caExportPart').value;
+  const password = document.getElementById('caExportPassword').value;
   const url = '/api/export/ca/' + currentCAId + '?format=' + fmt + '&part=' + part;
-  await downloadViaFetch(url);
+  await downloadViaFetch(url, password);
+}
+
+function updateCaPasswordVisibility() {
+  const fmt = document.getElementById('caExportFormat').value;
+  const part = document.getElementById('caExportPart').value;
+  const show = part === 'both' && fmt !== 'der';
+  document.getElementById('caExportPassword').style.display = show ? '' : 'none';
+  if (!show) document.getElementById('caExportPassword').value = '';
 }
 
 async function downloadViaFetch(url, password) {
@@ -734,10 +747,15 @@ async function deleteCert(certId) {
   }
 }
 
-document.getElementById('certExportFormat').addEventListener('change', function() {
-  document.getElementById('pfxPasswordRow').style.display =
-    this.value === 'pkcs12' ? '' : 'none';
-});
+function updateCertPasswordVisibility() {
+  const fmt = document.getElementById('certExportFormat').value;
+  const part = document.getElementById('certExportPart').value;
+  const show = part === 'both' && fmt !== 'der';
+  document.getElementById('pfxPasswordRow').style.display = show ? '' : 'none';
+  if (!show) document.getElementById('certExportPassword').value = '';
+}
+document.getElementById('certExportFormat').addEventListener('change', updateCertPasswordVisibility);
+document.getElementById('certExportPart').addEventListener('change', updateCertPasswordVisibility);
 
 function infoItem(label, value) {
   return '<div class="info-item"><label>' + label + '</label><span>' + value + '</span></div>';

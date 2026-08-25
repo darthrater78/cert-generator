@@ -234,6 +234,13 @@ def export_certificate(
     key = serialization.load_pem_private_key(key_pem, password=None)
 
     if fmt == "pem":
+        if password:
+            encrypted_key = key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.BestAvailableEncryption(password.encode("utf-8")),
+            )
+            return cert_pem + encrypted_key, "certificate.pem"
         return cert_pem + key_pem, "certificate.pem"
 
     if fmt == "der":
