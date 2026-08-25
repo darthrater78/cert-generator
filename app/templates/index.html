@@ -111,9 +111,19 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 12px;
 }
-.main-header h2 { font-size: 16px; font-weight: 600; }
+.main-header h2 {
+  font-size: 16px;
+  font-weight: 600;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.main-header .header-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
 .main-content {
   flex: 1;
   overflow-y: auto;
@@ -174,6 +184,10 @@ body {
   border-color: var(--accent);
 }
 .form-group textarea { resize: vertical; min-height: 60px; }
+
+.lifetime-input { display: flex; gap: 8px; }
+.lifetime-input input { flex: 1; min-width: 0; }
+.lifetime-input select { flex-shrink: 0; width: 90px; }
 
 .btn {
   padding: 8px 16px;
@@ -283,6 +297,8 @@ body {
   padding: 24px;
   width: 480px;
   max-width: 90vw;
+  max-height: 90vh;
+  overflow-y: auto;
   box-shadow: var(--shadow);
 }
 .modal h3 { font-size: 16px; margin-bottom: 16px; }
@@ -340,7 +356,7 @@ body {
     <div id="caView" class="hidden">
       <div class="main-header">
         <h2 id="caViewTitle"></h2>
-        <div style="display:flex;gap:8px">
+        <div class="header-actions">
           <button class="btn btn-ghost btn-sm" onclick="showIssueCert()">+ Issue Certificate</button>
           <button class="btn btn-danger btn-sm" onclick="deleteCurrentCA()">Delete CA</button>
         </div>
@@ -421,8 +437,14 @@ body {
     </div>
     <div class="form-row full">
       <div class="form-group">
-        <label>Lifetime (days)</label>
-        <input type="number" id="caLifetime" value="3650" min="1" max="36500">
+        <label>Lifetime</label>
+        <div class="lifetime-input">
+          <input type="number" id="caLifetime" value="10" min="1">
+          <select id="caLifetimeUnit">
+            <option value="years" selected>Years</option>
+            <option value="days">Days</option>
+          </select>
+        </div>
       </div>
     </div>
     <div class="modal-actions">
@@ -478,8 +500,14 @@ body {
         </select>
       </div>
       <div class="form-group">
-        <label>Lifetime (days)</label>
-        <input type="number" id="certLifetime" value="365" min="1" max="36500">
+        <label>Lifetime</label>
+        <div class="lifetime-input">
+          <input type="number" id="certLifetime" value="1" min="1">
+          <select id="certLifetimeUnit">
+            <option value="years" selected>Years</option>
+            <option value="days">Days</option>
+          </select>
+        </div>
       </div>
     </div>
     <div class="modal-actions">
@@ -654,6 +682,12 @@ async function loadCerts(caId) {
   }).join('');
 }
 
+function lifetimeDaysFromInputs(valueId, unitId) {
+  const value = parseInt(document.getElementById(valueId).value);
+  const unit = document.getElementById(unitId).value;
+  return unit === 'years' ? value * 365 : value;
+}
+
 async function createCA() {
   const domain = document.getElementById('caDomain').value.trim();
   if (!domain) { toast('Domain is required', 'error'); return; }
@@ -665,7 +699,7 @@ async function createCA() {
         domain,
         name: document.getElementById('caName').value.trim(),
         algorithm: document.getElementById('caAlgorithm').value,
-        lifetime_days: parseInt(document.getElementById('caLifetime').value),
+        lifetime_days: lifetimeDaysFromInputs('caLifetime', 'caLifetimeUnit'),
       }),
     });
     const ca = await res.json();
@@ -715,7 +749,7 @@ async function issueCert() {
         common_name: cn,
         san_domains: document.getElementById('certSANs').value.trim() || cn,
         algorithm: document.getElementById('certAlgorithm').value,
-        lifetime_days: parseInt(document.getElementById('certLifetime').value),
+        lifetime_days: lifetimeDaysFromInputs('certLifetime', 'certLifetimeUnit'),
         template: template,
         email: email || undefined,
       }),
