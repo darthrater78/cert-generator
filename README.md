@@ -107,6 +107,11 @@ All CAs and certificates are stored in a SQLite database at `~/.cert-generator/c
 
 ## Version history
 
+### v1.2.1 — 2026-08-26
+
+- Added a GitHub Repo link in the sidebar, opening in the system's default browser
+- Exposed a `js_api` (`open_external`) from the pywebview window, restricted to an https-only, github.com-only allowlist
+
 ### v1.2.0 — 2026-08-26
 
 - Fixed PKCS12 export for Windows — PFX files now use `BestAvailableEncryption` with a password (default: `changeit`) instead of `NoEncryption()`, which Windows rejected

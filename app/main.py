@@ -3,12 +3,25 @@ from __future__ import annotations
 import socket
 import sys
 import threading
+import webbrowser
 
 import webview
 from werkzeug.serving import make_server
 
 from .db import init_db
 from .server import app, set_bound_port
+
+ALLOWED_EXTERNAL_HOSTS = {"github.com"}
+
+
+class Api:
+    def open_external(self, url: str) -> None:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or parsed.hostname not in ALLOWED_EXTERNAL_HOSTS:
+            return
+        webbrowser.open(url)
 
 
 def _find_free_port() -> int:
@@ -36,6 +49,7 @@ def main() -> None:
         width=1100,
         height=720,
         min_size=(800, 500),
+        js_api=Api(),
     )
     window.events.closing += on_closing
     webview.start()
