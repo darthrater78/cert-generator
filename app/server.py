@@ -330,6 +330,7 @@ def export_cert(cert_id: int):
     fmt = data.get("format", "pem")
     part = data.get("part", "both")
     password = data.get("password") or None
+    include_chain = data.get("include_chain", False)
 
     if fmt not in VALID_FORMATS:
         return jsonify({"error": f"Invalid format. Choose from: {VALID_FORMATS}"}), 400
@@ -355,7 +356,8 @@ def export_cert(cert_id: int):
     else:
         export_data, filename = crypto_engine.export_certificate(
             cert["cert_pem"], cert["key_pem"], fmt,
-            ca_cert_pem=ca_cert_pem, password=password,
+            ca_cert_pem=ca_cert_pem if include_chain else None,
+            password=password,
         )
 
     saved = _save_export(export_data, f"{cert['common_name']}-{filename}")
