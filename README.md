@@ -11,7 +11,9 @@ A Windows desktop tool for creating Certificate Authorities and issuing self-sig
 - **Track all certificates** — view status (active/revoked/expired), details, and metadata
 - **Export in multiple formats** — PEM, DER, PKCS12 (.pfx)
 - **Export parts individually** — full bundle, certificate only, private key only, or full chain (cert + CA)
-- **Password-protected exports** — optionally encrypt the private key (PEM) or the whole bundle (PKCS12) with a password
+- **Password-protected exports** — optionally encrypt the private key (PEM) or the whole bundle (PKCS12) with a password (PKCS12 defaults to `changeit` for Windows compatibility)
+- **Optional CA chain inclusion** — choose whether to bundle the issuing CA certificate when exporting issued certs
+- **In-app import guide** — step-by-step instructions for importing certificates on Windows, macOS, and Linux for each template type
 - **Modern crypto algorithms** — Ed25519, ECDSA P-256, ECDSA P-384, RSA-2048, RSA-4096
 - **Revoke certificates** to mark them as no longer trusted
 - **Native Windows app** — runs as a desktop window via pywebview, no browser needed
@@ -104,6 +106,16 @@ Export options per certificate:
 All CAs and certificates are stored in a SQLite database at `~/.cert-generator/certs.db`. The directory is created with restrictive permissions (owner-only access).
 
 ## Version history
+
+### v1.2.0 — 2026-08-26
+
+- Fixed PKCS12 export for Windows — PFX files now use `BestAvailableEncryption` with a password (default: `changeit`) instead of `NoEncryption()`, which Windows rejected
+- Optional CA chain inclusion — issued cert exports no longer bundle the CA certificate by default; an "Include CA chain" checkbox lets you opt in
+- In-app import guide — tabbed guide with step-by-step instructions for each certificate template (Computer, Web Server, Client Auth, Code Signing, Email) covering Windows, macOS, and Linux
+- Added Windows certificate store tip explaining that the import wizard shows only "Personal" (not "Personal > Certificates") and this is expected
+- PKCS12 is now the default export format for both CA and issued certificate exports
+- Password field pre-filled with default and visible `(default: changeit)` label on both CA and cert export UIs
+- Refined delete button styling — outlined ghost style instead of solid red
 
 ### v1.1.0 — 2026-08-25
 

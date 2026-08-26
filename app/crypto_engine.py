@@ -413,17 +413,13 @@ def export_certificate(
         if ca_cert_pem:
             ca_certs = [x509.load_pem_x509_certificate(ca_cert_pem)]
 
-        enc = (
-            serialization.BestAvailableEncryption(password.encode("utf-8"))
-            if password
-            else serialization.NoEncryption()
-        )
+        pfx_password = (password or "changeit").encode("utf-8")
         pfx_data = pkcs12.serialize_key_and_certificates(
             name=None,
             key=key,
             cert=cert,
             cas=ca_certs,
-            encryption_algorithm=enc,
+            encryption_algorithm=serialization.BestAvailableEncryption(pfx_password),
         )
         return pfx_data, "certificate.pfx"
 

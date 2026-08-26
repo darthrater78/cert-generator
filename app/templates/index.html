@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Cert Generator</title>
+<link rel="icon" href="/static/icon.ico" type="image/x-icon">
 <style>
 :root {
   --bg: #0f1117;
@@ -212,8 +213,8 @@ body {
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-primary { background: var(--accent); color: white; }
 .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
-.btn-danger { background: var(--danger); color: white; }
-.btn-danger:hover:not(:disabled) { background: var(--danger-hover); }
+.btn-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
+.btn-danger:hover:not(:disabled) { background: var(--danger); color: white; }
 .btn-ghost {
   background: transparent;
   color: var(--text-dim);
@@ -338,6 +339,70 @@ body {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+.btn-help {
+  margin: 0 12px 12px;
+  padding: 10px;
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s;
+  text-align: left;
+}
+.btn-help:hover { background: var(--surface-hover); color: var(--text); }
+
+.guide-modal { width: 600px; }
+.guide-modal h3 { font-size: 18px; margin-bottom: 4px; }
+.guide-modal .guide-subtitle { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; }
+
+.guide-tabs { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
+.guide-tab {
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+.guide-tab:hover { background: var(--surface-hover); color: var(--text); }
+.guide-tab.active { background: var(--accent); color: white; border-color: var(--accent); }
+
+.guide-content { font-size: 13px; line-height: 1.7; }
+.guide-content h4 { font-size: 14px; font-weight: 600; margin: 16px 0 8px; }
+.guide-content h4:first-child { margin-top: 0; }
+.guide-content p { margin-bottom: 8px; }
+.guide-content ol, .guide-content ul { margin: 0 0 12px 20px; }
+.guide-content li { margin-bottom: 4px; }
+.guide-content code {
+  background: var(--bg);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+}
+.guide-content .step-note {
+  background: rgba(99,102,241,0.1);
+  border-left: 3px solid var(--accent);
+  padding: 8px 12px;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  margin: 8px 0 12px;
+  font-size: 12px;
+}
+.guide-content .step-warn {
+  background: rgba(245,158,11,0.1);
+  border-left: 3px solid var(--warning);
+  padding: 8px 12px;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  margin: 8px 0 12px;
+  font-size: 12px;
+}
 </style>
 </head>
 <body>
@@ -345,13 +410,14 @@ body {
   <div class="sidebar">
     <div class="sidebar-header">
       <h1>Cert Generator</h1>
-      <div class="version">v1.1.0</div>
+      <div class="version">v1.2.0</div>
     </div>
     <div class="sidebar-section">
       <h3>Certificate Authorities</h3>
       <ul class="ca-list" id="caList"></ul>
     </div>
     <button class="btn-new-ca" onclick="showCreateCA()">+ New CA</button>
+    <button class="btn-help" onclick="showGuide()">? Import Guide</button>
   </div>
 
   <div class="main">
@@ -379,17 +445,18 @@ body {
           <div class="export-section">
             <span style="font-size:12px;color:var(--text-dim)">Export CA:</span>
             <select id="caExportFormat" onchange="updateCaPasswordVisibility()">
+              <option value="pkcs12">PKCS12 (.pfx)</option>
               <option value="pem">PEM</option>
               <option value="der">DER</option>
-              <option value="pkcs12">PKCS12 (.pfx)</option>
             </select>
             <select id="caExportPart" onchange="updateCaPasswordVisibility()">
               <option value="both">Certificate + Key</option>
               <option value="public">Certificate Only</option>
               <option value="private">Private Key Only</option>
             </select>
-            <input type="password" id="caExportPassword" placeholder="Password (optional)"
-              style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;width:160px;outline:none;display:none">
+            <input type="password" id="caExportPassword" value="changeit" title="Default password: changeit" placeholder="Default: changeit"
+              style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;width:160px;outline:none">
+            <span style="font-size:11px;color:var(--text-dim);margin-left:-4px" title="Default password is 'changeit'. Required for Windows certificate import.">(default: changeit)</span>
             <button class="btn btn-ghost btn-sm" onclick="exportCA()">Download</button>
           </div>
         </div>
@@ -585,9 +652,9 @@ body {
       <div class="form-group">
         <label>Format</label>
         <select id="certExportFormat">
+          <option value="pkcs12">PKCS12 (.pfx)</option>
           <option value="pem">PEM</option>
           <option value="der">DER</option>
-          <option value="pkcs12">PKCS12 (.pfx)</option>
         </select>
       </div>
       <div class="form-group">
@@ -602,13 +669,245 @@ body {
     </div>
     <div class="form-row full" id="pfxPasswordRow">
       <div class="form-group">
-        <label>PFX Password (optional)</label>
-        <input type="password" id="certExportPassword" placeholder="Leave empty for no password">
+        <label>PFX Password <span style="font-weight:normal;color:var(--text-dim)" title="Default password is 'changeit'. Required for Windows certificate import.">(default: changeit)</span></label>
+        <input type="password" id="certExportPassword" value="changeit" placeholder="Required for Windows import">
       </div>
+    </div>
+    <div class="form-row full" id="chainRow">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+        <input type="checkbox" id="certExportChain"> Include CA chain in export
+        <span style="font-size:11px;color:var(--text-dim)">(bundles issuing CA cert into the file)</span>
+      </label>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="hideModal('exportCertModal')">Cancel</button>
       <button class="btn btn-primary" onclick="doExportCert()">Download</button>
+    </div>
+  </div>
+</div>
+
+<div id="guideModal" class="modal-backdrop hidden">
+  <div class="modal guide-modal">
+    <h3>Certificate Import Guide</h3>
+    <p class="guide-subtitle">How to create, export, and install certificates for each template.</p>
+    <div class="guide-tabs" id="guideTabs">
+      <button class="guide-tab active" onclick="showGuideTab('guide-general',this)">General</button>
+      <button class="guide-tab" onclick="showGuideTab('guide-computer',this)">Computer</button>
+      <button class="guide-tab" onclick="showGuideTab('guide-webserver',this)">Web Server</button>
+      <button class="guide-tab" onclick="showGuideTab('guide-clientauth',this)">Client Auth</button>
+      <button class="guide-tab" onclick="showGuideTab('guide-codesigning',this)">Code Signing</button>
+      <button class="guide-tab" onclick="showGuideTab('guide-email',this)">Email (S/MIME)</button>
+    </div>
+
+    <div class="guide-content" id="guide-general">
+      <h4>Quick Start</h4>
+      <ol>
+        <li><strong>Create a Root CA</strong> &mdash; click <code>+ New CA</code>, enter your domain, and choose an algorithm. For maximum Windows compatibility use <code>RSA 4096</code> or <code>ECDSA P-384</code>.</li>
+        <li><strong>Issue a certificate</strong> &mdash; select the CA, click <code>+ Issue Certificate</code>, pick a template, and fill in the common name.</li>
+        <li><strong>Export as PKCS12 (.pfx)</strong> &mdash; this is the default format. A PFX password is required for Windows import; it defaults to <code>changeit</code>.</li>
+        <li><strong>Trust the CA on your machine</strong> &mdash; export the CA certificate (Certificate Only, DER format) and import it into <code>Trusted Root Certification Authorities</code>. Without this step, certificates will appear untrusted.</li>
+      </ol>
+      <div class="step-note">All certificates are self-signed by your CA. They are only trusted on machines where you have installed the CA certificate as a trusted root.</div>
+
+      <h4>Windows Certificate Store Tip</h4>
+      <p>When importing into a Windows certificate store, the import wizard only shows top-level store names like <strong>Personal</strong> &mdash; you will <em>not</em> see a <strong>Personal &rarr; Certificates</strong> subfolder during import. This is normal. Just select <strong>Personal</strong> and finish the import. The certificate will appear under <strong>Personal &rarr; Certificates</strong> once the import is complete &mdash; the <code>Certificates</code> subfolder is created automatically by the MMC snap-in to organize the store contents.</p>
+
+      <h4>Export Formats</h4>
+      <ul>
+        <li><strong>PKCS12 (.pfx)</strong> &mdash; bundles cert + private key + CA chain into one file. Required for importing into Windows certificate stores. Always password-protected.</li>
+        <li><strong>PEM</strong> &mdash; base64-encoded text format. Used by Apache, Nginx, Linux tools, and OpenSSL. Not directly importable into Windows cert stores.</li>
+        <li><strong>DER</strong> &mdash; binary certificate format (no private key). Use for importing public certificates on Windows (<code>.cer</code> file).</li>
+      </ul>
+
+      <h4>Installing the Root CA on Windows</h4>
+      <ol>
+        <li>Select your Root CA in the sidebar.</li>
+        <li>Export with format <code>DER</code>, include <code>Certificate Only</code>.</li>
+        <li>Open the exported <code>.der</code> file from your Downloads folder.</li>
+        <li>Click <strong>Install Certificate</strong> &rarr; <strong>Local Machine</strong> &rarr; <strong>Place all certificates in the following store</strong> &rarr; Browse &rarr; <strong>Trusted Root Certification Authorities</strong> &rarr; Finish.</li>
+      </ol>
+      <div class="step-warn">You must install the CA as a trusted root <em>before</em> importing any certificates it issued. Otherwise Windows will mark them as untrusted.</div>
+
+      <h4>Installing the Root CA on macOS</h4>
+      <ol>
+        <li>Export the CA as <code>DER</code>, <code>Certificate Only</code>.</li>
+        <li>Double-click the file to add it to Keychain Access.</li>
+        <li>In Keychain Access, find the CA, double-click it, expand <strong>Trust</strong>, and set to <strong>Always Trust</strong>.</li>
+      </ol>
+
+      <h4>Installing the Root CA on Linux</h4>
+      <ol>
+        <li>Export the CA as <code>PEM</code>, <code>Certificate Only</code>.</li>
+        <li>Copy to <code>/usr/local/share/ca-certificates/your-ca.crt</code></li>
+        <li>Run <code>sudo update-ca-certificates</code></li>
+      </ol>
+    </div>
+
+    <div class="guide-content hidden" id="guide-computer">
+      <h4>Computer Certificate</h4>
+      <p>Used for machine identity &mdash; allows a Windows computer to authenticate to the network and to services. Includes both Client Authentication and Server Authentication extended key usage.</p>
+
+      <h4>When to Use</h4>
+      <ul>
+        <li>802.1X network authentication (wired or wireless)</li>
+        <li>IPsec / VPN machine certificates</li>
+        <li>SCCM / Intune device identity</li>
+        <li>Machine-to-machine TLS (mutual auth)</li>
+      </ul>
+
+      <h4>Creating the Certificate</h4>
+      <ol>
+        <li>Select your CA, click <code>+ Issue Certificate</code>.</li>
+        <li>Template: <strong>Computer</strong>.</li>
+        <li>Common Name: the machine's FQDN, e.g. <code>WORKSTATION01.corp.example.com</code>.</li>
+        <li>SANs: add the FQDN and optionally the short hostname.</li>
+        <li>Algorithm: <code>RSA 4096</code> or <code>ECDSA P-384</code> for best Windows compatibility.</li>
+      </ol>
+
+      <h4>Importing into Windows (Personal Store)</h4>
+      <ol>
+        <li>Export as <code>PKCS12 (.pfx)</code>, include <code>Certificate + Key</code>, with a password (default: <code>changeit</code>).</li>
+        <li>Open <code>certlm.msc</code> (Local Computer certificates) &mdash; press <code>Win+R</code>, type <code>certlm.msc</code>, press Enter.</li>
+        <li>Right-click <strong>Personal</strong> &rarr; <strong>All Tasks</strong> &rarr; <strong>Import</strong>.</li>
+        <li>Browse to the <code>.pfx</code> file, enter the password.</li>
+        <li>Choose <strong>Place all certificates in the following store</strong> &rarr; <strong>Personal</strong>.</li>
+        <li>Finish. The certificate will appear under <strong>Personal &rarr; Certificates</strong> (the subfolder is created automatically).</li>
+      </ol>
+      <div class="step-note">Use <code>certlm.msc</code> (Local Machine) for computer certificates, not <code>certmgr.msc</code> (Current User). Computer certificates must be in the Local Machine store to be used for machine authentication.</div>
+      <div class="step-warn">You must also install the issuing CA into <strong>Trusted Root Certification Authorities</strong> (see General tab) or the certificate will show as untrusted.</div>
+    </div>
+
+    <div class="guide-content hidden" id="guide-webserver">
+      <h4>Web Server Certificate</h4>
+      <p>Standard TLS/SSL certificate for HTTPS services. Includes Server Authentication extended key usage.</p>
+
+      <h4>When to Use</h4>
+      <ul>
+        <li>Internal web servers, APIs, dashboards</li>
+        <li>Development / staging HTTPS</li>
+        <li>Reverse proxies (Nginx, Apache, IIS)</li>
+      </ul>
+
+      <h4>Creating the Certificate</h4>
+      <ol>
+        <li>Template: <strong>Web Server</strong>.</li>
+        <li>Common Name: the server's FQDN, e.g. <code>app.example.com</code>.</li>
+        <li>SANs: add all hostnames and domains the server will respond to. Browsers require a SAN match.</li>
+      </ol>
+
+      <h4>Installing on IIS (Windows)</h4>
+      <ol>
+        <li>Export as <code>PKCS12 (.pfx)</code> with <code>Certificate + Key</code>.</li>
+        <li>Open IIS Manager &rarr; server node &rarr; <strong>Server Certificates</strong> &rarr; <strong>Import</strong>.</li>
+        <li>Browse to the <code>.pfx</code> file, enter the password, select store <strong>Personal</strong>.</li>
+        <li>Edit your site bindings &rarr; add HTTPS binding &rarr; select the imported certificate.</li>
+      </ol>
+
+      <h4>Installing on Nginx / Apache (Linux)</h4>
+      <ol>
+        <li>Export as <code>PEM</code>, <code>Certificate + Key</code>.</li>
+        <li>Split the file: the first PEM block is the certificate, the second is the private key.</li>
+        <li>Or export separately: <code>Certificate Only</code> (PEM) and <code>Private Key Only</code> (PEM).</li>
+        <li>Nginx: <code>ssl_certificate /path/to/cert.pem; ssl_certificate_key /path/to/key.pem;</code></li>
+        <li>Apache: <code>SSLCertificateFile</code> and <code>SSLCertificateKeyFile</code> directives.</li>
+      </ol>
+      <div class="step-note">For the full trust chain, export the certificate with <code>Full Chain (cert + CA)</code> and use that as the certificate file.</div>
+    </div>
+
+    <div class="guide-content hidden" id="guide-clientauth">
+      <h4>Client Authentication Certificate</h4>
+      <p>Used for user identity &mdash; authenticates a person or service account to a server. Includes Client Authentication extended key usage only.</p>
+
+      <h4>When to Use</h4>
+      <ul>
+        <li>Mutual TLS (mTLS) client identity</li>
+        <li>VPN user certificates</li>
+        <li>Smart card logon (with additional configuration)</li>
+        <li>API client authentication</li>
+      </ul>
+
+      <h4>Creating the Certificate</h4>
+      <ol>
+        <li>Template: <strong>Client Authentication</strong>.</li>
+        <li>Common Name: the user or service identity, e.g. <code>john.doe@example.com</code> or <code>svc-api-client</code>.</li>
+      </ol>
+
+      <h4>Importing into Windows (Current User)</h4>
+      <ol>
+        <li>Export as <code>PKCS12 (.pfx)</code> with <code>Certificate + Key</code>.</li>
+        <li>Double-click the <code>.pfx</code> file, or open <code>certmgr.msc</code> (Current User).</li>
+        <li>Import into the <strong>Personal</strong> store (you will only see <strong>Personal</strong>, not a Certificates subfolder &mdash; this is normal).</li>
+        <li>Enter the PFX password when prompted.</li>
+      </ol>
+      <div class="step-note">For user certificates, use <code>certmgr.msc</code> (Current User). For service accounts running as SYSTEM, use <code>certlm.msc</code> (Local Machine).</div>
+    </div>
+
+    <div class="guide-content hidden" id="guide-codesigning">
+      <h4>Code Signing Certificate</h4>
+      <p>Used to digitally sign executables, scripts, and drivers. Includes Code Signing extended key usage.</p>
+
+      <h4>When to Use</h4>
+      <ul>
+        <li>Signing internal PowerShell scripts</li>
+        <li>Signing internal executables or DLLs</li>
+        <li>Testing Authenticode signature workflows</li>
+        <li>Driver signing (test mode)</li>
+      </ul>
+
+      <h4>Creating the Certificate</h4>
+      <ol>
+        <li>Template: <strong>Code Signing</strong>.</li>
+        <li>Common Name: your organization or team name, e.g. <code>Corp IT Code Signing</code>.</li>
+      </ol>
+
+      <h4>Importing and Using on Windows</h4>
+      <ol>
+        <li>Export as <code>PKCS12 (.pfx)</code> with <code>Certificate + Key</code>.</li>
+        <li>Open <code>certmgr.msc</code>, right-click <strong>Personal</strong> &rarr; <strong>All Tasks</strong> &rarr; <strong>Import</strong>. Select the <strong>Personal</strong> store when prompted.</li>
+        <li>Sign a PowerShell script: <code>Set-AuthenticodeSignature -FilePath script.ps1 -Certificate (Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert)</code></li>
+        <li>Sign an EXE with <code>signtool</code>: <code>signtool sign /fd SHA256 /f cert.pfx /p changeit app.exe</code></li>
+      </ol>
+      <div class="step-warn">Self-signed code signing certificates will trigger SmartScreen and trust warnings. To suppress these on managed machines, install the CA into <strong>Trusted Root Certification Authorities</strong> and the code signing cert into <strong>Trusted Publishers</strong>.</div>
+    </div>
+
+    <div class="guide-content hidden" id="guide-email">
+      <h4>Email (S/MIME) Certificate</h4>
+      <p>Used to sign and encrypt email messages. Includes Email Protection extended key usage, and embeds the email address in the Subject and SANs.</p>
+
+      <h4>When to Use</h4>
+      <ul>
+        <li>Signing outgoing email (proves sender identity)</li>
+        <li>Encrypting email contents (recipient needs your public cert)</li>
+        <li>Testing S/MIME workflows in Outlook, Thunderbird, etc.</li>
+      </ul>
+
+      <h4>Creating the Certificate</h4>
+      <ol>
+        <li>Template: <strong>Email (S/MIME)</strong>.</li>
+        <li>Common Name: the user's name, e.g. <code>John Doe</code>.</li>
+        <li>Email Address: the exact email to sign/encrypt for, e.g. <code>john.doe@example.com</code>.</li>
+      </ol>
+
+      <h4>Setting Up in Outlook (Windows)</h4>
+      <ol>
+        <li>Export as <code>PKCS12 (.pfx)</code> with <code>Certificate + Key</code>.</li>
+        <li>Double-click the <code>.pfx</code> file to import into <strong>Personal</strong> store (Current User).</li>
+        <li>In Outlook: <strong>File &rarr; Options &rarr; Trust Center &rarr; Trust Center Settings &rarr; Email Security</strong>.</li>
+        <li>Under <strong>Encrypted email</strong>, click <strong>Settings</strong> &rarr; <strong>Choose</strong> next to Signing/Encryption Certificate &rarr; select your certificate.</li>
+      </ol>
+
+      <h4>Setting Up in Thunderbird</h4>
+      <ol>
+        <li>Export as <code>PKCS12 (.pfx)</code> with <code>Certificate + Key</code>.</li>
+        <li>In Thunderbird: <strong>Account Settings &rarr; End-To-End Encryption &rarr; S/MIME</strong>.</li>
+        <li>Click <strong>Manage S/MIME Certificates &rarr; Your Certificates &rarr; Import</strong> &rarr; select the <code>.pfx</code> file.</li>
+        <li>Select the certificate for both signing and encryption.</li>
+      </ol>
+      <div class="step-note">Both sender and recipient need each other's public certificate to exchange encrypted email. Share the public certificate (DER export, Certificate Only) with your correspondents.</div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="hideModal('guideModal')">Close</button>
     </div>
   </div>
 </div>
@@ -881,6 +1180,10 @@ async function issueCert() {
 
 function showExportCert(certId) {
   exportCertId = certId;
+  document.getElementById('certExportFormat').value = 'pkcs12';
+  document.getElementById('certExportPart').value = 'both';
+  document.getElementById('certExportPassword').value = 'changeit';
+  document.getElementById('certExportChain').checked = false;
   updateCertPasswordVisibility();
   showModal('exportCertModal');
 }
@@ -889,7 +1192,8 @@ async function doExportCert() {
   const fmt = document.getElementById('certExportFormat').value;
   const part = document.getElementById('certExportPart').value;
   const password = document.getElementById('certExportPassword').value;
-  await saveExport('/api/export/cert/' + exportCertId, { format: fmt, part, password: password || undefined });
+  const includeChain = document.getElementById('certExportChain').checked;
+  await saveExport('/api/export/cert/' + exportCertId, { format: fmt, part, password: password || undefined, include_chain: includeChain });
   hideModal('exportCertModal');
 }
 
@@ -906,6 +1210,7 @@ function updateCaPasswordVisibility() {
   const show = part === 'both' && fmt !== 'der';
   document.getElementById('caExportPassword').style.display = show ? '' : 'none';
   if (!show) document.getElementById('caExportPassword').value = '';
+  else if (!document.getElementById('caExportPassword').value) document.getElementById('caExportPassword').value = 'changeit';
 }
 
 async function saveExport(url, body) {
@@ -943,9 +1248,13 @@ async function deleteCert(certId) {
 function updateCertPasswordVisibility() {
   const fmt = document.getElementById('certExportFormat').value;
   const part = document.getElementById('certExportPart').value;
-  const show = part === 'both' && fmt !== 'der';
-  document.getElementById('pfxPasswordRow').style.display = show ? '' : 'none';
-  if (!show) document.getElementById('certExportPassword').value = '';
+  const showPw = part === 'both' && fmt !== 'der';
+  document.getElementById('pfxPasswordRow').style.display = showPw ? '' : 'none';
+  if (!showPw) document.getElementById('certExportPassword').value = '';
+  else if (!document.getElementById('certExportPassword').value) document.getElementById('certExportPassword').value = 'changeit';
+  const showChain = (part === 'both' || part === 'chain') && fmt !== 'der';
+  document.getElementById('chainRow').style.display = showChain ? '' : 'none';
+  if (!showChain) document.getElementById('certExportChain').checked = false;
 }
 document.getElementById('certExportFormat').addEventListener('change', updateCertPasswordVisibility);
 document.getElementById('certExportPart').addEventListener('change', updateCertPasswordVisibility);
@@ -964,6 +1273,18 @@ function escapeHtml(s) {
   const div = document.createElement('div');
   div.textContent = s || '';
   return div.innerHTML;
+}
+
+function showGuideTab(tabId, btn) {
+  document.querySelectorAll('.guide-content').forEach(el => el.classList.add('hidden'));
+  document.querySelectorAll('.guide-tab').forEach(el => el.classList.remove('active'));
+  document.getElementById(tabId).classList.remove('hidden');
+  btn.classList.add('active');
+}
+
+function showGuide() {
+  showGuideTab('guide-general', document.querySelector('.guide-tab'));
+  showModal('guideModal');
 }
 
 loadCAs();
