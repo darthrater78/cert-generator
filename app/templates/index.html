@@ -413,7 +413,7 @@ body {
   <div class="sidebar">
     <div class="sidebar-header">
       <h1>Cert Generator</h1>
-      <div class="version">v1.2.1</div>
+      <div class="version">v1.3.0</div>
     </div>
     <div class="sidebar-section">
       <h3>Certificate Authorities</h3>
@@ -422,6 +422,7 @@ body {
     <button class="btn-new-ca" onclick="showCreateCA()">+ New CA</button>
     <button class="btn-help" onclick="showGuide()">? Import Guide</button>
     <a class="btn-help" href="https://github.com/darthrater78/cert-generator" onclick="return openExternal(event, this.href)">&#8599; GitHub Repo</a>
+    <a class="btn-help" href="https://github.com/darthrater78/cert-generator/releases/tag/v1.3.0" onclick="return openExternal(event, this.href)">&#8599; Release Notes</a>
   </div>
 
   <div class="main">
@@ -452,6 +453,7 @@ body {
               <option value="pkcs12">PKCS12 (.pfx)</option>
               <option value="pem">PEM</option>
               <option value="der">DER</option>
+              <option value="crt">CRT (.crt)</option>
             </select>
             <select id="caExportPart" onchange="updateCaPasswordVisibility()">
               <option value="both">Certificate + Key</option>
@@ -462,6 +464,8 @@ body {
               style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;width:160px;outline:none">
             <span style="font-size:11px;color:var(--text-dim);margin-left:-4px" title="Default password is 'changeit'. Required for Windows certificate import.">(default: changeit)</span>
             <button class="btn btn-ghost btn-sm" onclick="exportCA()">Download</button>
+            <span style="border-left:1px solid var(--border);height:20px;margin:0 4px"></span>
+            <button class="btn btn-ghost btn-sm" onclick="exportCRL()" title="Generate and download a CRL file signed by this CA. Import into Windows cert stores to provide offline revocation status.">Export CRL</button>
           </div>
         </div>
 
@@ -546,6 +550,7 @@ body {
           <option value="web-server">Web Server</option>
           <option value="computer">Computer</option>
           <option value="client-auth">Client Authentication</option>
+          <option value="user">User</option>
           <option value="code-signing">Code Signing</option>
           <option value="email">Email (S/MIME)</option>
         </select>
@@ -562,6 +567,13 @@ body {
       <div class="form-group">
         <label>Email Address</label>
         <input type="email" id="certEmail" placeholder="user@example.com">
+      </div>
+    </div>
+    <div class="form-row full" id="upnRow" style="display:none">
+      <div class="form-group">
+        <label>User Principal Name (UPN)</label>
+        <input type="text" id="certUPN" placeholder="user@corp.example.com">
+        <span style="font-size:11px;color:var(--text-dim);margin-top:2px">Added as Microsoft UPN OtherName in SAN for Windows logon</span>
       </div>
     </div>
     <div class="form-row full">
@@ -591,6 +603,12 @@ body {
           </select>
         </div>
       </div>
+    </div>
+    <div class="form-row full">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+        <input type="checkbox" id="certIncludeCRL"> Include CRL Distribution Point
+        <span style="font-size:11px;color:var(--text-dim)">(adds offline revocation checking — see Import Guide)</span>
+      </label>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="hideModal('issueCertModal')">Cancel</button>
@@ -659,6 +677,7 @@ body {
           <option value="pkcs12">PKCS12 (.pfx)</option>
           <option value="pem">PEM</option>
           <option value="der">DER</option>
+          <option value="crt">CRT (.crt)</option>
         </select>
       </div>
       <div class="form-group">
@@ -699,8 +718,10 @@ body {
       <button class="guide-tab" onclick="showGuideTab('guide-computer',this)">Computer</button>
       <button class="guide-tab" onclick="showGuideTab('guide-webserver',this)">Web Server</button>
       <button class="guide-tab" onclick="showGuideTab('guide-clientauth',this)">Client Auth</button>
+      <button class="guide-tab" onclick="showGuideTab('guide-user',this)">User</button>
       <button class="guide-tab" onclick="showGuideTab('guide-codesigning',this)">Code Signing</button>
       <button class="guide-tab" onclick="showGuideTab('guide-email',this)">Email (S/MIME)</button>
+      <button class="guide-tab" onclick="showGuideTab('guide-crl',this)">CRL (Revocation)</button>
     </div>
 
     <div class="guide-content" id="guide-general">
@@ -720,7 +741,8 @@ body {
       <ul>
         <li><strong>PKCS12 (.pfx)</strong> &mdash; bundles cert + private key + CA chain into one file. Required for importing into Windows certificate stores. Always password-protected.</li>
         <li><strong>PEM</strong> &mdash; base64-encoded text format. Used by Apache, Nginx, Linux tools, and OpenSSL. Not directly importable into Windows cert stores.</li>
-        <li><strong>DER</strong> &mdash; binary certificate format (no private key). Use for importing public certificates on Windows (<code>.cer</code> file).</li>
+        <li><strong>DER</strong> &mdash; binary certificate format (no private key). Use for importing public certificates.</li>
+        <li><strong>CRT (.crt)</strong> &mdash; same as DER but with the <code>.crt</code> extension that Windows recognizes natively. Double-click to open the certificate viewer or import wizard.</li>
       </ul>
 
       <h4>Installing the Root CA on Windows</h4>
@@ -846,6 +868,39 @@ body {
       <div class="step-note">For user certificates, use <code>certmgr.msc</code> (Current User). For service accounts running as SYSTEM, use <code>certlm.msc</code> (Local Machine).</div>
     </div>
 
+    <div class="guide-content hidden" id="guide-user">
+      <h4>User Certificate</h4>
+      <p>Used for user identity on Windows &mdash; authenticates a person for smart card logon, VPN, Wi-Fi (802.1X), and mTLS. Includes Client Authentication and Smart Card Logon extended key usage, with a Microsoft UPN in the Subject Alternative Name.</p>
+
+      <h4>When to Use</h4>
+      <ul>
+        <li>Smart card or virtual smart card logon</li>
+        <li>802.1X wireless/wired user authentication</li>
+        <li>VPN user certificates</li>
+        <li>mTLS client identity with Windows SSO</li>
+        <li>Conditional Access certificate-based authentication</li>
+      </ul>
+
+      <h4>Creating the Certificate</h4>
+      <ol>
+        <li>Template: <strong>User</strong>.</li>
+        <li>Common Name: the user's display name, e.g. <code>John Doe</code>.</li>
+        <li>Email Address: the user's email, e.g. <code>john.doe@example.com</code>.</li>
+        <li>User Principal Name (UPN): the Windows logon UPN, e.g. <code>john.doe@corp.example.com</code>. This is embedded as a Microsoft UPN OtherName in the SAN &mdash; required for Windows smart card logon.</li>
+        <li>Optionally check <strong>Include CRL Distribution Point</strong> to add offline revocation checking (see the CRL tab).</li>
+      </ol>
+
+      <h4>Importing into Windows (Current User)</h4>
+      <ol>
+        <li>Export as <code>PKCS12 (.pfx)</code> with <code>Certificate + Key</code>.</li>
+        <li>Double-click the <code>.pfx</code> file, or open <code>certmgr.msc</code> (Current User).</li>
+        <li>Import into the <strong>Personal</strong> store.</li>
+        <li>Enter the PFX password when prompted.</li>
+      </ol>
+      <div class="step-note">The UPN in the certificate must match the user's UPN in Active Directory or Entra ID for smart card logon to work.</div>
+      <div class="step-warn">You must also install the issuing CA into <strong>Trusted Root Certification Authorities</strong> and (if using CRL) import the CA's CRL file. See the General and CRL tabs.</div>
+    </div>
+
     <div class="guide-content hidden" id="guide-codesigning">
       <h4>Code Signing Certificate</h4>
       <p>Used to digitally sign executables, scripts, and drivers. Includes Code Signing extended key usage.</p>
@@ -910,6 +965,43 @@ body {
       <div class="step-note">Both sender and recipient need each other's public certificate to exchange encrypted email. Share the public certificate (DER export, Certificate Only) with your correspondents.</div>
     </div>
 
+    <div class="guide-content hidden" id="guide-crl">
+      <h4>Offline CRL (Certificate Revocation List)</h4>
+      <p>This tool generates <strong>locally-signed CRL files</strong> to provide offline revocation status for issued certificates. This is not a live revocation service &mdash; it is a generated artifact that must be manually imported into the Windows certificate store on each endpoint.</p>
+
+      <h4>How It Works</h4>
+      <ol>
+        <li>When issuing a certificate, check <strong>Include CRL Distribution Point</strong>. This embeds a CDP extension in the certificate with a placeholder URL (<code>http://pki.&lt;domain&gt;/crl/...</code>).</li>
+        <li>On the CA details page, click <strong>Export CRL</strong> to generate and download a <code>.crl</code> file. This file is cryptographically signed by the CA and lists any certificates you have revoked.</li>
+        <li>Import the <code>.crl</code> file into the Windows certificate store on the target endpoint. Windows caches the CRL locally and uses it for revocation checks &mdash; no network fetch needed.</li>
+      </ol>
+
+      <h4>Importing the CRL on Windows</h4>
+      <ol>
+        <li>Open <code>certlm.msc</code> (Local Machine) or <code>certmgr.msc</code> (Current User).</li>
+        <li>Navigate to <strong>Intermediate Certification Authorities</strong>.</li>
+        <li>Right-click &rarr; <strong>All Tasks</strong> &rarr; <strong>Import</strong>.</li>
+        <li>Browse to the <code>.crl</code> file, select it, and finish the import.</li>
+        <li>The CRL will appear under <strong>Certificate Revocation Lists</strong> within that store.</li>
+      </ol>
+      <div class="step-note">The CRL is valid for 10 years by default. If you revoke a certificate after importing the CRL, you must re-export and re-import the updated CRL on each endpoint for the revocation to take effect.</div>
+
+      <h4>Important: This Is a Generated CRL, Not a Live Service</h4>
+      <p>The CDP URL in the certificate (<code>http://pki.&lt;domain&gt;/crl/...</code>) is a <strong>placeholder</strong> &mdash; there is no server listening at that address. The revocation check works because Windows finds the CRL already cached in the local certificate store, so it never needs to fetch from the URL.</p>
+      <p>This approach is suitable for:</p>
+      <ul>
+        <li>Posture and security demos where certificates need to pass Windows validation</li>
+        <li>Lab and test environments</li>
+        <li>Scenarios where you control the endpoints and can import the CRL manually</li>
+      </ul>
+      <div class="step-warn">This is <strong>not</strong> equivalent to a production PKI with a live CRL server or OCSP responder. The CRL is a static file that must be manually updated and redistributed when certificates are revoked.</div>
+
+      <h4>PowerShell Import (Alternative)</h4>
+      <p>You can also import the CRL via PowerShell:</p>
+      <p><code>certutil -addstore CA "path\to\ca-name.crl"</code></p>
+      <p>Run as Administrator for the Local Machine store.</p>
+    </div>
+
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="hideModal('guideModal')">Close</button>
     </div>
@@ -926,6 +1018,7 @@ const TEMPLATE_LABELS = {
   'web-server': 'Web Server',
   'computer': 'Computer',
   'client-auth': 'Client Auth',
+  'user': 'User',
   'code-signing': 'Code Signing',
   'email': 'Email (S/MIME)',
 };
@@ -933,6 +1026,7 @@ const TEMPLATE_DESCS = {
   'web-server': 'Server Authentication',
   'computer': 'Client Authentication, Server Authentication',
   'client-auth': 'Client Authentication',
+  'user': 'Client Authentication, Smart Card Logon',
   'code-signing': 'Code Signing',
   'email': 'Email Protection',
 };
@@ -1147,8 +1241,11 @@ async function createIntermediate() {
 function onTemplateChange() {
   const tmpl = document.getElementById('certTemplate').value;
   document.getElementById('templateDesc').textContent = TEMPLATE_DESCS[tmpl] || '';
-  document.getElementById('emailRow').style.display = tmpl === 'email' ? '' : 'none';
-  if (tmpl !== 'email') document.getElementById('certEmail').value = '';
+  const showEmail = tmpl === 'email' || tmpl === 'user';
+  document.getElementById('emailRow').style.display = showEmail ? '' : 'none';
+  if (!showEmail) document.getElementById('certEmail').value = '';
+  document.getElementById('upnRow').style.display = tmpl === 'user' ? '' : 'none';
+  if (tmpl !== 'user') document.getElementById('certUPN').value = '';
 }
 
 async function issueCert() {
@@ -1157,6 +1254,8 @@ async function issueCert() {
 
   const template = document.getElementById('certTemplate').value;
   const email = document.getElementById('certEmail').value.trim();
+  const upn = document.getElementById('certUPN').value.trim();
+  const includeCrlDp = document.getElementById('certIncludeCRL').checked;
 
   try {
     const res = await api('/api/ca/' + currentCAId + '/certs', {
@@ -1168,6 +1267,8 @@ async function issueCert() {
         lifetime_days: lifetimeDaysFromInputs('certLifetime', 'certLifetimeUnit'),
         template: template,
         email: email || undefined,
+        upn: upn || undefined,
+        include_crl_dp: includeCrlDp,
       }),
     });
     const cert = await res.json();
@@ -1175,6 +1276,8 @@ async function issueCert() {
     document.getElementById('certCN').value = '';
     document.getElementById('certSANs').value = '';
     document.getElementById('certEmail').value = '';
+    document.getElementById('certUPN').value = '';
+    document.getElementById('certIncludeCRL').checked = false;
     toast('Certificate issued: ' + cert.common_name);
     loadCerts(currentCAId);
   } catch (e) {
@@ -1208,10 +1311,21 @@ async function exportCA() {
   await saveExport('/api/export/ca/' + currentCAId, { format: fmt, part, password: password || undefined });
 }
 
+async function exportCRL() {
+  if (!currentCAId) return;
+  try {
+    const res = await api('/api/ca/' + currentCAId + '/crl');
+    const result = await res.json();
+    toast('CRL saved to ' + result.path);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
 function updateCaPasswordVisibility() {
   const fmt = document.getElementById('caExportFormat').value;
   const part = document.getElementById('caExportPart').value;
-  const show = part === 'both' && fmt !== 'der';
+  const show = part === 'both' && fmt !== 'der' && fmt !== 'crt';
   document.getElementById('caExportPassword').style.display = show ? '' : 'none';
   if (!show) document.getElementById('caExportPassword').value = '';
   else if (!document.getElementById('caExportPassword').value) document.getElementById('caExportPassword').value = 'changeit';
@@ -1252,11 +1366,11 @@ async function deleteCert(certId) {
 function updateCertPasswordVisibility() {
   const fmt = document.getElementById('certExportFormat').value;
   const part = document.getElementById('certExportPart').value;
-  const showPw = part === 'both' && fmt !== 'der';
+  const showPw = part === 'both' && fmt !== 'der' && fmt !== 'crt';
   document.getElementById('pfxPasswordRow').style.display = showPw ? '' : 'none';
   if (!showPw) document.getElementById('certExportPassword').value = '';
   else if (!document.getElementById('certExportPassword').value) document.getElementById('certExportPassword').value = 'changeit';
-  const showChain = (part === 'both' || part === 'chain') && fmt !== 'der';
+  const showChain = (part === 'both' || part === 'chain') && fmt !== 'der' && fmt !== 'crt';
   document.getElementById('chainRow').style.display = showChain ? '' : 'none';
   if (!showChain) document.getElementById('certExportChain').checked = false;
 }

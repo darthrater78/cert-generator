@@ -169,6 +169,15 @@ def revoke_cert(cert_id: int) -> bool:
         return cursor.rowcount > 0
 
 
+def list_revoked_serials(ca_id: int) -> list[tuple[str, str]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT serial, created_at FROM certificates WHERE ca_id = ? AND revoked = 1",
+            (ca_id,),
+        ).fetchall()
+        return [(r["serial"], r["created_at"]) for r in rows]
+
+
 def delete_cert(cert_id: int) -> bool:
     with _connect() as conn:
         cursor = conn.execute("DELETE FROM certificates WHERE id = ?", (cert_id,))
