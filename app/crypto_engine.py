@@ -10,6 +10,9 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import NameOID
 
+MS_UPN_OID = x509.ObjectIdentifier("1.3.6.1.4.1.311.20.2.3")
+SMARTCARD_LOGON_OID = x509.ObjectIdentifier("1.3.6.1.4.1.311.20.2.2")
+
 Algorithm = Literal["ed25519", "ecdsa-p256", "ecdsa-p384", "rsa-2048", "rsa-4096"]
 
 ALGORITHMS: list[Algorithm] = ["ed25519", "ecdsa-p256", "ecdsa-p384", "rsa-2048", "rsa-4096"]
@@ -104,6 +107,28 @@ CERT_TEMPLATES: dict[str, dict] = {
         "extended_key_usage": [x509.oid.ExtendedKeyUsageOID.EMAIL_PROTECTION],
         "default_days": 365,
         "include_email": True,
+    },
+    "user": {
+        "label": "User",
+        "description": "Client Authentication, Smart Card Logon",
+        "key_usage": {
+            "digital_signature": True,
+            "key_encipherment": True,
+            "content_commitment": False,
+            "data_encipherment": False,
+            "key_agreement": False,
+            "key_cert_sign": False,
+            "crl_sign": False,
+            "encipher_only": False,
+            "decipher_only": False,
+        },
+        "extended_key_usage": [
+            x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH,
+            SMARTCARD_LOGON_OID,
+        ],
+        "default_days": 365,
+        "include_email": True,
+        "include_upn": True,
     },
 }
 
@@ -288,6 +313,8 @@ def issue_certificate(
     lifetime_days: int,
     template: str = "web-server",
     email: str | None = None,
+    upn: str | None = None,
+    crl_dp_url: str | None = None,
 ) -> tuple[bytes, bytes, str, str, str]:
     tmpl = CERT_TEMPLATES.get(template, CERT_TEMPLATES["web-server"])
 
@@ -310,6 +337,8 @@ def issue_certificate(
         san_entries.append(x509.DNSName(d))
     if email and tmpl.get("include_email"):
         san_entries.append(x509.RFC822Name(email))
+    if upn and tmpl.get("include_upn"):
+        san_entries.append(x509.OtherName(MS_UPN_OID, _encode_utf8_string(upn)))
 
     builder = (
         x509.CertificateBuilder()
@@ -347,6 +376,19 @@ def issue_certificate(
             critical=False,
         )
 
+    if crl_dp_url:
+        builder = builder.add_extension(
+            x509.CRLDistributionPoints([
+                x509.DistributionPoint(
+                    full_name=[x509.UniformResourceIdentifier(crl_dp_url)],
+                    relative_name=None,
+                    crl_issuer=None,
+                    reasons=None,
+                ),
+            ]),
+            critical=False,
+        )
+
     ca_algorithm = _detect_algorithm(ca_key)
     hash_alg = _signing_hash(ca_algorithm)
     cert = builder.sign(ca_key, hash_alg)
@@ -367,6 +409,53 @@ def issue_certificate(
     )
 
 
+def _encode_utf8_string(value: str) -> bytes:
+    encoded = value.encode("utf-8")
+    length = len(encoded)
+    if length < 128:
+        return b"\x0c" + bytes([length]) + encoded
+    if length < 256:
+        return b"\x0c\x81" + bytes([length]) + encoded
+    return b"\x0c\x82" + length.to_bytes(2, "big") + encoded
+
+
+def generate_crl(
+    ca_cert_pem: bytes,
+    ca_key_pem: bytes,
+    revoked_serials: list[tuple[str, str]],
+    crl_lifetime_days: int = 3650,
+) -> bytes:
+    ca_cert = x509.load_pem_x509_certificate(ca_cert_pem)
+    ca_key = serialization.load_pem_private_key(ca_key_pem, password=None)
+    now = datetime.now(timezone.utc)
+
+    builder = (
+        x509.CertificateRevocationListBuilder()
+        .issuer_name(ca_cert.subject)
+        .last_update(now)
+        .next_update(now + timedelta(days=crl_lifetime_days))
+    )
+
+    for serial_hex, revoked_at in revoked_serials:
+        serial_int = int(serial_hex, 16)
+        try:
+            rev_date = datetime.fromisoformat(revoked_at).replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            rev_date = now
+        revoked_cert = (
+            x509.RevokedCertificateBuilder()
+            .serial_number(serial_int)
+            .revocation_date(rev_date)
+            .build()
+        )
+        builder = builder.add_revoked_certificate(revoked_cert)
+
+    ca_algorithm = _detect_algorithm(ca_key)
+    hash_alg = _signing_hash(ca_algorithm)
+    crl = builder.sign(ca_key, hash_alg)
+    return crl.public_bytes(serialization.Encoding.DER)
+
+
 def _detect_algorithm(key) -> Algorithm:
     if isinstance(key, ed25519.Ed25519PrivateKey):
         return "ed25519"
@@ -382,7 +471,7 @@ def _detect_algorithm(key) -> Algorithm:
     raise ValueError("Unknown key type")
 
 
-ExportFormat = Literal["pem", "der", "pkcs12"]
+ExportFormat = Literal["pem", "der", "crt", "pkcs12"]
 
 
 def export_certificate(
@@ -407,6 +496,9 @@ def export_certificate(
 
     if fmt == "der":
         return cert.public_bytes(serialization.Encoding.DER), "certificate.der"
+
+    if fmt == "crt":
+        return cert.public_bytes(serialization.Encoding.DER), "certificate.crt"
 
     if fmt == "pkcs12":
         ca_certs = None
@@ -433,6 +525,8 @@ def export_public_only(cert_pem: bytes, fmt: ExportFormat) -> tuple[bytes, str]:
         return cert_pem, "certificate.pem"
     if fmt == "der":
         return cert.public_bytes(serialization.Encoding.DER), "certificate.der"
+    if fmt == "crt":
+        return cert.public_bytes(serialization.Encoding.DER), "certificate.crt"
 
     raise ValueError(f"Cannot export public-only as {fmt}")
 

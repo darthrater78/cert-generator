@@ -1,8 +1,11 @@
 [project]
 name = "cert-generator"
-version = "1.2.1"
+version = "1.3.0"
 description = "Certificate Authority tool for generating and managing self-signed certificates"
 requires-python = ">=3.10"
+
+[project.urls]
+Repository = "https://github.com/darthrater78/cert-generator"
 dependencies = [
     "cryptography==44.0.3",
     "flask==3.1.1",

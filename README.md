@@ -7,15 +7,16 @@ A Windows desktop tool for creating Certificate Authorities and issuing self-sig
 - **Create Certificate Authorities** with configurable domain, name, algorithm, and lifetime
 - **Intermediate CAs** — create subordinate CAs from any root CA; intermediates can issue their own certificates
 - **Issue leaf certificates** signed by any CA (root or intermediate), with SAN (Subject Alternative Name) support including wildcards
-- **Certificate templates** matching Windows CA templates — Web Server, Computer, Client Authentication, Code Signing, Email (S/MIME) — each with the correct key usage and extended key usage extensions
+- **Certificate templates** matching Windows CA templates — Web Server, Computer, Client Authentication, User (Smart Card Logon), Code Signing, Email (S/MIME) — each with the correct key usage and extended key usage extensions
 - **Track all certificates** — view status (active/revoked/expired), details, and metadata
-- **Export in multiple formats** — PEM, DER, PKCS12 (.pfx)
+- **Export in multiple formats** — PEM, DER, CRT (.crt), PKCS12 (.pfx)
 - **Export parts individually** — full bundle, certificate only, private key only, or full chain (cert + CA)
 - **Password-protected exports** — optionally encrypt the private key (PEM) or the whole bundle (PKCS12) with a password (PKCS12 defaults to `changeit` for Windows compatibility)
 - **Optional CA chain inclusion** — choose whether to bundle the issuing CA certificate when exporting issued certs
 - **In-app import guide** — step-by-step instructions for importing certificates on Windows, macOS, and Linux for each template type
 - **Modern crypto algorithms** — Ed25519, ECDSA P-256, ECDSA P-384, RSA-2048, RSA-4096
 - **Revoke certificates** to mark them as no longer trusted
+- **Offline CRL generation** — optionally embed a CRL Distribution Point in issued certificates and export a signed CRL file for manual import into Windows certificate stores, providing offline revocation status without a live server
 - **Native Windows app** — runs as a desktop window via pywebview, no browser needed
 - **Standalone EXE** — package as a single-file Windows executable, no Python required to run it
 
@@ -93,6 +94,7 @@ The embedded web server is hardened for desktop use:
 |--------|-----------|----------|
 | PEM | `.pem` | Base64-encoded, widely supported |
 | DER | `.der` | Binary format |
+| CRT | `.crt` | DER-encoded with Windows-native extension |
 | PKCS12 | `.pfx` | Bundled cert + key, optional password protection |
 
 Export options per certificate:
@@ -106,6 +108,14 @@ Export options per certificate:
 All CAs and certificates are stored in a SQLite database at `~/.cert-generator/certs.db`. The directory is created with restrictive permissions (owner-only access).
 
 ## Version history
+
+### v1.3.0 — 2026-08-31
+
+- **User certificate template** — Client Authentication + Smart Card Logon EKU, with Microsoft UPN OtherName in the SAN and email address in subject/SAN, for Windows smart card logon, 802.1X, and VPN use cases
+- **CRT export format** — DER-encoded `.crt` files that Windows recognizes natively (double-click to view or import); available for both CA and leaf certificate exports
+- **Offline CRL generation** — opt-in "Include CRL Distribution Point" checkbox when issuing certificates embeds a CDP extension with a placeholder URL; "Export CRL" button on the CA page generates a signed `.crl` file for manual import into the Windows certificate store, providing offline revocation status without a live CRL/OCSP server
+- Added User and CRL (Revocation) tabs to the in-app import guide
+- Revoke endpoint now returns a reminder to re-export the CRL
 
 ### v1.2.1 — 2026-08-26
 

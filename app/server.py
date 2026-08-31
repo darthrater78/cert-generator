@@ -9,7 +9,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_file
 
 from . import crypto_engine, db
 
-VALID_FORMATS = ("pem", "der", "pkcs12")
+VALID_FORMATS = ("pem", "der", "crt", "pkcs12")
 VALID_CA_PARTS = ("both", "public", "private")
 VALID_CERT_PARTS = ("both", "public", "private", "chain")
 DOMAIN_RE = re.compile(r"^[\w.*-]{1,253}$")
@@ -195,6 +195,8 @@ def issue_cert(ca_id: int):
     algorithm: str = data.get("algorithm", "ecdsa-p384")
     template: str = data.get("template", "web-server")
     email: str = data.get("email", "").strip() or None
+    upn: str = data.get("upn", "").strip() or None
+    include_crl_dp: bool = data.get("include_crl_dp", False)
     lifetime_days = _parse_int(data.get("lifetime_days"), 365)
 
     if not common_name or len(common_name) > 253:
@@ -208,6 +210,11 @@ def issue_cert(ca_id: int):
 
     san_list = [s.strip() for s in san_domains_raw.split(",") if s.strip()] if san_domains_raw else [common_name]
 
+    crl_dp_url = None
+    if include_crl_dp:
+        safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', ca["name"])
+        crl_dp_url = f"http://pki.{ca['domain']}/crl/{safe_name}.crl"
+
     cert_pem, key_pem, serial, not_before, not_after = crypto_engine.issue_certificate(
         ca_cert_pem=ca["cert_pem"],
         ca_key_pem=ca["key_pem"],
@@ -217,6 +224,8 @@ def issue_cert(ca_id: int):
         lifetime_days=lifetime_days,
         template=template,
         email=email,
+        upn=upn,
+        crl_dp_url=crl_dp_url,
     )
 
     cert_id = db.save_cert(
@@ -257,8 +266,27 @@ def get_cert(cert_id: int):
 @app.post("/api/certs/<int:cert_id>/revoke")
 def revoke_cert(cert_id: int):
     if db.revoke_cert(cert_id):
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "note": "Re-export the CA's CRL to update revocation status on endpoints."})
     return jsonify({"error": "Certificate not found or already revoked"}), 404
+
+
+@app.get("/api/ca/<int:ca_id>/crl")
+def download_crl(ca_id: int):
+    ca = db.get_ca(ca_id)
+    if not ca:
+        return jsonify({"error": "CA not found"}), 404
+
+    revoked = db.list_revoked_serials(ca_id)
+    crl_der = crypto_engine.generate_crl(
+        ca_cert_pem=ca["cert_pem"],
+        ca_key_pem=ca["key_pem"],
+        revoked_serials=revoked,
+    )
+
+    safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', ca["name"])
+    filename = f"{safe_name}.crl"
+    saved = _save_export(crl_der, filename)
+    return jsonify({"path": saved})
 
 
 @app.delete("/api/certs/<int:cert_id>")
