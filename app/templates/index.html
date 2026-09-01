@@ -406,23 +406,201 @@ body {
   margin: 8px 0 12px;
   font-size: 12px;
 }
+
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: var(--radius);
+  user-select: none;
+}
+.section-header:hover { background: var(--surface-hover); }
+.section-header h3 { margin-bottom: 0; padding: 0; flex: 1; }
+.section-chevron {
+  font-size: 10px;
+  color: var(--text-dim);
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+.section-chevron.open { transform: rotate(90deg); }
+.section-count {
+  font-size: 10px;
+  color: var(--text-dim);
+  background: rgba(139,143,163,0.12);
+  padding: 0 6px;
+  border-radius: 8px;
+  font-weight: 500;
+  line-height: 18px;
+}
+.sidebar-actions {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sidebar-actions .btn-row { display: flex; gap: 6px; }
+.sidebar-actions .btn-row button { flex: 1; }
+
+.ssh-item {
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  transition: background 0.15s;
+}
+.ssh-item:hover { background: var(--surface-hover); }
+.ssh-item.active { background: var(--accent); color: white; }
+.ssh-item .ssh-icon {
+  flex-shrink: 0;
+  color: var(--warning);
+}
+.ssh-item.active .ssh-icon { color: white; }
+.section-divider {
+  margin: 6px 12px;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+.ssh-item .ssh-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.pubkey-box {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  word-break: break-all;
+  white-space: pre-wrap;
+  max-height: 80px;
+  overflow-y: auto;
+}
+.copy-row { display: flex; gap: 6px; margin-top: 8px; }
+
+.unlock-overlay {
+  position: fixed; inset: 0;
+  background: var(--bg);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 300;
+  flex-direction: column;
+}
+.unlock-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 32px;
+  width: 380px;
+  max-width: 90vw;
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+.unlock-box h2 { font-size: 18px; margin-bottom: 4px; }
+.unlock-box .lock-icon { font-size: 36px; margin-bottom: 12px; opacity: 0.7; }
+.unlock-box .subtitle { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; }
+.unlock-box input {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  margin-bottom: 12px;
+  text-align: center;
+}
+.unlock-box input:focus { border-color: var(--accent); }
+.unlock-box .error-msg { color: var(--danger); font-size: 12px; margin-bottom: 8px; min-height: 16px; }
+
+.encryption-banner {
+  margin: 12px;
+  padding: 12px;
+  background: rgba(245,158,11,0.08);
+  border: 1px solid rgba(245,158,11,0.25);
+  border-radius: var(--radius);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.encryption-banner h4 { font-size: 13px; font-weight: 600; margin-bottom: 4px; color: var(--warning); }
+.encryption-banner p { color: var(--text-dim); margin-bottom: 8px; }
+.encryption-banner .banner-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.encryption-banner .banner-dismiss {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 11px; color: var(--text-dim); cursor: pointer; margin-left: auto;
+}
+.encryption-banner .banner-dismiss input { margin: 0; }
 </style>
 </head>
 <body>
+<div id="unlockOverlay" class="unlock-overlay hidden">
+  <div class="unlock-box">
+    <div class="lock-icon">&#x1f512;</div>
+    <h2>Database Locked</h2>
+    <p class="subtitle">Enter your master password to decrypt private keys</p>
+    <input type="password" id="unlockPassword" placeholder="Master password" onkeydown="if(event.key==='Enter')doUnlock()">
+    <div class="error-msg" id="unlockError"></div>
+    <button class="btn btn-primary" style="width:100%" onclick="doUnlock()">Unlock</button>
+  </div>
+</div>
+
 <div class="app">
   <div class="sidebar">
     <div class="sidebar-header">
       <h1>Cert Generator</h1>
-      <div class="version">v1.3.0</div>
+      <div class="version">v1.4.0</div>
     </div>
     <div class="sidebar-section">
-      <h3>Certificate Authorities</h3>
+      <div class="section-header" onclick="toggleSection('ca')">
+        <span class="section-chevron open" id="caChevron">&#9654;</span>
+        <h3>Certificate Authorities</h3>
+        <span class="section-count" id="caCount">0</span>
+      </div>
       <ul class="ca-list" id="caList"></ul>
+
+      <hr class="section-divider">
+
+      <div class="section-header" onclick="toggleSection('ssh')">
+        <span class="section-chevron open" id="sshChevron">&#9654;</span>
+        <h3>SSH Keys</h3>
+        <span class="section-count" id="sshCount">0</span>
+      </div>
+      <ul class="ca-list" id="sshList"></ul>
     </div>
-    <button class="btn-new-ca" onclick="showCreateCA()">+ New CA</button>
-    <button class="btn-help" onclick="showGuide()">? Import Guide</button>
-    <a class="btn-help" href="https://github.com/darthrater78/cert-generator" onclick="return openExternal(event, this.href)">&#8599; GitHub Repo</a>
-    <a class="btn-help" href="https://github.com/darthrater78/cert-generator/releases/tag/v1.3.0" onclick="return openExternal(event, this.href)">&#8599; Release Notes</a>
+    <div id="encryptionBanner" class="encryption-banner hidden">
+      <h4>&#x1f512; Protect Private Keys</h4>
+      <p>Your private keys are stored unencrypted. Set a master password to encrypt them at rest with AES-256-GCM. If someone copies your database file, they cannot read your keys without the password.</p>
+      <div class="banner-actions">
+        <button class="btn btn-primary btn-sm" onclick="showEncryptionSettings()">Enable Encryption</button>
+        <label class="banner-dismiss">
+          <input type="checkbox" id="bannerDismissCheck"> Don't show again
+        </label>
+        <button class="btn btn-ghost btn-sm" onclick="dismissEncryptionBanner()">Dismiss</button>
+      </div>
+    </div>
+    <div class="sidebar-actions">
+      <div class="btn-row">
+        <button class="btn-new-ca" style="margin:0" onclick="showCreateSSHKey()">+ SSH Key</button>
+        <button class="btn-new-ca" style="margin:0;background:transparent;border:1px solid var(--border);color:var(--text-dim)" onclick="showCreateCA()">+ CA</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn-help" style="margin:0;flex:1" onclick="showGuide()">? CA Guide</button>
+        <button class="btn-help" style="margin:0;flex:1" onclick="showSSHGuide()">? SSH Guide</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn-help" style="margin:0;flex:1" onclick="showBackupModal()">&#128230; Backup</button>
+        <button class="btn-help" style="margin:0;flex:1" onclick="showRestoreModal()">&#128229; Restore</button>
+      </div>
+      <button class="btn-help" style="margin:0" id="btnEncryption" onclick="showEncryptionSettings()">&#x1f512; Encryption Settings</button>
+      <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator" onclick="return openExternal(event, this.href)">&#8599; GitHub Repo</a>
+      <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator/releases/tag/v1.4.0" onclick="return openExternal(event, this.href)">&#8599; Release Notes</a>
+    </div>
   </div>
 
   <div class="main">
@@ -492,6 +670,86 @@ body {
           </div>
         </div>
       </div>
+    </div>
+
+    <div id="sshKeyView" class="hidden">
+      <div class="main-header">
+        <h2 id="sshKeyViewTitle"></h2>
+        <div class="header-actions">
+          <button class="btn btn-danger btn-sm" onclick="deleteSSHKey()">Delete Key</button>
+        </div>
+      </div>
+      <div class="main-content">
+        <div class="card">
+          <h3>Key Details</h3>
+          <div class="ca-info-grid" id="sshKeyInfo"></div>
+        </div>
+        <div class="card">
+          <h3>Public Key</h3>
+          <div class="pubkey-box" id="sshPubKey"></div>
+          <div class="copy-row">
+            <button class="btn btn-ghost btn-sm" onclick="copyPublicKey()">Copy Public Key</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Export / Download</h3>
+          <div class="export-section">
+            <select id="sshExportPart" style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;outline:none">
+              <option value="private">Private Key</option>
+              <option value="public">Public Key</option>
+            </select>
+            <select id="sshExportFormat" style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;outline:none">
+              <option value="openssh">OpenSSH</option>
+              <option value="pem">PEM (PKCS#8)</option>
+            </select>
+            <input type="password" id="sshOriginalPassphrase" placeholder="Original passphrase"
+              style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;width:160px;outline:none;display:none">
+            <input type="password" id="sshExportPassphrase" placeholder="Export passphrase (optional)"
+              style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;width:180px;outline:none">
+            <button class="btn btn-ghost btn-sm" onclick="exportSSHKey()">Download</button>
+            <span style="border-left:1px solid var(--border);height:20px;margin:0 4px"></span>
+            <button class="btn btn-ghost btn-sm" onclick="copyPrivateKey()" title="Copy private key PEM to clipboard for Bitwarden SSH import">Copy Private Key (Bitwarden)</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="createSSHKeyModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>Generate SSH Key Pair</h3>
+    <div class="form-row full">
+      <div class="form-group">
+        <label>Key Name</label>
+        <input type="text" id="sshKeyName" placeholder="e.g. prod-server, github-deploy">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Algorithm</label>
+        <select id="sshKeyAlgorithm">
+          <option value="rsa-4096" selected>RSA 4096</option>
+          <option value="ed25519">Ed25519</option>
+          <option value="ecdsa-p256">ECDSA P-256</option>
+          <option value="ecdsa-p384">ECDSA P-384</option>
+          <option value="rsa-2048">RSA 2048</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Passphrase (optional)</label>
+        <input type="password" id="sshKeyPassphrase" placeholder="Leave empty for no passphrase">
+      </div>
+    </div>
+    <div class="form-row full">
+      <div class="form-group">
+        <label>Comment (optional)</label>
+        <input type="text" id="sshKeyComment" placeholder="e.g. user@hostname">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="hideModal('createSSHKeyModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="generateSSHKey()">Generate Key Pair</button>
     </div>
   </div>
 </div>
@@ -1008,10 +1266,267 @@ body {
   </div>
 </div>
 
+<div id="backupModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>Backup All Data</h3>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:16px">
+      Exports all CAs, certificates, and SSH keys into a single AES-256 encrypted file saved to your Downloads folder.
+    </p>
+    <div class="form-row full">
+      <div class="form-group">
+        <label>Encryption Password (required)</label>
+        <input type="password" id="backupPassword" placeholder="Enter a strong password">
+      </div>
+    </div>
+    <div class="form-row full">
+      <div class="form-group">
+        <label>Confirm Password</label>
+        <input type="password" id="backupPasswordConfirm" placeholder="Re-enter password">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="hideModal('backupModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="createBackup()">Create Encrypted Backup</button>
+    </div>
+  </div>
+</div>
+
+<div id="restoreModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>Restore from Backup</h3>
+    <div class="step-warn" style="margin-bottom:16px">
+      This will <strong>replace all existing data</strong> (CAs, certificates, and SSH keys)
+      with the contents of the backup file. This cannot be undone.
+    </div>
+    <div class="form-row full">
+      <div class="form-group">
+        <label>Backup File (.certbak)</label>
+        <input type="file" id="restoreFile" accept=".certbak"
+          style="padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:13px">
+      </div>
+    </div>
+    <div class="form-row full">
+      <div class="form-group">
+        <label>Decryption Password</label>
+        <input type="password" id="restorePassword" placeholder="Enter backup password">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="hideModal('restoreModal')">Cancel</button>
+      <button class="btn btn-danger" onclick="restoreBackup()">Replace All Data</button>
+    </div>
+  </div>
+</div>
+
+<div id="sshGuideModal" class="modal-backdrop hidden">
+  <div class="modal guide-modal">
+    <h3>SSH Key Guide</h3>
+    <p class="guide-subtitle">How to generate, export, and use SSH key pairs.</p>
+    <div class="guide-tabs" id="sshGuideTabs">
+      <button class="guide-tab active" onclick="showSSHGuideTab('sshguide-overview',this)">Overview</button>
+      <button class="guide-tab" onclick="showSSHGuideTab('sshguide-bitwarden',this)">Bitwarden</button>
+      <button class="guide-tab" onclick="showSSHGuideTab('sshguide-linux',this)">Linux / macOS</button>
+      <button class="guide-tab" onclick="showSSHGuideTab('sshguide-windows',this)">Windows</button>
+      <button class="guide-tab" onclick="showSSHGuideTab('sshguide-github',this)">GitHub / GitLab</button>
+    </div>
+
+    <div class="guide-content" id="sshguide-overview">
+      <h4>What This Tool Does</h4>
+      <p>Generates SSH key pairs and stores them in an encrypted database. Keys are saved directly to disk on export, avoiding clipboard line-ending corruption that commonly breaks private keys on Windows.</p>
+
+      <h4>Supported Algorithms</h4>
+      <ul>
+        <li><strong>RSA 4096</strong> (default) &mdash; broadest compatibility with legacy systems, firewalls, network gear, and older SSH servers. Works with Bitwarden SSH agent.</li>
+        <li><strong>Ed25519</strong> &mdash; modern, fast, small keys. Works with Bitwarden SSH agent. Preferred for new deployments.</li>
+        <li><strong>ECDSA P-256 / P-384</strong> &mdash; good performance and security. <strong>Not compatible</strong> with Bitwarden's SSH agent.</li>
+        <li><strong>RSA 2048</strong> &mdash; legacy fallback only. Use RSA 4096 instead.</li>
+      </ul>
+
+      <h4>Export Formats</h4>
+      <ul>
+        <li><strong>OpenSSH</strong> (default) &mdash; <code>-----BEGIN OPENSSH PRIVATE KEY-----</code> format. Used by OpenSSH, Git, and most modern tools. Compatible with Bitwarden.</li>
+        <li><strong>PEM (PKCS#8)</strong> &mdash; <code>-----BEGIN PRIVATE KEY-----</code> format. Used by older tools, Java, and some enterprise software. Also compatible with Bitwarden.</li>
+      </ul>
+
+      <h4>Passphrase Protection</h4>
+      <p>Optionally encrypt the private key with a passphrase at generation time. You will be prompted for it each time the key is used. You can also add a passphrase during export without having set one at generation.</p>
+      <div class="step-note">Keys without a passphrase grant access to anyone who obtains the file. Use a passphrase for production keys.</div>
+    </div>
+
+    <div class="guide-content hidden" id="sshguide-bitwarden">
+      <h4>Importing into Bitwarden</h4>
+      <p>Bitwarden can store SSH keys and use them via its SSH agent, so you never need the private key file on disk.</p>
+      <ol>
+        <li>Select your SSH key in the sidebar.</li>
+        <li>Click <strong>Copy Private Key (Bitwarden)</strong> &mdash; this copies the full PEM-formatted private key to your clipboard.</li>
+        <li>In Bitwarden, create a new <strong>SSH Key</strong> item.</li>
+        <li>Paste the private key into the <strong>Private Key</strong> field. Bitwarden will auto-detect the format and extract the public key and fingerprint.</li>
+      </ol>
+      <div class="step-note">Bitwarden's SSH agent supports <strong>RSA</strong> and <strong>Ed25519</strong> keys only. ECDSA keys cannot be used with the Bitwarden SSH agent.</div>
+
+      <h4>Using the Bitwarden SSH Agent</h4>
+      <ol>
+        <li>Enable the SSH agent in Bitwarden Settings &rarr; SSH Agent.</li>
+        <li>Configure your SSH client to use Bitwarden's agent socket (Bitwarden sets the <code>SSH_AUTH_SOCK</code> environment variable automatically on most platforms).</li>
+        <li>When you <code>ssh</code> to a server, Bitwarden prompts you to approve the key usage.</li>
+      </ol>
+      <div class="step-warn">The private key must include the full PEM header and footer (<code>-----BEGIN ... -----</code> / <code>-----END ... -----</code>). The Copy Private Key button includes these automatically.</div>
+    </div>
+
+    <div class="guide-content hidden" id="sshguide-linux">
+      <h4>Using on Linux / macOS</h4>
+      <ol>
+        <li>Export the private key: select <strong>Private Key</strong>, format <strong>OpenSSH</strong>, click <strong>Download</strong>.</li>
+        <li>Move the downloaded file to your SSH directory:<br><code>mv ~/Downloads/keyname-id_key ~/.ssh/id_rsa</code></li>
+        <li>Set correct permissions:<br><code>chmod 600 ~/.ssh/id_rsa</code></li>
+        <li>Export the public key separately, or click <strong>Copy Public Key</strong> and paste into <code>~/.ssh/id_rsa.pub</code>.</li>
+      </ol>
+
+      <h4>Adding to the SSH Agent</h4>
+      <p><code>ssh-add ~/.ssh/id_rsa</code></p>
+      <p>If the key has a passphrase, you will be prompted to enter it once.</p>
+
+      <h4>Deploying the Public Key</h4>
+      <p>Copy the public key to the target server:</p>
+      <p><code>ssh-copy-id -i ~/.ssh/id_rsa.pub user@hostname</code></p>
+      <p>Or manually append to <code>~/.ssh/authorized_keys</code> on the server.</p>
+      <div class="step-warn">The private key file <strong>must</strong> have <code>600</code> permissions. SSH refuses to use a key with permissions that are too open.</div>
+    </div>
+
+    <div class="guide-content hidden" id="sshguide-windows">
+      <h4>Using on Windows (OpenSSH)</h4>
+      <p>Windows 10/11 includes OpenSSH as a built-in optional feature.</p>
+      <ol>
+        <li>Export the private key in <strong>OpenSSH</strong> format.</li>
+        <li>Move the file to <code>C:\Users\&lt;you&gt;\.ssh\</code> (create the folder if it does not exist).</li>
+        <li>Rename it to match the expected name, e.g. <code>id_rsa</code> or <code>id_ed25519</code>.</li>
+      </ol>
+
+      <h4>Windows SSH Agent</h4>
+      <ol>
+        <li>Open <strong>Services</strong> (<code>services.msc</code>) and set <strong>OpenSSH Authentication Agent</strong> to <strong>Automatic</strong>, then start it.</li>
+        <li>Run: <code>ssh-add C:\Users\&lt;you&gt;\.ssh\id_rsa</code></li>
+      </ol>
+
+      <h4>Using with PuTTY</h4>
+      <p>PuTTY requires its own PPK format. To convert:</p>
+      <ol>
+        <li>Export the key in <strong>OpenSSH</strong> format.</li>
+        <li>Open PuTTYgen &rarr; <strong>Conversions</strong> &rarr; <strong>Import key</strong> &rarr; select the file.</li>
+        <li>Click <strong>Save private key</strong> to create a <code>.ppk</code> file.</li>
+      </ol>
+      <div class="step-note">Direct download avoids the line-ending corruption that happens when pasting private keys through Windows clipboard into text editors. Always use the Download button rather than copy-pasting key files.</div>
+    </div>
+
+    <div class="guide-content hidden" id="sshguide-github">
+      <h4>Adding to GitHub</h4>
+      <ol>
+        <li>Click <strong>Copy Public Key</strong> in the key detail view.</li>
+        <li>Go to GitHub &rarr; <strong>Settings</strong> &rarr; <strong>SSH and GPG keys</strong> &rarr; <strong>New SSH key</strong>.</li>
+        <li>Paste the public key and give it a descriptive title.</li>
+      </ol>
+
+      <h4>Adding to GitLab</h4>
+      <ol>
+        <li>Click <strong>Copy Public Key</strong>.</li>
+        <li>Go to GitLab &rarr; <strong>Preferences</strong> &rarr; <strong>SSH Keys</strong>.</li>
+        <li>Paste and optionally set an expiration date.</li>
+      </ol>
+
+      <h4>Deploy Keys (Read-Only)</h4>
+      <p>For CI/CD or read-only repo access, add the public key as a <strong>Deploy Key</strong> on the repository settings page instead of your user account.</p>
+      <div class="step-note">Use <strong>Ed25519</strong> for GitHub and GitLab &mdash; it is their recommended algorithm and produces the smallest keys.</div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="hideModal('sshGuideModal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="encryptionModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3 id="encryptionModalTitle">Encryption Settings</h3>
+
+    <div id="encryptionOff">
+      <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">
+        Database encryption is <strong style="color:var(--danger)">OFF</strong>. Private keys (CA keys, certificate keys, SSH private keys) are stored in plaintext in the SQLite database.
+      </p>
+      <div class="step-note" style="margin-bottom:16px">
+        <strong>What this protects:</strong> If someone copies your database file (<code>~/.cert-generator/certs.db</code>), they cannot read your private keys without the master password.<br><br>
+        <strong>What this does NOT protect:</strong> While the app is running and unlocked, keys are decrypted in memory. This protects data at rest, not a running application.<br><br>
+        <strong>Warning:</strong> If you forget your password, your private keys are unrecoverable. Use the Backup feature to create an encrypted backup before enabling.
+      </div>
+      <div class="form-row full">
+        <div class="form-group">
+          <label>Master Password (min 8 characters)</label>
+          <input type="password" id="encEnablePassword" placeholder="Choose a strong password">
+        </div>
+      </div>
+      <div class="form-row full">
+        <div class="form-group">
+          <label>Confirm Password</label>
+          <input type="password" id="encEnableConfirm" placeholder="Re-enter password">
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="hideModal('encryptionModal')">Cancel</button>
+        <button class="btn btn-primary" onclick="doEnableEncryption()">Enable Encryption</button>
+      </div>
+    </div>
+
+    <div id="encryptionOn" class="hidden">
+      <p style="font-size:13px;color:var(--text-dim);margin-bottom:16px">
+        Database encryption is <strong style="color:var(--success)">ON</strong>. Private keys are encrypted with AES-256-GCM using your master password.
+      </p>
+
+      <div class="card" style="margin-bottom:12px">
+        <h3 style="font-size:13px">Change Password</h3>
+        <div class="form-row full">
+          <div class="form-group">
+            <label>Current Password</label>
+            <input type="password" id="encChangeOld" placeholder="Current password">
+          </div>
+        </div>
+        <div class="form-row full">
+          <div class="form-group">
+            <label>New Password</label>
+            <input type="password" id="encChangeNew" placeholder="New password">
+          </div>
+        </div>
+        <div class="form-row full">
+          <div class="form-group">
+            <label>Confirm New Password</label>
+            <input type="password" id="encChangeConfirm" placeholder="Re-enter new password">
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="doChangePassword()">Change Password</button>
+      </div>
+
+      <div class="card">
+        <h3 style="font-size:13px">Disable Encryption</h3>
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Decrypts all private keys and removes the master password. Keys will be stored in plaintext.</p>
+        <div class="form-row full">
+          <div class="form-group">
+            <label>Current Password</label>
+            <input type="password" id="encDisablePassword" placeholder="Enter current password to confirm">
+          </div>
+        </div>
+        <button class="btn btn-danger btn-sm" onclick="doDisableEncryption()">Disable Encryption</button>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="hideModal('encryptionModal')">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast-container" id="toasts"></div>
 
 <script>
 let currentCAId = null;
+let currentSSHKeyId = null;
 let exportCertId = null;
 
 const TEMPLATE_LABELS = {
@@ -1084,7 +1599,8 @@ async function loadCAs() {
     });
   });
 
-  if (cas.length === 0) {
+  document.getElementById('caCount').textContent = cas.length;
+  if (cas.length === 0 && !currentSSHKeyId) {
     document.getElementById('welcomeView').classList.remove('hidden');
     document.getElementById('caView').classList.add('hidden');
   }
@@ -1092,10 +1608,12 @@ async function loadCAs() {
 
 async function selectCA(caId) {
   currentCAId = caId;
+  currentSSHKeyId = null;
   const res = await api('/api/ca/' + caId);
   const ca = await res.json();
 
   document.getElementById('welcomeView').classList.add('hidden');
+  document.getElementById('sshKeyView').classList.add('hidden');
   document.getElementById('caView').classList.remove('hidden');
   document.getElementById('caViewTitle').textContent = ca.name;
 
@@ -1415,7 +1933,366 @@ function openExternal(event, url) {
   return false;
 }
 
-loadCAs();
+function toggleSection(section) {
+  const chevron = document.getElementById(section + 'Chevron');
+  const list = document.getElementById(section === 'ca' ? 'caList' : 'sshList');
+  const isOpen = chevron.classList.contains('open');
+  chevron.classList.toggle('open', !isOpen);
+  list.style.display = isOpen ? 'none' : '';
+}
+
+async function loadSSHKeys() {
+  const res = await api('/api/ssh-keys');
+  const keys = await res.json();
+  const list = document.getElementById('sshList');
+  list.innerHTML = '';
+  document.getElementById('sshCount').textContent = keys.length;
+
+  keys.forEach(k => {
+    const li = document.createElement('li');
+    li.className = 'ssh-item' + (k.id === currentSSHKeyId ? ' active' : '');
+    const algoBadge = k.algorithm.toUpperCase().replace('-', ' ');
+    li.innerHTML = '<svg class="ssh-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg><span class="ssh-name">' +
+      escapeHtml(k.name) + '</span><span class="ca-type-badge">' + escapeHtml(algoBadge) + '</span>';
+    li.onclick = () => selectSSHKey(k.id);
+    list.appendChild(li);
+  });
+}
+
+async function selectSSHKey(keyId) {
+  currentSSHKeyId = keyId;
+  currentCAId = null;
+  const res = await api('/api/ssh-keys/' + keyId);
+  const key = await res.json();
+
+  document.getElementById('welcomeView').classList.add('hidden');
+  document.getElementById('caView').classList.add('hidden');
+  document.getElementById('sshKeyView').classList.remove('hidden');
+  document.getElementById('sshKeyViewTitle').textContent = key.name;
+
+  document.getElementById('sshKeyInfo').innerHTML =
+    infoItem('Algorithm', '<span class="badge badge-algo">' + escapeHtml(key.algorithm.toUpperCase().replace('-', ' ')) + '</span>') +
+    infoItem('Fingerprint', '<span style="font-family:monospace;font-size:11px">' + escapeHtml(key.fingerprint) + '</span>') +
+    infoItem('Comment', escapeHtml(key.comment || '(none)')) +
+    infoItem('Passphrase', key.has_passphrase ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-expired">No</span>') +
+    infoItem('Created', formatDate(key.created_at));
+
+  document.getElementById('sshPubKey').textContent = key.public_key || '';
+  document.getElementById('sshOriginalPassphrase').value = '';
+  document.getElementById('sshOriginalPassphrase').style.display = key.has_passphrase ? '' : 'none';
+  document.getElementById('sshExportPassphrase').value = '';
+
+  loadCAs();
+  loadSSHKeys();
+}
+
+function showCreateSSHKey() {
+  document.getElementById('sshKeyName').value = '';
+  document.getElementById('sshKeyAlgorithm').value = 'rsa-4096';
+  document.getElementById('sshKeyPassphrase').value = '';
+  document.getElementById('sshKeyComment').value = '';
+  showModal('createSSHKeyModal');
+  document.getElementById('sshKeyName').focus();
+}
+
+async function generateSSHKey() {
+  const name = document.getElementById('sshKeyName').value.trim();
+  if (!name) { toast('Key name is required', 'error'); return; }
+
+  try {
+    const res = await api('/api/ssh-keys', {
+      method: 'POST',
+      body: JSON.stringify({
+        name,
+        algorithm: document.getElementById('sshKeyAlgorithm').value,
+        passphrase: document.getElementById('sshKeyPassphrase').value || undefined,
+        comment: document.getElementById('sshKeyComment').value.trim() || undefined,
+      }),
+    });
+    const key = await res.json();
+    hideModal('createSSHKeyModal');
+    toast('SSH key generated: ' + key.name);
+    selectSSHKey(key.id);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function deleteSSHKey() {
+  if (!currentSSHKeyId) return;
+  if (!confirm('Delete this SSH key pair?')) return;
+  try {
+    await api('/api/ssh-keys/' + currentSSHKeyId, { method: 'DELETE' });
+    currentSSHKeyId = null;
+    document.getElementById('sshKeyView').classList.add('hidden');
+    document.getElementById('welcomeView').classList.remove('hidden');
+    toast('SSH key deleted');
+    loadSSHKeys();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function exportSSHKey() {
+  if (!currentSSHKeyId) return;
+  const part = document.getElementById('sshExportPart').value;
+  const fmt = document.getElementById('sshExportFormat').value;
+  const passphrase = document.getElementById('sshExportPassphrase').value;
+  const originalPassphrase = document.getElementById('sshOriginalPassphrase').value;
+  try {
+    const res = await api('/api/export/ssh-key/' + currentSSHKeyId, {
+      method: 'POST',
+      body: JSON.stringify({ part, format: fmt, passphrase: passphrase || undefined, original_passphrase: originalPassphrase || undefined }),
+    });
+    const result = await res.json();
+    toast('Saved to ' + result.path);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function copyPublicKey() {
+  const text = document.getElementById('sshPubKey').textContent;
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('Public key copied to clipboard');
+  } catch (e) {
+    toast('Failed to copy: ' + e.message, 'error');
+  }
+}
+
+async function copyPrivateKey() {
+  if (!currentSSHKeyId) return;
+  try {
+    const res = await api('/api/ssh-keys/' + currentSSHKeyId + '/private');
+    const data = await res.json();
+    await navigator.clipboard.writeText(data.private_key);
+    toast('Private key copied — paste into Bitwarden SSH import');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function showBackupModal() {
+  document.getElementById('backupPassword').value = '';
+  document.getElementById('backupPasswordConfirm').value = '';
+  showModal('backupModal');
+  document.getElementById('backupPassword').focus();
+}
+
+async function createBackup() {
+  const pw = document.getElementById('backupPassword').value;
+  const pw2 = document.getElementById('backupPasswordConfirm').value;
+  if (!pw) { toast('Password is required', 'error'); return; }
+  if (pw !== pw2) { toast('Passwords do not match', 'error'); return; }
+  try {
+    const res = await api('/api/backup', {
+      method: 'POST',
+      body: JSON.stringify({ password: pw }),
+    });
+    const result = await res.json();
+    hideModal('backupModal');
+    toast('Backup saved to ' + result.path);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function showRestoreModal() {
+  document.getElementById('restoreFile').value = '';
+  document.getElementById('restorePassword').value = '';
+  showModal('restoreModal');
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+async function restoreBackup() {
+  const fileInput = document.getElementById('restoreFile');
+  const pw = document.getElementById('restorePassword').value;
+  if (!fileInput.files.length) { toast('Select a backup file', 'error'); return; }
+  if (!pw) { toast('Password is required', 'error'); return; }
+  if (!confirm('This will REPLACE ALL existing data. Are you sure?')) return;
+
+  const file = fileInput.files[0];
+  const arrayBuffer = await file.arrayBuffer();
+  const base64 = arrayBufferToBase64(arrayBuffer);
+
+  try {
+    const res = await api('/api/restore', {
+      method: 'POST',
+      body: JSON.stringify({ password: pw, file_data: base64 }),
+    });
+    const result = await res.json();
+    hideModal('restoreModal');
+    toast('Restored: ' + result.counts.cas + ' CAs, ' +
+          result.counts.certs + ' certs, ' +
+          result.counts.ssh_keys + ' SSH keys');
+    currentCAId = null;
+    currentSSHKeyId = null;
+    document.getElementById('caView').classList.add('hidden');
+    document.getElementById('sshKeyView').classList.add('hidden');
+    document.getElementById('welcomeView').classList.remove('hidden');
+    loadCAs();
+    loadSSHKeys();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function showSSHGuide() {
+  showSSHGuideTab('sshguide-overview', document.querySelector('#sshGuideTabs .guide-tab'));
+  showModal('sshGuideModal');
+}
+
+function showSSHGuideTab(tabId, btn) {
+  document.querySelectorAll('#sshGuideModal .guide-content').forEach(el => el.classList.add('hidden'));
+  document.querySelectorAll('#sshGuideTabs .guide-tab').forEach(el => el.classList.remove('active'));
+  document.getElementById(tabId).classList.remove('hidden');
+  btn.classList.add('active');
+}
+
+async function checkEncryptionStatus() {
+  try {
+    const res = await api('/api/settings/encryption');
+    const status = await res.json();
+
+    if (status.enabled && !status.unlocked) {
+      document.getElementById('unlockOverlay').classList.remove('hidden');
+      document.getElementById('unlockPassword').focus();
+      return false;
+    }
+
+    if (!status.enabled && !status.dismissed) {
+      document.getElementById('encryptionBanner').classList.remove('hidden');
+    }
+
+    return true;
+  } catch (e) {
+    return true;
+  }
+}
+
+async function doUnlock() {
+  const pw = document.getElementById('unlockPassword').value;
+  if (!pw) { document.getElementById('unlockError').textContent = 'Enter your password'; return; }
+  document.getElementById('unlockError').textContent = '';
+  try {
+    await api('/api/settings/encryption/unlock', {
+      method: 'POST',
+      body: JSON.stringify({ password: pw }),
+    });
+    document.getElementById('unlockOverlay').classList.add('hidden');
+    loadCAs();
+    loadSSHKeys();
+  } catch (e) {
+    document.getElementById('unlockError').textContent = e.message;
+    document.getElementById('unlockPassword').value = '';
+    document.getElementById('unlockPassword').focus();
+  }
+}
+
+async function showEncryptionSettings() {
+  try {
+    const res = await api('/api/settings/encryption');
+    const status = await res.json();
+    if (status.enabled) {
+      document.getElementById('encryptionOff').classList.add('hidden');
+      document.getElementById('encryptionOn').classList.remove('hidden');
+      document.getElementById('encChangeOld').value = '';
+      document.getElementById('encChangeNew').value = '';
+      document.getElementById('encChangeConfirm').value = '';
+      document.getElementById('encDisablePassword').value = '';
+    } else {
+      document.getElementById('encryptionOff').classList.remove('hidden');
+      document.getElementById('encryptionOn').classList.add('hidden');
+      document.getElementById('encEnablePassword').value = '';
+      document.getElementById('encEnableConfirm').value = '';
+    }
+    showModal('encryptionModal');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function doEnableEncryption() {
+  const pw = document.getElementById('encEnablePassword').value;
+  const confirmPw = document.getElementById('encEnableConfirm').value;
+  if (!pw) { toast('Password is required', 'error'); return; }
+  if (pw !== confirmPw) { toast('Passwords do not match', 'error'); return; }
+  if (pw.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
+  try {
+    await api('/api/settings/encryption/enable', {
+      method: 'POST',
+      body: JSON.stringify({ password: pw, confirm: confirmPw }),
+    });
+    hideModal('encryptionModal');
+    document.getElementById('encryptionBanner').classList.add('hidden');
+    toast('Encryption enabled — private keys are now encrypted at rest');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function doDisableEncryption() {
+  const pw = document.getElementById('encDisablePassword').value;
+  if (!pw) { toast('Password is required', 'error'); return; }
+  if (!confirm('Disable encryption? Private keys will be stored in plaintext.')) return;
+  try {
+    await api('/api/settings/encryption/disable', {
+      method: 'POST',
+      body: JSON.stringify({ password: pw }),
+    });
+    hideModal('encryptionModal');
+    toast('Encryption disabled — private keys are now stored in plaintext');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function doChangePassword() {
+  const old_password = document.getElementById('encChangeOld').value;
+  const new_password = document.getElementById('encChangeNew').value;
+  const confirmPw = document.getElementById('encChangeConfirm').value;
+  if (!old_password || !new_password) { toast('Both passwords are required', 'error'); return; }
+  if (new_password !== confirmPw) { toast('New passwords do not match', 'error'); return; }
+  if (new_password.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
+  try {
+    await api('/api/settings/encryption/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ old_password, new_password, confirm: confirmPw }),
+    });
+    hideModal('encryptionModal');
+    toast('Master password changed');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function dismissEncryptionBanner() {
+  const permanently = document.getElementById('bannerDismissCheck').checked;
+  document.getElementById('encryptionBanner').classList.add('hidden');
+  if (permanently) {
+    try { await api('/api/settings/encryption/dismiss', { method: 'POST' }); } catch (e) {}
+  }
+}
+
+async function initApp() {
+  const ready = await checkEncryptionStatus();
+  if (ready) {
+    loadCAs();
+    loadSSHKeys();
+  }
+}
+
+initApp();
 </script>
 </body>
 </html>

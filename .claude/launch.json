@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "cert-generator",
-      "runtimeExecutable": "python",
+      "runtimeExecutable": "py",
       "runtimeArgs": ["-m", "flask", "--app", "app.server", "run", "--port", "5174"],
       "port": 5174
     }

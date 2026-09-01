@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from cryptography import x509
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import NameOID
 
@@ -545,3 +550,162 @@ def export_private_only(key_pem: bytes, fmt: str) -> tuple[bytes, str]:
         return der, "private_key.der"
 
     raise ValueError(f"Cannot export private key as {fmt}")
+
+
+SSHAlgorithm = Literal["rsa-4096", "rsa-2048", "ed25519", "ecdsa-p256", "ecdsa-p384"]
+
+SSH_ALGORITHMS: list[SSHAlgorithm] = ["rsa-4096", "ed25519", "ecdsa-p256", "ecdsa-p384", "rsa-2048"]
+
+SSH_ALGORITHM_LABELS: dict[str, str] = {
+    "rsa-4096": "RSA 4096",
+    "rsa-2048": "RSA 2048",
+    "ed25519": "Ed25519",
+    "ecdsa-p256": "ECDSA P-256",
+    "ecdsa-p384": "ECDSA P-384",
+}
+
+SSHKeyFormat = Literal["openssh", "pem"]
+
+
+def generate_ssh_key(
+    algorithm: SSHAlgorithm,
+    passphrase: str | None = None,
+    comment: str = "",
+) -> tuple[bytes, bytes, str]:
+    key = _generate_key(algorithm)
+
+    enc: serialization.KeySerializationEncryption
+    if passphrase:
+        enc = serialization.BestAvailableEncryption(passphrase.encode("utf-8"))
+    else:
+        enc = serialization.NoEncryption()
+
+    private_bytes = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.OpenSSH,
+        enc,
+    )
+
+    public_bytes = key.public_key().public_bytes(
+        serialization.Encoding.OpenSSH,
+        serialization.PublicFormat.OpenSSH,
+    )
+    if comment:
+        public_bytes = public_bytes.rstrip() + b" " + comment.encode("utf-8") + b"\n"
+
+    fingerprint = _ssh_fingerprint(key.public_key())
+
+    return private_bytes, public_bytes, fingerprint
+
+
+def export_ssh_private_key(
+    private_key_pem: bytes,
+    fmt: SSHKeyFormat,
+    passphrase: str | None = None,
+    original_passphrase: str | None = None,
+) -> tuple[bytes, str]:
+    if isinstance(private_key_pem, str):
+        private_key_pem = private_key_pem.encode("utf-8")
+    passwords_to_try: list[bytes | None] = [None, b""]
+    if original_passphrase:
+        passwords_to_try.insert(0, original_passphrase.encode("utf-8"))
+    for trial_pass in passwords_to_try:
+        try:
+            key = serialization.load_ssh_private_key(private_key_pem, password=trial_pass)
+            break
+        except (TypeError, ValueError):
+            continue
+    else:
+        raise ValueError("Cannot load private key — wrong or missing original passphrase")
+
+    enc: serialization.KeySerializationEncryption
+    if passphrase:
+        enc = serialization.BestAvailableEncryption(passphrase.encode("utf-8"))
+    else:
+        enc = serialization.NoEncryption()
+
+    if fmt == "openssh":
+        data = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.OpenSSH,
+            enc,
+        )
+        return data, "id_key"
+    if fmt == "pem":
+        data = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            enc,
+        )
+        return data, "id_key.pem"
+
+    raise ValueError(f"Unknown SSH key format: {fmt}")
+
+
+def _ssh_fingerprint(public_key) -> str:
+    raw = public_key.public_bytes(
+        serialization.Encoding.OpenSSH,
+        serialization.PublicFormat.OpenSSH,
+    )
+    key_data = raw.split(None, 1)[-1] if b" " in raw else raw
+    decoded = base64.b64decode(key_data)
+    digest = hashlib.sha256(decoded).digest()
+    b64 = base64.b64encode(digest).rstrip(b"=").decode("ascii")
+    return f"SHA256:{b64}"
+
+
+_COLUMN_ENC_PREFIX = b"ENC\x01"
+
+
+def derive_master_key(password: str, salt: bytes) -> bytes:
+    kdf = Scrypt(salt=salt, length=32, n=2**17, r=8, p=1)
+    return kdf.derive(password.encode("utf-8"))
+
+
+def encrypt_column(data: bytes, key: bytes) -> bytes:
+    if data.startswith(_COLUMN_ENC_PREFIX):
+        return data
+    nonce = secrets.token_bytes(12)
+    ciphertext = AESGCM(key).encrypt(nonce, data, None)
+    return _COLUMN_ENC_PREFIX + nonce + ciphertext
+
+
+def decrypt_column(data: bytes, key: bytes) -> bytes:
+    if not data.startswith(_COLUMN_ENC_PREFIX):
+        return data
+    nonce = data[4:16]
+    ciphertext = data[16:]
+    return AESGCM(key).decrypt(nonce, ciphertext, None)
+
+
+def is_column_encrypted(data: bytes) -> bool:
+    return isinstance(data, bytes) and data.startswith(_COLUMN_ENC_PREFIX)
+
+
+_BACKUP_MAGIC = b"CERTBAK"
+_BACKUP_VERSION = 1
+
+
+def encrypt_backup(plaintext: bytes, password: str) -> bytes:
+    salt = secrets.token_bytes(32)
+    kdf = Scrypt(salt=salt, length=32, n=2**17, r=8, p=1)
+    key = kdf.derive(password.encode("utf-8"))
+    nonce = secrets.token_bytes(12)
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext, None)
+    return _BACKUP_MAGIC + bytes([_BACKUP_VERSION]) + salt + nonce + ciphertext
+
+
+def decrypt_backup(data: bytes, password: str) -> bytes:
+    if len(data) < 52 or data[:7] != _BACKUP_MAGIC:
+        raise ValueError("Not a valid backup file")
+    if data[7] != _BACKUP_VERSION:
+        raise ValueError("Unsupported backup version")
+    salt = data[8:40]
+    nonce = data[40:52]
+    ciphertext = data[52:]
+    kdf = Scrypt(salt=salt, length=32, n=2**17, r=8, p=1)
+    key = kdf.derive(password.encode("utf-8"))
+    try:
+        return AESGCM(key).decrypt(nonce, ciphertext, None)
+    except InvalidTag:
+        raise ValueError("Wrong password or corrupted backup")

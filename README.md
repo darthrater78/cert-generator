@@ -17,6 +17,10 @@ A Windows desktop tool for creating Certificate Authorities and issuing self-sig
 - **Modern crypto algorithms** — Ed25519, ECDSA P-256, ECDSA P-384, RSA-2048, RSA-4096
 - **Revoke certificates** to mark them as no longer trusted
 - **Offline CRL generation** — optionally embed a CRL Distribution Point in issued certificates and export a signed CRL file for manual import into Windows certificate stores, providing offline revocation status without a live server
+- **SSH key generation** — generate Ed25519, ECDSA P-256/P-384, and RSA-2048/4096 SSH key pairs with optional passphrase protection
+- **SSH key export** — download private keys in OpenSSH or PEM (PKCS#8) format, copy public keys, or copy private keys for Bitwarden SSH import
+- **Database encryption** — encrypt all private keys at rest with AES-256-GCM using a master password derived via Scrypt; unlock screen on startup when enabled
+- **Backup and restore** — export all data (CAs, certificates, SSH keys) to an AES-256 encrypted `.certbak` file; restore replaces all data from a backup
 - **Native Windows app** — runs as a desktop window via pywebview, no browser needed
 - **Standalone EXE** — package as a single-file Windows executable, no Python required to run it
 
@@ -58,7 +62,7 @@ This opens a native window with the full UI.
 flask --app app.server run --port 5174
 ```
 
-Then open `http://localhost:5174` in your browser.
+Then open `http://localhost:5174` in your browser. The development server does not enforce app token authentication, so it is accessible from any browser. Do not use this mode in production.
 
 ## Server hardening
 
@@ -66,6 +70,7 @@ The embedded web server is hardened for desktop use:
 
 - **Loopback only** — binds to `127.0.0.1`, never exposed to the network
 - **Random port** — uses an ephemeral port each launch, not a fixed port
+- **App token authentication** — a random token is generated at startup and set as an httpOnly cookie via the pywebview window; requests without the cookie are rejected with 403, preventing access from other browsers on the same machine
 - **CSRF protection** — POST/DELETE/PUT requests must originate from the bound address
 - **Auto-shutdown** — the server thread is daemonic and shuts down when the window closes
 - **Clean exit** — `sys.exit(0)` after the UI closes ensures proper cleanup
@@ -73,10 +78,11 @@ The embedded web server is hardened for desktop use:
 ### Quick start
 
 1. Launch the app
-2. Click **+ New CA** and enter a domain name (e.g. `example.com`) and lifetime
+2. Click **+ CA** and enter a domain name (e.g. `example.com`) and lifetime
 3. Select your CA in the sidebar
 4. Click **+ Issue Certificate** to generate leaf certs
 5. Use **Export** to download certificates in your preferred format
+6. Click **+ SSH Key** to generate an SSH key pair
 
 ## Supported algorithms
 
@@ -105,9 +111,20 @@ Export options per certificate:
 
 ## Data storage
 
-All CAs and certificates are stored in a SQLite database at `~/.cert-generator/certs.db`. The directory is created with restrictive permissions (owner-only access).
+All CAs, certificates, and SSH keys are stored in a SQLite database at `~/.cert-generator/certs.db`. The directory is created with restrictive permissions (owner-only access). When database encryption is enabled, all private keys are encrypted at rest with AES-256-GCM using a master password.
 
 ## Version history
+
+### v1.4.0 — 2026-09-01
+
+- **SSH key management** — generate, store, export, and copy SSH key pairs (RSA 4096/2048, Ed25519, ECDSA P-256/P-384) with optional passphrase protection; in-app SSH guide with tabs for Bitwarden, Linux/macOS, Windows, and GitHub/GitLab
+- **Database encryption at rest** — encrypt all private keys (CA, certificate, and SSH) with AES-256-GCM using a master password derived via Scrypt; unlock screen on startup, password change, and disable/re-enable support
+- **Backup and restore** — export all CAs, certificates, and SSH keys to a single AES-256 encrypted `.certbak` file; restore replaces all data from a backup
+- **App token authentication** — the pywebview app now generates a random session token and sets it as an httpOnly cookie, rejecting requests from any other browser on the same machine
+- **Collapsible sidebar sections** — Certificate Authorities and SSH Keys sections can be collapsed/expanded, with item counts
+- Added `bcrypt` dependency (required by `cryptography` for SSH key passphrase encryption)
+- Upgraded `cryptography` from 44.0.3 to 50.0.1 (8 CVE fixes)
+- Upgraded `flask` from 3.1.1 to 3.1.3 (1 CVE fix)
 
 ### v1.3.0 — 2026-08-31
 
