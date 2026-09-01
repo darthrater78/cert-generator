@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 import socket
 import sys
 import threading
@@ -9,7 +10,7 @@ import webview
 from werkzeug.serving import make_server
 
 from .db import init_db
-from .server import app, set_bound_port
+from .server import app, set_app_token, set_bound_port
 
 ALLOWED_EXTERNAL_HOSTS = {"github.com"}
 
@@ -34,7 +35,9 @@ def main() -> None:
     init_db()
 
     port = _find_free_port()
+    token = secrets.token_urlsafe(32)
     set_bound_port(port)
+    set_app_token(token)
 
     server = make_server("127.0.0.1", port, app, threaded=True)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -45,7 +48,7 @@ def main() -> None:
 
     window = webview.create_window(
         "Cert Generator",
-        f"http://127.0.0.1:{port}",
+        f"http://127.0.0.1:{port}/_auth?token={token}",
         width=1100,
         height=720,
         min_size=(800, 500),

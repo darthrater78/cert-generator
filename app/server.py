@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import io
+import json
 import re
 import secrets
 from pathlib import Path
@@ -15,11 +17,17 @@ VALID_CERT_PARTS = ("both", "public", "private", "chain")
 DOMAIN_RE = re.compile(r"^[\w.*-]{1,253}$")
 
 _bound_port: int | None = None
+_app_token: str | None = None
 
 
 def set_bound_port(port: int) -> None:
     global _bound_port
     _bound_port = port
+
+
+def set_app_token(token: str) -> None:
+    global _app_token
+    _app_token = token
 
 
 app = Flask(
@@ -34,7 +42,10 @@ with app.app_context():
 
 
 @app.before_request
-def _csrf_check() -> Response | None:
+def _auth_check() -> Response | None:
+    if _app_token is not None and request.path != "/_auth":
+        if request.cookies.get("_app_token") != _app_token:
+            return Response("Forbidden", status=403, content_type="text/plain")
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return None
     origin = request.headers.get("Origin", "")
@@ -44,6 +55,20 @@ def _csrf_check() -> Response | None:
     if f"127.0.0.1:{port}" not in origin and f"localhost:{port}" not in origin:
         return jsonify({"error": "Forbidden"}), 403
     return None
+
+
+@app.get("/_auth")
+def _auth_set_cookie() -> Response:
+    if _app_token is None:
+        return Response("Not in app mode", status=404)
+    token = request.args.get("token", "")
+    if token != _app_token:
+        return Response("Forbidden", status=403)
+    resp = app.make_response("")
+    resp.status_code = 302
+    resp.headers["Location"] = "/"
+    resp.set_cookie("_app_token", _app_token, httponly=True, samesite="Strict")
+    return resp
 
 
 def _parse_int(value, default: int) -> int | None:
@@ -390,3 +415,219 @@ def export_cert(cert_id: int):
 
     saved = _save_export(export_data, f"{cert['common_name']}-{filename}")
     return jsonify({"path": saved})
+
+
+VALID_SSH_FORMATS = ("openssh", "pem")
+
+
+@app.get("/api/ssh-keys")
+def list_ssh_keys():
+    return jsonify(db.list_ssh_keys())
+
+
+@app.get("/api/ssh-keys/<int:key_id>")
+def get_ssh_key(key_id: int):
+    key = db.get_ssh_key(key_id)
+    if not key:
+        return jsonify({"error": "SSH key not found"}), 404
+    safe = {k: v for k, v in key.items() if k != "private_key"}
+    safe["public_key"] = key["public_key"].decode("utf-8") if isinstance(key["public_key"], bytes) else key["public_key"]
+    return jsonify(safe)
+
+
+@app.post("/api/ssh-keys")
+def create_ssh_key():
+    data = request.get_json()
+    name: str = data.get("name", "").strip()
+    algorithm: str = data.get("algorithm", "rsa-4096")
+    comment: str = data.get("comment", "").strip()
+    passphrase: str = data.get("passphrase", "").strip() or None
+
+    if not name or len(name) > 200:
+        return jsonify({"error": "A name is required (max 200 chars)"}), 400
+    if algorithm not in crypto_engine.SSH_ALGORITHMS:
+        return jsonify({"error": f"Invalid algorithm. Choose from: {crypto_engine.SSH_ALGORITHMS}"}), 400
+
+    private_bytes, public_bytes, fingerprint = crypto_engine.generate_ssh_key(
+        algorithm=algorithm,
+        passphrase=passphrase,
+        comment=comment,
+    )
+
+    key_id = db.save_ssh_key(
+        name=name,
+        algorithm=algorithm,
+        comment=comment,
+        fingerprint=fingerprint,
+        public_key=public_bytes,
+        private_key=private_bytes,
+        has_passphrase=bool(passphrase),
+    )
+
+    return jsonify({"id": key_id, "name": name, "fingerprint": fingerprint}), 201
+
+
+@app.delete("/api/ssh-keys/<int:key_id>")
+def delete_ssh_key(key_id: int):
+    if db.delete_ssh_key(key_id):
+        return jsonify({"ok": True})
+    return jsonify({"error": "SSH key not found"}), 404
+
+
+@app.post("/api/export/ssh-key/<int:key_id>")
+def export_ssh_key(key_id: int):
+    key = db.get_ssh_key(key_id)
+    if not key:
+        return jsonify({"error": "SSH key not found"}), 404
+
+    data = request.get_json()
+    part = data.get("part", "private")
+    fmt = data.get("format", "openssh")
+    passphrase = data.get("passphrase", "").strip() or None
+    original_passphrase = data.get("original_passphrase", "").strip() or None
+
+    if part == "public":
+        pub = key["public_key"]
+        if isinstance(pub, str):
+            pub = pub.encode("utf-8")
+        safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', key["name"])
+        saved = _save_export(pub, f"{safe_name}.pub")
+        return jsonify({"path": saved})
+
+    if fmt not in VALID_SSH_FORMATS:
+        return jsonify({"error": f"Invalid format. Choose from: {VALID_SSH_FORMATS}"}), 400
+
+    export_data, filename = crypto_engine.export_ssh_private_key(
+        key["private_key"], fmt, passphrase=passphrase,
+        original_passphrase=original_passphrase,
+    )
+    safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', key["name"])
+    saved = _save_export(export_data, f"{safe_name}-{filename}")
+    return jsonify({"path": saved})
+
+
+@app.get("/api/ssh-keys/<int:key_id>/private")
+def get_ssh_private_key(key_id: int):
+    key = db.get_ssh_key(key_id)
+    if not key:
+        return jsonify({"error": "SSH key not found"}), 404
+    priv = key["private_key"]
+    if isinstance(priv, bytes):
+        priv = priv.decode("utf-8")
+    return jsonify({"private_key": priv})
+
+
+@app.get("/api/settings/encryption")
+def get_encryption_status():
+    enabled = db.is_encryption_enabled()
+    unlocked = db._master_key is not None
+    dismissed = db.get_setting("encryption_dismissed") is not None
+    return jsonify({"enabled": enabled, "unlocked": unlocked or not enabled, "dismissed": dismissed})
+
+
+@app.post("/api/settings/encryption/enable")
+def enable_encryption():
+    data = request.get_json()
+    password = (data.get("password") or "").strip()
+    confirm = (data.get("confirm") or "").strip()
+    if not password:
+        return jsonify({"error": "Password is required"}), 400
+    if password != confirm:
+        return jsonify({"error": "Passwords do not match"}), 400
+    if len(password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
+    try:
+        db.enable_encryption(password)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True})
+
+
+@app.post("/api/settings/encryption/disable")
+def disable_encryption():
+    data = request.get_json()
+    password = (data.get("password") or "").strip()
+    if not password:
+        return jsonify({"error": "Password is required"}), 400
+    try:
+        db.disable_encryption(password)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True})
+
+
+@app.post("/api/settings/encryption/unlock")
+def unlock_encryption():
+    data = request.get_json()
+    password = (data.get("password") or "").strip()
+    if not password:
+        return jsonify({"error": "Password is required"}), 400
+    if db.unlock(password):
+        return jsonify({"ok": True})
+    return jsonify({"error": "Wrong password"}), 400
+
+
+@app.post("/api/settings/encryption/change-password")
+def change_encryption_password():
+    data = request.get_json()
+    old_password = (data.get("old_password") or "").strip()
+    new_password = (data.get("new_password") or "").strip()
+    confirm = (data.get("confirm") or "").strip()
+    if not old_password or not new_password:
+        return jsonify({"error": "Both passwords are required"}), 400
+    if new_password != confirm:
+        return jsonify({"error": "New passwords do not match"}), 400
+    if len(new_password) < 8:
+        return jsonify({"error": "Password must be at least 8 characters"}), 400
+    try:
+        db.change_password(old_password, new_password)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True})
+
+
+@app.post("/api/settings/encryption/dismiss")
+def dismiss_encryption_prompt():
+    db.set_setting("encryption_dismissed", b"1")
+    return jsonify({"ok": True})
+
+
+@app.post("/api/backup")
+def create_backup():
+    data = request.get_json()
+    password = (data.get("password") or "").strip()
+    if not password:
+        return jsonify({"error": "Password is required"}), 400
+    export = db.export_all_data()
+    plaintext = json.dumps(export).encode("utf-8")
+    encrypted = crypto_engine.encrypt_backup(plaintext, password)
+    saved = _save_export(encrypted, "cert-generator-backup.certbak")
+    return jsonify({"path": saved})
+
+
+@app.post("/api/restore")
+def restore_backup():
+    data = request.get_json()
+    password = (data.get("password") or "").strip()
+    file_data = data.get("file_data", "")
+    if not password:
+        return jsonify({"error": "Password is required"}), 400
+    if not file_data:
+        return jsonify({"error": "No backup file provided"}), 400
+    try:
+        raw = base64.b64decode(file_data)
+    except Exception:
+        return jsonify({"error": "Invalid file data"}), 400
+    try:
+        plaintext = crypto_engine.decrypt_backup(raw, password)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    try:
+        backup = json.loads(plaintext)
+    except json.JSONDecodeError:
+        return jsonify({"error": "Corrupted backup data"}), 400
+    try:
+        counts = db.import_all_data(backup)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "counts": counts})
