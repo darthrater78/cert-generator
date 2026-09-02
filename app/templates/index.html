@@ -277,7 +277,15 @@ body {
 .info-item span {
   font-size: 14px;
   font-weight: 500;
+  overflow-wrap: break-word;
+  word-break: break-all;
 }
+.serial-toggle {
+  cursor: pointer;
+  font-family: monospace;
+  font-size: 11px;
+}
+.serial-toggle:hover { color: var(--accent); }
 
 .export-section {
   display: flex;
@@ -1635,7 +1643,7 @@ async function selectCA(caId) {
     infoItem('Type', typeBadge) +
     infoItem('Domain', escapeHtml(ca.domain)) +
     infoItem('Algorithm', '<span class="badge badge-algo">' + escapeHtml(ca.algorithm) + '</span>') +
-    infoItem('Serial', escapeHtml(ca.serial.substring(0, 16)) + '...') +
+    infoItem('Serial', serialToggle(ca.serial)) +
     infoItem('Created', formatDate(ca.not_before)) +
     infoItem('Expires', formatDate(ca.not_after)) +
     infoItem('Status', expired
@@ -1911,6 +1919,18 @@ document.getElementById('certExportPart').addEventListener('change', updateCertP
 
 function infoItem(label, value) {
   return '<div class="info-item"><label>' + label + '</label><span>' + value + '</span></div>';
+}
+
+function serialToggle(serial) {
+  const esc = escapeHtml(serial);
+  const short = escapeHtml(serial.substring(0, 16)) + '…';
+  return '<span class="serial-toggle" data-full="' + esc + '" data-short="' + escapeHtml(short) + '" onclick="toggleSerial(this)" title="Click to expand">' + short + '</span>';
+}
+
+function toggleSerial(el) {
+  const expanded = el.dataset.expanded === '1';
+  el.textContent = expanded ? el.dataset.short : el.dataset.full;
+  el.dataset.expanded = expanded ? '' : '1';
 }
 
 function formatDate(iso) {

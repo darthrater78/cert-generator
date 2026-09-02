@@ -3,14 +3,18 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import os
 import re
 import secrets
+import time
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, session
 
 from . import crypto_engine, db
+
+log = logging.getLogger("cert-generator")
 
 VALID_FORMATS = ("pem", "der", "crt", "pkcs12")
 VALID_CA_PARTS = ("both", "public", "private")
@@ -43,6 +47,20 @@ with app.app_context():
 
 
 _PUBLIC_PATHS = {"/login", "/setup", "/logout", "/favicon.ico"}
+
+
+@app.before_request
+def _start_timer():
+    request._start_time = time.monotonic()
+
+
+@app.after_request
+def _log_request(response):
+    if request.path.startswith("/static/"):
+        return response
+    duration_ms = (time.monotonic() - getattr(request, "_start_time", time.monotonic())) * 1000
+    log.info("%s %s %s %.0fms", request.method, request.path, response.status_code, duration_ms)
+    return response
 
 
 @app.before_request
@@ -105,6 +123,7 @@ def login():
     if not db.verify_user(username, password):
         return render_template("login.html", error="Invalid username or password")
     session["user"] = username
+    log.info("User logged in: %s", username)
     return redirect("/")
 
 
@@ -125,6 +144,7 @@ def setup():
         return render_template("setup.html", error="Passwords do not match", username=username)
     db.create_user(username, password)
     session["user"] = username
+    log.info("Admin account created: %s", username)
     return redirect("/")
 
 
@@ -215,6 +235,7 @@ def create_ca():
         key_pem=key_pem,
     )
 
+    log.info("CA created: %s (domain=%s, algo=%s)", name, domain, algorithm)
     return jsonify({"id": ca_id, "name": name, "domain": domain, "serial": serial}), 201
 
 
@@ -238,6 +259,7 @@ def get_ca(ca_id: int):
 @app.delete("/api/ca/<int:ca_id>")
 def delete_ca(ca_id: int):
     if db.delete_ca(ca_id):
+        log.info("CA deleted: id=%d", ca_id)
         return jsonify({"ok": True})
     return jsonify({"error": "CA not found"}), 404
 
@@ -286,6 +308,7 @@ def create_intermediate(ca_id: int):
         parent_ca_id=ca_id,
     )
 
+    log.info("Intermediate CA created: %s (parent=%d, algo=%s)", name, ca_id, algorithm)
     return jsonify({"id": ca_id_new, "name": name, "domain": domain, "serial": serial}), 201
 
 
@@ -347,6 +370,7 @@ def issue_cert(ca_id: int):
         key_pem=key_pem,
     )
 
+    log.info("Certificate issued: %s (ca=%d, template=%s, algo=%s)", common_name, ca_id, template, algorithm)
     return jsonify({"id": cert_id, "common_name": common_name, "serial": serial}), 201
 
 
@@ -372,6 +396,7 @@ def get_cert(cert_id: int):
 @app.post("/api/certs/<int:cert_id>/revoke")
 def revoke_cert(cert_id: int):
     if db.revoke_cert(cert_id):
+        log.info("Certificate revoked: id=%d", cert_id)
         return jsonify({"ok": True, "note": "Re-export the CA's CRL to update revocation status on endpoints."})
     return jsonify({"error": "Certificate not found or already revoked"}), 404
 
@@ -398,6 +423,7 @@ def download_crl(ca_id: int):
 @app.delete("/api/certs/<int:cert_id>")
 def delete_cert(cert_id: int):
     if db.delete_cert(cert_id):
+        log.info("Certificate deleted: id=%d", cert_id)
         return jsonify({"ok": True})
     return jsonify({"error": "Certificate not found"}), 404
 
@@ -545,12 +571,14 @@ def create_ssh_key():
         has_passphrase=bool(passphrase),
     )
 
+    log.info("SSH key generated: %s (algo=%s)", name, algorithm)
     return jsonify({"id": key_id, "name": name, "fingerprint": fingerprint}), 201
 
 
 @app.delete("/api/ssh-keys/<int:key_id>")
 def delete_ssh_key(key_id: int):
     if db.delete_ssh_key(key_id):
+        log.info("SSH key deleted: id=%d", key_id)
         return jsonify({"ok": True})
     return jsonify({"error": "SSH key not found"}), 404
 
@@ -683,6 +711,7 @@ def create_backup():
     plaintext = json.dumps(export).encode("utf-8")
     encrypted = crypto_engine.encrypt_backup(plaintext, password)
     saved = _save_export(encrypted, "cert-generator-backup.certbak")
+    log.info("Backup created: %s", saved)
     return jsonify({"path": saved})
 
 
@@ -711,4 +740,5 @@ def restore_backup():
         counts = db.import_all_data(backup)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+    log.info("Backup restored: %s", counts)
     return jsonify({"ok": True, "counts": counts})
