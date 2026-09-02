@@ -172,6 +172,15 @@ The database format is identical in both modes. Use **Backup** to create an encr
 
 ## Version history
 
+### v1.5.1 — 2026-09-02
+
+- **Structured logging** — request logging (method, path, status, duration) and operation logging (CA/cert/SSH key create/delete, login, backup/restore); configurable via `LOG_LEVEL` environment variable
+- **Expandable serial numbers** — click to expand/collapse full serial in the CA details view
+- Fixed SSH key details grid overflow — fingerprint and long values now wrap properly
+- Fixed `python` → `python3` in SECRET_KEY generation command (compose and README)
+- Uncommented `SECRET_KEY` in compose since login is on by default
+- Rewrote README to clarify Docker and desktop as equal deployment options with full feature parity and portable backups
+
 ### v1.5.0 — 2026-09-02
 
 - **Docker deployment** — run as a web server with `docker compose up`, GitHub Actions CI builds and pushes to GHCR on every version tag; non-root container with `no-new-privileges`
