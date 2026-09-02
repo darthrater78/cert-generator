@@ -1,0 +1,26 @@
+# Cert Generator — Docker Compose
+# Before starting, create the data directory:
+#   sudo mkdir -p /opt/docker/cert-generator
+#   sudo chmod 700 /opt/docker/cert-generator
+#   sudo chown 1000:1000 /opt/docker/cert-generator
+
+services:
+  cert-generator:
+    image: ghcr.io/darthrater78/cert-generator:latest
+    container_name: cert-generator
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "5000:5000"
+    volumes:
+      - /opt/docker/cert-generator:/data
+    environment:
+      - TZ=America/New_York
+      - PORT=5000
+      # Uncomment if you enable login authentication. SECRET_KEY signs session
+      # cookies — without it, a random key is generated on each startup and
+      # users must re-login after a container restart. Generate a key once:
+      #   python -c "import secrets; print(secrets.token_hex(32))"
+      # Then set it in a .env file next to this compose file.
+      #- SECRET_KEY=${SECRET_KEY}
