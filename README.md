@@ -21,64 +21,112 @@ A Windows desktop tool for creating Certificate Authorities and issuing self-sig
 - **SSH key export** — download private keys in OpenSSH or PEM (PKCS#8) format, copy public keys, or copy private keys for Bitwarden SSH import
 - **Database encryption** — encrypt all private keys at rest with AES-256-GCM using a master password derived via Scrypt; unlock screen on startup when enabled
 - **Backup and restore** — export all data (CAs, certificates, SSH keys) to an AES-256 encrypted `.certbak` file; restore replaces all data from a backup
+- **Docker deployment** — run as a web server in Docker with login authentication, persistent volumes, and browser-based file downloads
+- **Login authentication** — opt-in username/password login for server mode (first-launch setup, bcrypt-hashed passwords, session-based auth)
 - **Native Windows app** — runs as a desktop window via pywebview, no browser needed
 - **Standalone EXE** — package as a single-file Windows executable, no Python required to run it
 
 ## Requirements
 
 - Python 3.10+
-- Windows 10/11
+- Windows 10/11 (desktop app) or Docker (server mode)
 
 ## Installation
 
 ```bash
-pip install -r requirements.txt
+pip install .
+```
+
+For the desktop app (pywebview), install with the desktop extra:
+
+```bash
+pip install ".[desktop]"
 ```
 
 ## Usage
 
-### Standalone EXE (recommended)
+### Docker (recommended for server deployment)
 
-Build a single-file Windows EXE:
+```bash
+docker compose up -d
+```
+
+Open `http://localhost:5000` in your browser. On first launch you'll be prompted to create an admin account. All data is persisted in Docker volumes.
+
+To set a stable session secret (recommended for production — without this, sessions are lost on container restart):
+
+```bash
+SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))") docker compose up -d
+```
+
+### Standalone EXE (recommended for desktop)
+
+Download `CertGenerator.exe` from the [latest release](https://github.com/darthrater78/cert-generator/releases/latest). Double-click to run — no Python installation needed.
+
+To build from source:
 
 ```bash
 pip install pyinstaller
 python build.py
 ```
 
-The EXE is written to `dist/CertGenerator.exe`. Double-click to run — no Python installation needed on the target machine.
-
 ### Desktop app (from source)
 
 ```bash
+pip install ".[desktop]"
 python -m app.main
 ```
 
-This opens a native window with the full UI.
+This opens a native window with the full UI. App token authentication is handled automatically.
 
-### Development server (browser)
+### Server mode (without Docker)
+
+```bash
+pip install .
+python -m app.serve
+```
+
+Opens on `http://0.0.0.0:5000`. Configure with environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `5000` | Server port |
+| `HOST` | `0.0.0.0` | Bind address |
+| `SECRET_KEY` | random | Session secret (set for persistent sessions) |
+| `DB_DIR` | `~/.cert-generator` | Database directory |
+| `EXPORT_DIR` | `~/Downloads` | Export download directory |
+
+### Development server
 
 ```bash
 flask --app app.server run --port 5174
 ```
 
-Then open `http://localhost:5174` in your browser. The development server does not enforce app token authentication, so it is accessible from any browser. Do not use this mode in production.
+Then open `http://localhost:5174` in your browser. Login is required (same as server mode).
 
 ## Server hardening
 
-The embedded web server is hardened for desktop use:
+The embedded web server is hardened for both desktop and server use:
 
+**Desktop mode (pywebview):**
 - **Loopback only** — binds to `127.0.0.1`, never exposed to the network
 - **Random port** — uses an ephemeral port each launch, not a fixed port
 - **App token authentication** — a random token is generated at startup and set as an httpOnly cookie via the pywebview window; requests without the cookie are rejected with 403, preventing access from other browsers on the same machine
-- **CSRF protection** — POST/DELETE/PUT requests must originate from the bound address
 - **Auto-shutdown** — the server thread is daemonic and shuts down when the window closes
+
+**Server mode (Docker / standalone):**
+- **Login authentication** — on first launch, you create an admin account; all subsequent access requires sign-in with username and password (bcrypt-hashed, session-based)
+- **Session cookies** — httpOnly, signed with `SECRET_KEY`
+
+**Both modes:**
+- **CSRF protection** — POST/DELETE/PUT requests must originate from the bound address (desktop) or carry a valid session (server)
 - **Clean exit** — `sys.exit(0)` after the UI closes ensures proper cleanup
 
 ### Quick start
 
-1. Launch the app
-2. Click **+ CA** and enter a domain name (e.g. `example.com`) and lifetime
+1. Launch the app (Docker: `docker compose up -d`, Desktop: run `CertGenerator.exe`)
+2. Server mode: create your admin account on first launch, then sign in
+3. Click **+ CA** and enter a domain name (e.g. `example.com`) and lifetime
 3. Select your CA in the sidebar
 4. Click **+ Issue Certificate** to generate leaf certs
 5. Use **Export** to download certificates in your preferred format
@@ -111,9 +159,18 @@ Export options per certificate:
 
 ## Data storage
 
-All CAs, certificates, and SSH keys are stored in a SQLite database at `~/.cert-generator/certs.db`. The directory is created with restrictive permissions (owner-only access). When database encryption is enabled, all private keys are encrypted at rest with AES-256-GCM using a master password.
+All CAs, certificates, and SSH keys are stored in a SQLite database at `~/.cert-generator/certs.db` (desktop) or `/data/db/certs.db` (Docker). The directory is created with restrictive permissions (owner-only access). When database encryption is enabled, all private keys are encrypted at rest with AES-256-GCM using a master password. In Docker, the database and exports are stored under `/data`, mapped to `/opt/docker/cert-generator` on the host.
 
 ## Version history
+
+### v1.5.0 — 2026-09-02
+
+- **Docker deployment** — run as a web server with `docker compose up`, GitHub Actions CI builds and pushes to GHCR on every version tag; non-root container with `no-new-privileges`
+- **Login authentication** — opt-in username/password login for server mode; first launch prompts for admin account creation, bcrypt-hashed passwords, Flask session-based auth
+- **Server mode** — production WSGI entry point (`python -m app.serve`) using Waitress; configurable via `PORT`, `HOST`, `SECRET_KEY`, `DB_DIR`, `EXPORT_DIR` environment variables
+- **Browser downloads** — exports in server mode trigger browser file downloads instead of saving to the local filesystem
+- Moved `pywebview` to an optional `[desktop]` extra — server/Docker installs don't pull GUI dependencies
+- Added `waitress` dependency for production WSGI serving
 
 ### v1.4.0 — 2026-09-01
 

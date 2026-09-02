@@ -3,11 +3,12 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import re
 import secrets
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, session
 
 from . import crypto_engine, db
 
@@ -35,25 +36,45 @@ app = Flask(
     template_folder=str(Path(__file__).parent / "templates"),
     static_folder=str(Path(__file__).parent / "static"),
 )
-app.secret_key = secrets.token_hex(32)
+app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 
 with app.app_context():
     db.init_db()
 
 
+_PUBLIC_PATHS = {"/login", "/setup", "/logout", "/favicon.ico"}
+
+
 @app.before_request
 def _auth_check() -> Response | None:
-    if _app_token is not None and request.path != "/_auth":
+    # --- pywebview mode: app token auth ---
+    if _app_token is not None:
+        if request.path == "/_auth":
+            return None
         if request.cookies.get("_app_token") != _app_token:
             return Response("Forbidden", status=403, content_type="text/plain")
-    if request.method in ("GET", "HEAD", "OPTIONS"):
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            origin = request.headers.get("Origin", "")
+            if origin:
+                port = _bound_port or 5174
+                if f"127.0.0.1:{port}" not in origin and f"localhost:{port}" not in origin:
+                    return jsonify({"error": "Forbidden"}), 403
         return None
-    origin = request.headers.get("Origin", "")
-    if not origin:
+
+    # --- server mode: session auth ---
+    if request.path in _PUBLIC_PATHS or request.path.startswith("/static/"):
         return None
-    port = _bound_port or 5174
-    if f"127.0.0.1:{port}" not in origin and f"localhost:{port}" not in origin:
-        return jsonify({"error": "Forbidden"}), 403
+
+    if not db.has_users():
+        if request.path != "/setup":
+            return redirect("/setup")
+        return None
+
+    if not session.get("user"):
+        if request.path.startswith("/api/"):
+            return Response("Unauthorized", status=401, content_type="text/plain")
+        return redirect("/login")
+
     return None
 
 
@@ -71,6 +92,62 @@ def _auth_set_cookie() -> Response:
     return resp
 
 
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if _app_token is not None:
+        return redirect("/")
+    if request.method == "GET":
+        return render_template("login.html", error=None)
+    username = (request.form.get("username") or "").strip()
+    password = request.form.get("password") or ""
+    if not username or not password:
+        return render_template("login.html", error="Username and password are required")
+    if not db.verify_user(username, password):
+        return render_template("login.html", error="Invalid username or password")
+    session["user"] = username
+    return redirect("/")
+
+
+@app.route("/setup", methods=["GET", "POST"])
+def setup():
+    if _app_token is not None or db.has_users():
+        return redirect("/")
+    if request.method == "GET":
+        return render_template("setup.html", error=None, username=None)
+    username = (request.form.get("username") or "").strip()
+    password = request.form.get("password") or ""
+    confirm = request.form.get("confirm") or ""
+    if not username or len(username) > 100:
+        return render_template("setup.html", error="Username is required (max 100 chars)", username=username)
+    if len(password) < 8:
+        return render_template("setup.html", error="Password must be at least 8 characters", username=username)
+    if password != confirm:
+        return render_template("setup.html", error="Passwords do not match", username=username)
+    db.create_user(username, password)
+    session["user"] = username
+    return redirect("/")
+
+
+@app.route("/logout", methods=["POST", "GET"])
+def logout():
+    session.clear()
+    return redirect("/login")
+
+
+@app.get("/api/download")
+def download_file():
+    path = request.args.get("path", "")
+    if not path:
+        return jsonify({"error": "No path specified"}), 400
+    file_path = Path(path).resolve()
+    export_dir = _downloads_dir().resolve()
+    if not str(file_path).startswith(str(export_dir)):
+        return jsonify({"error": "Access denied"}), 403
+    if not file_path.is_file():
+        return jsonify({"error": "File not found"}), 404
+    return send_file(file_path, as_attachment=True)
+
+
 def _parse_int(value, default: int) -> int | None:
     try:
         return int(value) if value is not None else default
@@ -80,7 +157,11 @@ def _parse_int(value, default: int) -> int | None:
 
 @app.get("/")
 def index():
-    return render_template("index.html")
+    return render_template(
+        "index.html",
+        server_mode=_app_token is None,
+        username=session.get("user") if _app_token is None else None,
+    )
 
 
 @app.get("/api/algorithms")
@@ -322,8 +403,8 @@ def delete_cert(cert_id: int):
 
 
 def _downloads_dir() -> Path:
-    downloads = Path.home() / "Downloads"
-    downloads.mkdir(exist_ok=True)
+    downloads = Path(os.environ.get("EXPORT_DIR", str(Path.home() / "Downloads")))
+    downloads.mkdir(parents=True, exist_ok=True)
     return downloads
 
 

@@ -6,6 +6,12 @@
       "runtimeExecutable": "py",
       "runtimeArgs": ["-m", "flask", "--app", "app.server", "run", "--port", "5174"],
       "port": 5174
+    },
+    {
+      "name": "cert-generator-server",
+      "runtimeExecutable": "py",
+      "runtimeArgs": ["-m", "app.serve"],
+      "port": 5000
     }
   ]
 }

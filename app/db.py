@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import secrets
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import bcrypt as _bcrypt
+
 from . import crypto_engine
 
 
-DB_DIR = Path.home() / ".cert-generator"
+DB_DIR = Path(os.environ.get("DB_DIR", str(Path.home() / ".cert-generator")))
 DB_PATH = DB_DIR / "certs.db"
 
 _SCHEMA = """
@@ -44,6 +47,13 @@ CREATE TABLE IF NOT EXISTS ssh_keys (
 CREATE TABLE IF NOT EXISTS app_settings (
     key   TEXT PRIMARY KEY,
     value BLOB
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT    NOT NULL UNIQUE,
+    password_hash TEXT    NOT NULL,
+    created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
 CREATE TABLE IF NOT EXISTS certificates (
@@ -471,3 +481,29 @@ def import_all_data(data: dict[str, Any]) -> dict[str, int]:
         "ssh_keys": len(data.get("ssh_keys", [])),
     }
     return counts
+
+
+def has_users() -> bool:
+    with _connect() as conn:
+        row = conn.execute("SELECT COUNT(*) FROM users").fetchone()
+        return row[0] > 0
+
+
+def create_user(username: str, password: str) -> int:
+    pw_hash = _bcrypt.hashpw(password.encode(), _bcrypt.gensalt()).decode()
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            (username, pw_hash),
+        )
+        return cur.lastrowid
+
+
+def verify_user(username: str, password: str) -> bool:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT password_hash FROM users WHERE username = ?", (username,)
+        ).fetchone()
+        if row is None:
+            return False
+        return _bcrypt.checkpw(password.encode(), row["password_hash"].encode())

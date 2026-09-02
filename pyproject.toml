@@ -1,17 +1,21 @@
 [project]
 name = "cert-generator"
-version = "1.4.0"
+version = "1.5.0"
 description = "Certificate Authority tool for generating and managing self-signed certificates"
 requires-python = ">=3.10"
-
-[project.urls]
-Repository = "https://github.com/darthrater78/cert-generator"
 dependencies = [
     "bcrypt>=4.0",
     "cryptography==50.0.1",
     "flask==3.1.3",
-    "pywebview==5.3.2",
+    "waitress>=3.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/darthrater78/cert-generator"
+
+[project.optional-dependencies]
+desktop = ["pywebview==5.3.2"]
 
 [project.scripts]
 cert-generator = "app.main:main"
+cert-generator-server = "app.serve:main"
