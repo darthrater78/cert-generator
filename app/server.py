@@ -575,6 +575,45 @@ def create_ssh_key():
     return jsonify({"id": key_id, "name": name, "fingerprint": fingerprint}), 201
 
 
+@app.post("/api/ssh-keys/import")
+def import_ssh_key():
+    data = request.get_json()
+    name: str = data.get("name", "").strip()
+    private_key_text: str = data.get("private_key", "").strip()
+    passphrase: str = data.get("passphrase", "").strip() or None
+    comment: str = data.get("comment", "").strip()
+
+    if not name or len(name) > 200:
+        return jsonify({"error": "A name is required (max 200 chars)"}), 400
+    if not private_key_text:
+        return jsonify({"error": "Private key is required"}), 400
+
+    try:
+        private_bytes, public_bytes, algorithm, fingerprint, has_passphrase = (
+            crypto_engine.parse_ssh_key(private_key_text, passphrase=passphrase)
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    if comment:
+        public_bytes = public_bytes.rstrip() + b" " + comment.encode("utf-8") + b"\n"
+
+    key_id = db.save_ssh_key(
+        name=name,
+        algorithm=algorithm,
+        comment=comment,
+        fingerprint=fingerprint,
+        public_key=public_bytes,
+        private_key=private_bytes,
+        has_passphrase=has_passphrase,
+        imported=True,
+    )
+
+    algo_label = crypto_engine.SSH_ALGORITHM_LABELS.get(algorithm, algorithm)
+    log.info("SSH key imported: %s (algo=%s)", name, algorithm)
+    return jsonify({"id": key_id, "name": name, "fingerprint": fingerprint, "algorithm": algo_label}), 201
+
+
 @app.delete("/api/ssh-keys/<int:key_id>")
 def delete_ssh_key(key_id: int):
     if db.delete_ssh_key(key_id):
