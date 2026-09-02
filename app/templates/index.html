@@ -277,7 +277,15 @@ body {
 .info-item span {
   font-size: 14px;
   font-weight: 500;
+  overflow-wrap: break-word;
+  word-break: break-all;
 }
+.serial-toggle {
+  cursor: pointer;
+  font-family: monospace;
+  font-size: 11px;
+}
+.serial-toggle:hover { color: var(--accent); }
 
 .export-section {
   display: flex;
@@ -554,7 +562,7 @@ body {
   <div class="sidebar">
     <div class="sidebar-header">
       <h1>Cert Generator</h1>
-      <div class="version">v1.5.0</div>
+      <div class="version">v1.5.1</div>
     </div>
     <div class="sidebar-section">
       <div class="section-header" onclick="toggleSection('ca')">
@@ -599,7 +607,7 @@ body {
       </div>
       <button class="btn-help" style="margin:0" id="btnEncryption" onclick="showEncryptionSettings()">&#x1f512; Encryption Settings</button>
       <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator" onclick="return openExternal(event, this.href)">&#8599; GitHub Repo</a>
-      <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator/releases/tag/v1.5.0" onclick="return openExternal(event, this.href)">&#8599; Release Notes</a>
+      <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator/releases/tag/v1.5.1" onclick="return openExternal(event, this.href)">&#8599; Release Notes</a>
       {% if server_mode %}
       <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:12px;color:var(--text-dim)">Signed in as <strong style="color:var(--text)">{{ username }}</strong></span>
@@ -1635,7 +1643,7 @@ async function selectCA(caId) {
     infoItem('Type', typeBadge) +
     infoItem('Domain', escapeHtml(ca.domain)) +
     infoItem('Algorithm', '<span class="badge badge-algo">' + escapeHtml(ca.algorithm) + '</span>') +
-    infoItem('Serial', escapeHtml(ca.serial.substring(0, 16)) + '...') +
+    infoItem('Serial', serialToggle(ca.serial)) +
     infoItem('Created', formatDate(ca.not_before)) +
     infoItem('Expires', formatDate(ca.not_after)) +
     infoItem('Status', expired
@@ -1911,6 +1919,18 @@ document.getElementById('certExportPart').addEventListener('change', updateCertP
 
 function infoItem(label, value) {
   return '<div class="info-item"><label>' + label + '</label><span>' + value + '</span></div>';
+}
+
+function serialToggle(serial) {
+  const esc = escapeHtml(serial);
+  const short = escapeHtml(serial.substring(0, 16)) + '…';
+  return '<span class="serial-toggle" data-full="' + esc + '" data-short="' + escapeHtml(short) + '" onclick="toggleSerial(this)" title="Click to expand">' + short + '</span>';
+}
+
+function toggleSerial(el) {
+  const expanded = el.dataset.expanded === '1';
+  el.textContent = expanded ? el.dataset.short : el.dataset.full;
+  el.dataset.expanded = expanded ? '' : '1';
 }
 
 function formatDate(iso) {

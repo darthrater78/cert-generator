@@ -1,6 +1,15 @@
 # Cert Generator
 
-A Windows desktop tool for creating Certificate Authorities and issuing self-signed certificates for posture demos. Built with Python, Flask, and pywebview.
+A tool for creating Certificate Authorities and issuing self-signed certificates for posture demos. Runs as a **Docker web app** or a **Windows desktop app** — both use the same interface and database format, and backups created in one mode can be restored in the other.
+
+## Deployment options
+
+| Mode | Best for | How it runs |
+|------|----------|-------------|
+| **Docker** (recommended) | Servers, shared access | Web app at `http://host:5000` with login authentication |
+| **Standalone EXE** | Individual workstations | Native Windows window, no install needed |
+
+Both modes have full feature parity — the same UI, database format, and capabilities. The only differences are how you access it (browser vs native window) and authentication (login vs automatic app token).
 
 ## Features
 
@@ -20,11 +29,9 @@ A Windows desktop tool for creating Certificate Authorities and issuing self-sig
 - **SSH key generation** — generate Ed25519, ECDSA P-256/P-384, and RSA-2048/4096 SSH key pairs with optional passphrase protection
 - **SSH key export** — download private keys in OpenSSH or PEM (PKCS#8) format, copy public keys, or copy private keys for Bitwarden SSH import
 - **Database encryption** — encrypt all private keys at rest with AES-256-GCM using a master password derived via Scrypt; unlock screen on startup when enabled
-- **Backup and restore** — export all data (CAs, certificates, SSH keys) to an AES-256 encrypted `.certbak` file; restore replaces all data from a backup
-- **Docker deployment** — run as a web server in Docker with login authentication, persistent volumes, and browser-based file downloads
-- **Login authentication** — opt-in username/password login for server mode (first-launch setup, bcrypt-hashed passwords, session-based auth)
-- **Native Windows app** — runs as a desktop window via pywebview, no browser needed
-- **Standalone EXE** — package as a single-file Windows executable, no Python required to run it
+- **Backup and restore** — export all data (CAs, certificates, SSH keys) to an AES-256 encrypted `.certbak` file; restore replaces all data from a backup. Backup files are portable between Docker and desktop — create on one, restore on the other
+- **Login authentication** — username/password login for server mode (first-launch setup, bcrypt-hashed passwords, session-based auth)
+- **Structured logging** — request and operation logging with timestamps, configurable via `LOG_LEVEL` environment variable
 
 ## Requirements
 
@@ -45,7 +52,7 @@ pip install ".[desktop]"
 
 ## Usage
 
-### Docker (recommended for server deployment)
+### Docker (recommended)
 
 ```bash
 docker compose up -d
@@ -53,15 +60,15 @@ docker compose up -d
 
 Open `http://localhost:5000` in your browser. On first launch you'll be prompted to create an admin account. All data is persisted in Docker volumes.
 
-To set a stable session secret (recommended for production — without this, sessions are lost on container restart):
+To set a stable session secret (recommended — without this, sessions are lost on container restart):
 
 ```bash
-SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))") docker compose up -d
+SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))") docker compose up -d
 ```
 
-### Standalone EXE (recommended for desktop)
+### Standalone EXE (Windows desktop)
 
-Download `CertGenerator.exe` from the [latest release](https://github.com/darthrater78/cert-generator/releases/latest). Double-click to run — no Python installation needed.
+Download `CertGenerator.exe` from the [latest release](https://github.com/darthrater78/cert-generator/releases/latest). Double-click to run — no Python installation needed. The desktop app runs as a native window; no login is required, and no network port is exposed.
 
 To build from source:
 
@@ -69,6 +76,26 @@ To build from source:
 pip install pyinstaller
 python build.py
 ```
+
+### Server mode (without Docker)
+
+For running the web app directly without Docker:
+
+```bash
+pip install .
+python -m app.serve
+```
+
+Opens on `http://0.0.0.0:5000`. Same login and UI as Docker. Configure with environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `5000` | Server port |
+| `HOST` | `0.0.0.0` | Bind address |
+| `SECRET_KEY` | random | Session secret (set for persistent sessions) |
+| `DB_DIR` | `~/.cert-generator` | Database directory |
+| `EXPORT_DIR` | `~/Downloads` | Export download directory |
+| `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
 ### Desktop app (from source)
 
@@ -78,31 +105,6 @@ python -m app.main
 ```
 
 This opens a native window with the full UI. App token authentication is handled automatically.
-
-### Server mode (without Docker)
-
-```bash
-pip install .
-python -m app.serve
-```
-
-Opens on `http://0.0.0.0:5000`. Configure with environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `5000` | Server port |
-| `HOST` | `0.0.0.0` | Bind address |
-| `SECRET_KEY` | random | Session secret (set for persistent sessions) |
-| `DB_DIR` | `~/.cert-generator` | Database directory |
-| `EXPORT_DIR` | `~/Downloads` | Export download directory |
-
-### Development server
-
-```bash
-flask --app app.server run --port 5174
-```
-
-Then open `http://localhost:5174` in your browser. Login is required (same as server mode).
 
 ## Server hardening
 
@@ -159,16 +161,34 @@ Export options per certificate:
 
 ## Data storage
 
-All CAs, certificates, and SSH keys are stored in a SQLite database at `~/.cert-generator/certs.db` (desktop) or `/data/db/certs.db` (Docker). The directory is created with restrictive permissions (owner-only access). When database encryption is enabled, all private keys are encrypted at rest with AES-256-GCM using a master password. In Docker, the database and exports are stored under `/data`, mapped to `/opt/docker/cert-generator` on the host.
+All CAs, certificates, and SSH keys are stored in a SQLite database. When database encryption is enabled, all private keys are encrypted at rest with AES-256-GCM.
+
+| Mode | Database path | Exports path |
+|------|--------------|--------------|
+| **Desktop** | `~/.cert-generator/certs.db` | `~/Downloads/` |
+| **Docker** | `/data/db/certs.db` (host: `/opt/docker/cert-generator/db/`) | `/data/exports/` (host: `/opt/docker/cert-generator/exports/`) |
+
+The database format is identical in both modes. Use **Backup** to create an encrypted `.certbak` file on one and **Restore** to load it on the other — this is the supported way to migrate data between Docker and desktop.
 
 ## Version history
+
+### v1.5.1 — 2026-09-02
+
+- **Structured logging** — request logging (method, path, status, duration) and operation logging (CA/cert/SSH key create/delete, login, backup/restore); configurable via `LOG_LEVEL` environment variable
+- **Expandable serial numbers** — click to expand/collapse full serial in the CA details view
+- Fixed SSH key details grid overflow — fingerprint and long values now wrap properly
+- Fixed `python` → `python3` in SECRET_KEY generation command (compose and README)
+- Uncommented `SECRET_KEY` in compose since login is on by default
+- Rewrote README to clarify Docker and desktop as equal deployment options with full feature parity and portable backups
 
 ### v1.5.0 — 2026-09-02
 
 - **Docker deployment** — run as a web server with `docker compose up`, GitHub Actions CI builds and pushes to GHCR on every version tag; non-root container with `no-new-privileges`
-- **Login authentication** — opt-in username/password login for server mode; first launch prompts for admin account creation, bcrypt-hashed passwords, Flask session-based auth
+- **Login authentication** — username/password login for server mode; first launch prompts for admin account creation, bcrypt-hashed passwords, Flask session-based auth
 - **Server mode** — production WSGI entry point (`python -m app.serve`) using Waitress; configurable via `PORT`, `HOST`, `SECRET_KEY`, `DB_DIR`, `EXPORT_DIR` environment variables
 - **Browser downloads** — exports in server mode trigger browser file downloads instead of saving to the local filesystem
+- **Structured logging** — request logging (method, path, status, duration) and operation logging (CA/cert/SSH key create/delete, login, backup/restore); configurable via `LOG_LEVEL` environment variable
+- **Expandable serial numbers** — click to expand/collapse full serial in the CA details view
 - Moved `pywebview` to an optional `[desktop]` extra — server/Docker installs don't pull GUI dependencies
 - Added `waitress` dependency for production WSGI serving
 
