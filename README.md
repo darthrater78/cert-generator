@@ -27,6 +27,7 @@ Both modes have full feature parity — the same UI, database format, and capabi
 - **Revoke certificates** to mark them as no longer trusted
 - **Offline CRL generation** — optionally embed a CRL Distribution Point in issued certificates and export a signed CRL file for manual import into Windows certificate stores, providing offline revocation status without a live server
 - **SSH key generation** — generate Ed25519, ECDSA P-256/P-384, and RSA-2048/4096 SSH key pairs with optional passphrase protection
+- **SSH key import** — import existing SSH private keys from Bitwarden or other sources; supports OpenSSH, PEM PKCS#8, PEM traditional, and DER formats with automatic algorithm detection and optional passphrase; imported keys are visually marked and fully functional (export, copy, backup/restore)
 - **SSH key export** — download private keys in OpenSSH or PEM (PKCS#8) format, copy public keys, or copy private keys for Bitwarden SSH import
 - **Database encryption** — encrypt all private keys at rest with AES-256-GCM using a master password derived via Scrypt; unlock screen on startup when enabled
 - **Backup and restore** — export all data (CAs, certificates, SSH keys) to an AES-256 encrypted `.certbak` file; restore replaces all data from a backup. Backup files are portable between Docker and desktop — create on one, restore on the other
@@ -132,7 +133,7 @@ The embedded web server is hardened for both desktop and server use:
 3. Select your CA in the sidebar
 4. Click **+ Issue Certificate** to generate leaf certs
 5. Use **Export** to download certificates in your preferred format
-6. Click **+ SSH Key** to generate an SSH key pair
+6. Click **+ SSH Key** to generate an SSH key pair, or **Import SSH Key** to add an existing key
 
 ## Supported algorithms
 
@@ -171,6 +172,13 @@ All CAs, certificates, and SSH keys are stored in a SQLite database. When databa
 The database format is identical in both modes. Use **Backup** to create an encrypted `.certbak` file on one and **Restore** to load it on the other — this is the supported way to migrate data between Docker and desktop.
 
 ## Version history
+
+### v1.6.0 — 2026-09-02
+
+- **SSH key import** — import existing SSH private keys from Bitwarden or other sources via the new "Import SSH Key" button; supports OpenSSH, PEM PKCS#8, PEM traditional, and DER formats with automatic algorithm detection and optional passphrase
+- Imported keys are visually distinguished with an "IMPORTED" badge in the sidebar and a "Source: Imported" indicator in the detail view
+- Imported keys are fully functional — export, copy, backup/restore all work identically to generated keys
+- Added `imported` column to the SSH keys database schema (auto-migrated on upgrade)
 
 ### v1.5.1 — 2026-09-02
 

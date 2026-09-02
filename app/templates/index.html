@@ -562,7 +562,7 @@ body {
   <div class="sidebar">
     <div class="sidebar-header">
       <h1>Cert Generator</h1>
-      <div class="version">v1.5.1</div>
+      <div class="version">v1.6.0</div>
     </div>
     <div class="sidebar-section">
       <div class="section-header" onclick="toggleSection('ca')">
@@ -595,6 +595,9 @@ body {
     <div class="sidebar-actions">
       <div class="btn-row">
         <button class="btn-new-ca" style="margin:0" onclick="showCreateSSHKey()">+ SSH Key</button>
+        <button class="btn-new-ca" style="margin:0;background:transparent;border:1px solid var(--border);color:var(--text-dim)" onclick="showImportSSHKey()">&#8615; Import SSH Key</button>
+      </div>
+      <div class="btn-row">
         <button class="btn-new-ca" style="margin:0;background:transparent;border:1px solid var(--border);color:var(--text-dim)" onclick="showCreateCA()">+ CA</button>
       </div>
       <div class="btn-row">
@@ -607,7 +610,7 @@ body {
       </div>
       <button class="btn-help" style="margin:0" id="btnEncryption" onclick="showEncryptionSettings()">&#x1f512; Encryption Settings</button>
       <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator" onclick="return openExternal(event, this.href)">&#8599; GitHub Repo</a>
-      <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator/releases/tag/v1.5.1" onclick="return openExternal(event, this.href)">&#8599; Release Notes</a>
+      <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator/releases/tag/v1.6.0" onclick="return openExternal(event, this.href)">&#8599; Release Notes</a>
       {% if server_mode %}
       <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:12px;color:var(--text-dim)">Signed in as <strong style="color:var(--text)">{{ username }}</strong></span>
@@ -764,6 +767,38 @@ body {
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="hideModal('createSSHKeyModal')">Cancel</button>
       <button class="btn btn-primary" onclick="generateSSHKey()">Generate Key Pair</button>
+    </div>
+  </div>
+</div>
+
+<div id="importSSHKeyModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>Import SSH Key</h3>
+    <div class="form-row full">
+      <div class="form-group">
+        <label>Key Name</label>
+        <input type="text" id="importSSHKeyName" placeholder="e.g. bitwarden-ed25519, prod-deploy">
+      </div>
+    </div>
+    <div class="form-row full">
+      <div class="form-group">
+        <label>Private Key</label>
+        <textarea id="importSSHKeyData" rows="10" placeholder="Paste your private key here (OpenSSH, PEM PKCS#8, or PEM traditional format)" style="font-family:monospace;font-size:11px;resize:vertical;width:100%;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);outline:none"></textarea>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Passphrase (if key is encrypted)</label>
+        <input type="password" id="importSSHKeyPassphrase" placeholder="Leave empty if no passphrase">
+      </div>
+      <div class="form-group">
+        <label>Comment (optional)</label>
+        <input type="text" id="importSSHKeyComment" placeholder="e.g. user@hostname">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="hideModal('importSSHKeyModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="importSSHKey()">Import Key</button>
     </div>
   </div>
 </div>
@@ -1986,8 +2021,9 @@ async function loadSSHKeys() {
     const li = document.createElement('li');
     li.className = 'ssh-item' + (k.id === currentSSHKeyId ? ' active' : '');
     const algoBadge = k.algorithm.toUpperCase().replace('-', ' ');
+    const importedBadge = k.imported ? '<span class="ca-type-badge" style="background:var(--accent);color:#fff;font-size:9px;padding:1px 5px">IMPORTED</span>' : '';
     li.innerHTML = '<svg class="ssh-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg><span class="ssh-name">' +
-      escapeHtml(k.name) + '</span><span class="ca-type-badge">' + escapeHtml(algoBadge) + '</span>';
+      escapeHtml(k.name) + '</span>' + importedBadge + '<span class="ca-type-badge">' + escapeHtml(algoBadge) + '</span>';
     li.onclick = () => selectSSHKey(k.id);
     list.appendChild(li);
   });
@@ -2006,6 +2042,7 @@ async function selectSSHKey(keyId) {
 
   document.getElementById('sshKeyInfo').innerHTML =
     infoItem('Algorithm', '<span class="badge badge-algo">' + escapeHtml(key.algorithm.toUpperCase().replace('-', ' ')) + '</span>') +
+    infoItem('Source', key.imported ? '<span class="badge" style="background:var(--accent);color:#fff">Imported</span>' : '<span class="badge badge-algo">Generated</span>') +
     infoItem('Fingerprint', '<span style="font-family:monospace;font-size:11px">' + escapeHtml(key.fingerprint) + '</span>') +
     infoItem('Comment', escapeHtml(key.comment || '(none)')) +
     infoItem('Passphrase', key.has_passphrase ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-expired">No</span>') +
@@ -2046,6 +2083,38 @@ async function generateSSHKey() {
     const key = await res.json();
     hideModal('createSSHKeyModal');
     toast('SSH key generated: ' + key.name);
+    selectSSHKey(key.id);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function showImportSSHKey() {
+  document.getElementById('importSSHKeyName').value = '';
+  document.getElementById('importSSHKeyData').value = '';
+  document.getElementById('importSSHKeyPassphrase').value = '';
+  document.getElementById('importSSHKeyComment').value = '';
+  showModal('importSSHKeyModal');
+  document.getElementById('importSSHKeyName').focus();
+}
+
+async function importSSHKey() {
+  const name = document.getElementById('importSSHKeyName').value.trim();
+  const privateKey = document.getElementById('importSSHKeyData').value.trim();
+  const passphrase = document.getElementById('importSSHKeyPassphrase').value || undefined;
+  const comment = document.getElementById('importSSHKeyComment').value.trim() || undefined;
+
+  if (!name) { toast('Key name is required', 'error'); return; }
+  if (!privateKey) { toast('Private key is required', 'error'); return; }
+
+  try {
+    const res = await api('/api/ssh-keys/import', {
+      method: 'POST',
+      body: JSON.stringify({ name, private_key: privateKey, passphrase, comment }),
+    });
+    const key = await res.json();
+    hideModal('importSSHKeyModal');
+    toast('SSH key imported: ' + key.name + ' (' + key.algorithm + ')');
     selectSSHKey(key.id);
   } catch (e) {
     toast(e.message, 'error');

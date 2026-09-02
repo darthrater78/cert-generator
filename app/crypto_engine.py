@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from cryptography import x509
-from cryptography.exceptions import InvalidTag
+from cryptography.exceptions import InvalidTag, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -596,6 +596,69 @@ def generate_ssh_key(
     fingerprint = _ssh_fingerprint(key.public_key())
 
     return private_bytes, public_bytes, fingerprint
+
+
+def parse_ssh_key(
+    private_key_text: str,
+    passphrase: str | None = None,
+) -> tuple[bytes, bytes, SSHAlgorithm, str, bool]:
+    raw = private_key_text.encode("utf-8") if isinstance(private_key_text, str) else private_key_text
+
+    key = None
+    detected_passphrase = False
+
+    loaders: list[tuple[str, callable]] = [
+        ("ssh", serialization.load_ssh_private_key),
+        ("pem", serialization.load_pem_private_key),
+        ("der", serialization.load_der_private_key),
+    ]
+
+    for label, loader in loaders:
+        if passphrase:
+            try:
+                key = loader(raw, password=passphrase.encode("utf-8"))
+                detected_passphrase = True
+                break
+            except (TypeError, ValueError, UnsupportedAlgorithm):
+                pass
+        try:
+            key = loader(raw, password=None)
+            break
+        except (TypeError, ValueError, UnsupportedAlgorithm):
+            pass
+        try:
+            key = loader(raw, password=b"")
+            break
+        except (TypeError, ValueError, UnsupportedAlgorithm):
+            pass
+
+    if key is None:
+        if passphrase:
+            raise ValueError("Cannot parse private key — wrong passphrase or unsupported format")
+        raise ValueError("Cannot parse private key — unsupported format or passphrase required")
+
+    algorithm = _detect_algorithm(key)
+
+    enc: serialization.KeySerializationEncryption
+    if detected_passphrase and passphrase:
+        enc = serialization.BestAvailableEncryption(passphrase.encode("utf-8"))
+    else:
+        enc = serialization.NoEncryption()
+
+    private_bytes = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.OpenSSH,
+        enc,
+    )
+
+    public_bytes = key.public_key().public_bytes(
+        serialization.Encoding.OpenSSH,
+        serialization.PublicFormat.OpenSSH,
+    )
+
+    fingerprint = _ssh_fingerprint(key.public_key())
+
+    return private_bytes, public_bytes, algorithm, fingerprint, detected_passphrase
 
 
 def export_ssh_private_key(

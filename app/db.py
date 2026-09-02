@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS ssh_keys (
     public_key      BLOB    NOT NULL,
     private_key     BLOB    NOT NULL,
     has_passphrase  INTEGER NOT NULL DEFAULT 0,
+    imported        INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
@@ -93,6 +94,9 @@ def init_db() -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(certificate_authorities)").fetchall()}
         if "parent_ca_id" not in cols:
             conn.execute("ALTER TABLE certificate_authorities ADD COLUMN parent_ca_id INTEGER REFERENCES certificate_authorities(id)")
+        ssh_cols = {r[1] for r in conn.execute("PRAGMA table_info(ssh_keys)").fetchall()}
+        if "imported" not in ssh_cols:
+            conn.execute("ALTER TABLE ssh_keys ADD COLUMN imported INTEGER NOT NULL DEFAULT 0")
 
 
 _master_key: bytes | None = None
@@ -363,13 +367,14 @@ def save_ssh_key(
     public_key: bytes,
     private_key: bytes,
     has_passphrase: bool,
+    imported: bool = False,
 ) -> int:
     with _connect() as conn:
         cursor = conn.execute(
             """INSERT INTO ssh_keys
-               (name, algorithm, comment, fingerprint, public_key, private_key, has_passphrase)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (name, algorithm, comment, fingerprint, public_key, _maybe_encrypt(private_key), int(has_passphrase)),
+               (name, algorithm, comment, fingerprint, public_key, private_key, has_passphrase, imported)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (name, algorithm, comment, fingerprint, public_key, _maybe_encrypt(private_key), int(has_passphrase), int(imported)),
         )
         return cursor.lastrowid
 
@@ -377,7 +382,7 @@ def save_ssh_key(
 def list_ssh_keys() -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, name, algorithm, comment, fingerprint, has_passphrase, created_at "
+            "SELECT id, name, algorithm, comment, fingerprint, has_passphrase, imported, created_at "
             "FROM ssh_keys ORDER BY created_at DESC"
         ).fetchall()
         return [dict(r) for r in rows]
@@ -468,11 +473,11 @@ def import_all_data(data: dict[str, Any]) -> dict[str, int]:
             key = _decode_blobs(key)
             conn.execute(
                 """INSERT INTO ssh_keys
-                   (id, name, algorithm, comment, fingerprint, public_key, private_key, has_passphrase, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (id, name, algorithm, comment, fingerprint, public_key, private_key, has_passphrase, imported, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (key["id"], key["name"], key["algorithm"], key.get("comment", ""),
                  key["fingerprint"], key["public_key"], _maybe_encrypt(key["private_key"]),
-                 key.get("has_passphrase", 0), key["created_at"]),
+                 key.get("has_passphrase", 0), key.get("imported", 0), key["created_at"]),
             )
 
     counts = {
