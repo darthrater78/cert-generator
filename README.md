@@ -99,6 +99,8 @@ Opens on `http://0.0.0.0:5000`. Same login and UI as Docker. Configure with envi
 | `DB_DIR` | `~/.cert-generator` | Database directory |
 | `EXPORT_DIR` | `~/Downloads` | Export download directory |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `RESET_PASSWORD` | — | One-time: reset a user's password (`username:newpassword`) |
+| `RESET_MFA` | — | One-time: disable MFA and clear trusted devices for a user |
 
 ### Desktop app (from source)
 
@@ -128,6 +130,35 @@ The embedded web server is hardened for both desktop and server use:
 **Both modes:**
 - **CSRF protection** — POST/DELETE/PUT requests must originate from the bound address (desktop) or carry a valid session (server)
 - **Clean exit** — `sys.exit(0)` after the UI closes ensures proper cleanup
+
+### Account recovery
+
+If you lose your password or MFA authenticator, use environment variables to reset on the next container start. These run once at startup — remove them afterward.
+
+**Reset a password:**
+
+```bash
+# Docker
+docker compose exec cert-generator env RESET_PASSWORD=admin:newpassword python -m app.serve &
+# Or add to docker-compose.yml environment section, restart, then remove it
+```
+
+**Disable MFA for a locked-out user:**
+
+```bash
+# Docker
+docker compose exec cert-generator env RESET_MFA=admin python -m app.serve &
+# Or add to docker-compose.yml environment section, restart, then remove it
+```
+
+**Without Docker:**
+
+```bash
+RESET_PASSWORD=admin:newpassword python -m app.serve
+RESET_MFA=admin python -m app.serve
+```
+
+`RESET_MFA` disables TOTP, clears all trusted devices, and turns off "Require password every visit" for the named user. Neither variable affects database encryption — the master encryption password is separate from the login password.
 
 ### Quick start
 
@@ -176,6 +207,13 @@ All CAs, certificates, and SSH keys are stored in a SQLite database. When databa
 The database format is identical in both modes. Use **Backup** to create an encrypted `.certbak` file on one and **Restore** to load it on the other — this is the supported way to migrate data between Docker and desktop.
 
 ## Version history
+
+### v1.8.0 — 2026-09-03
+
+- **Account recovery via environment variables** — reset a locked-out user's password (`RESET_PASSWORD=user:newpass`) or disable their MFA (`RESET_MFA=user`) by setting environment variables before starting the server; resets run once at startup, then the app continues normally
+- `RESET_MFA` disables TOTP, clears all trusted devices, and turns off "Require password every visit" for the named user
+- Neither reset variable affects database encryption — the master encryption password is separate from the login password
+- Annotated `docker-compose.yml` with commented examples for both reset variables
 
 ### v1.7.1 — 2026-09-03
 

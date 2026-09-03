@@ -550,6 +550,16 @@ def create_user(username: str, password: str) -> int:
         return cur.lastrowid
 
 
+def reset_user_password(username: str, new_password: str) -> bool:
+    pw_hash = _bcrypt.hashpw(new_password.encode(), _bcrypt.gensalt()).decode()
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE users SET password_hash = ? WHERE username = ?",
+            (pw_hash, username),
+        )
+        return cur.rowcount > 0
+
+
 def verify_user(username: str, password: str) -> bool:
     with _connect() as conn:
         row = conn.execute(
