@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Cert Generator — Login</title>
+<title>Cert Generator — Verify MFA</title>
 <link rel="icon" href="/static/icon.ico" type="image/x-icon">
 <style>
 :root {
@@ -38,18 +38,29 @@ body {
 h1 { font-size: 22px; font-weight: 600; margin-bottom: 4px; }
 .subtitle { font-size: 13px; color: var(--text-dim); margin-bottom: 28px; }
 label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; }
-input {
+input[type="text"] {
   width: 100%;
   padding: 10px 12px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
-  font-size: 14px;
+  font-size: 18px;
+  letter-spacing: 0.3em;
+  text-align: center;
   margin-bottom: 16px;
   outline: none;
 }
-input:focus { border-color: var(--accent); }
+input[type="text"]:focus { border-color: var(--accent); }
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.checkbox-row input[type="checkbox"] { width: auto; margin: 0; }
 button {
   width: 100%;
   padding: 10px;
@@ -62,15 +73,6 @@ button {
   cursor: pointer;
 }
 button:hover { background: var(--accent-hover); }
-.checkbox-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 20px;
-  font-size: 13px;
-  color: var(--text-dim);
-}
-.checkbox-row input[type="checkbox"] { width: auto; margin: 0; }
 .error {
   background: rgba(239,68,68,0.1);
   border: 1px solid var(--danger);
@@ -80,26 +82,37 @@ button:hover { background: var(--accent-hover); }
   font-size: 13px;
   margin-bottom: 16px;
 }
+.footer {
+  margin-top: 16px;
+  text-align: center;
+}
+.footer a {
+  font-size: 12px;
+  color: var(--text-dim);
+  text-decoration: none;
+}
+.footer a:hover { color: var(--danger); }
 </style>
 </head>
 <body>
 <div class="card">
-  <h1>Cert Generator</h1>
-  <div class="subtitle">Sign in to continue</div>
+  <h1>Verify Identity</h1>
+  <div class="subtitle">Enter the code from your authenticator app</div>
   {% if error %}
   <div class="error">{{ error }}</div>
   {% endif %}
-  <form method="POST" action="/login">
-    <label for="username">Username</label>
-    <input type="text" id="username" name="username" autocomplete="username" required autofocus>
-    <label for="password">Password</label>
-    <input type="password" id="password" name="password" autocomplete="current-password" required>
+  <form method="POST" action="/mfa">
+    <label for="code">Verification Code</label>
+    <input type="text" id="code" name="code" autocomplete="one-time-code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" required autofocus placeholder="000000">
     <div class="checkbox-row">
       <input type="checkbox" id="trust_device" name="trust_device" value="1">
       <label for="trust_device" style="margin:0">Trust this device for 30 days</label>
     </div>
-    <button type="submit">Sign In</button>
+    <button type="submit">Verify</button>
   </form>
+  <div class="footer">
+    <a href="/logout">Sign out</a>
+  </div>
 </div>
 </body>
 </html>

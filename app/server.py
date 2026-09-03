@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -8,8 +9,12 @@ import os
 import re
 import secrets
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pyotp
+import qrcode
+import qrcode.image.svg
 from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, session
 
 from . import crypto_engine, db
@@ -46,7 +51,10 @@ with app.app_context():
     db.init_db()
 
 
-_PUBLIC_PATHS = {"/login", "/setup", "/logout", "/favicon.ico"}
+_PUBLIC_PATHS = {"/login", "/setup", "/logout", "/mfa", "/favicon.ico"}
+
+TRUST_COOKIE_NAME = "_trust_token"
+TRUST_DURATION_DAYS = 30
 
 
 @app.before_request
@@ -88,7 +96,24 @@ def _auth_check() -> Response | None:
             return redirect("/setup")
         return None
 
+    # MFA pending: user authenticated with password but hasn't completed MFA yet
+    if session.get("mfa_pending"):
+        if request.path not in ("/mfa", "/logout"):
+            return redirect("/mfa")
+        return None
+
     if not session.get("user"):
+        # Try auto-login via trust token cookie
+        trust_token = request.cookies.get(TRUST_COOKIE_NAME)
+        if trust_token:
+            token_hash = hashlib.sha256(trust_token.encode()).hexdigest()
+            device = db.verify_trusted_device(token_hash)
+            if device and not device.get("require_password"):
+                session["user"] = device["username"]
+                session.permanent = True
+                log.info("Auto-login via trusted device: %s", device["username"])
+                return None
+
         if request.path.startswith("/api/"):
             return Response("Unauthorized", status=401, content_type="text/plain")
         return redirect("/login")
@@ -110,6 +135,19 @@ def _auth_set_cookie() -> Response:
     return resp
 
 
+def _create_trust_cookie(user_id: int, response: Response) -> Response:
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=TRUST_DURATION_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    db.create_trusted_device(user_id, token_hash, expires_at)
+    response.set_cookie(
+        TRUST_COOKIE_NAME, raw_token,
+        max_age=TRUST_DURATION_DAYS * 86400,
+        httponly=True, samesite="Strict",
+    )
+    return response
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if _app_token is not None:
@@ -118,13 +156,28 @@ def login():
         return render_template("login.html", error=None)
     username = (request.form.get("username") or "").strip()
     password = request.form.get("password") or ""
+    trust_device = request.form.get("trust_device") == "1"
     if not username or not password:
         return render_template("login.html", error="Username and password are required")
     if not db.verify_user(username, password):
         return render_template("login.html", error="Invalid username or password")
+
+    user = db.get_user(username)
+    db.cleanup_expired_devices()
+
+    if user and user.get("totp_enabled"):
+        session["mfa_pending"] = user["id"]
+        session["mfa_username"] = username
+        session["mfa_trust"] = trust_device
+        return redirect("/mfa")
+
     session["user"] = username
+    session.permanent = True
     log.info("User logged in: %s", username)
-    return redirect("/")
+    resp = app.make_response(redirect("/"))
+    if trust_device and user:
+        _create_trust_cookie(user["id"], resp)
+    return resp
 
 
 @app.route("/setup", methods=["GET", "POST"])
@@ -151,7 +204,166 @@ def setup():
 @app.route("/logout", methods=["POST", "GET"])
 def logout():
     session.clear()
-    return redirect("/login")
+    resp = app.make_response(redirect("/login"))
+    resp.delete_cookie(TRUST_COOKIE_NAME)
+    return resp
+
+
+@app.route("/mfa", methods=["GET", "POST"])
+def mfa_verify():
+    if _app_token is not None:
+        return redirect("/")
+    user_id = session.get("mfa_pending")
+    if not user_id:
+        return redirect("/login")
+    if request.method == "GET":
+        return render_template("mfa.html", error=None)
+    code = (request.form.get("code") or "").strip()
+    trust_device = request.form.get("trust_device") == "1" or session.get("mfa_trust", False)
+    if not code:
+        return render_template("mfa.html", error="Verification code is required")
+    user = db.get_user_by_id(user_id)
+    if not user or not user.get("totp_secret"):
+        session.clear()
+        return redirect("/login")
+    totp = pyotp.TOTP(user["totp_secret"])
+    if not totp.verify(code, valid_window=1):
+        return render_template("mfa.html", error="Invalid verification code")
+
+    username = session.pop("mfa_username", user["username"])
+    session.pop("mfa_pending", None)
+    session.pop("mfa_trust", None)
+    session["user"] = username
+    session.permanent = True
+    log.info("MFA verified for user: %s", username)
+    resp = app.make_response(redirect("/"))
+    if trust_device:
+        _create_trust_cookie(user["id"], resp)
+    return resp
+
+
+@app.post("/api/mfa/setup")
+def mfa_setup():
+    username = session.get("user")
+    if not username:
+        return jsonify({"error": "Not authenticated"}), 401
+    user = db.get_user(username)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    if user.get("totp_enabled"):
+        return jsonify({"error": "MFA is already enabled"}), 400
+
+    secret = pyotp.random_base32()
+    session["mfa_setup_secret"] = secret
+    totp = pyotp.TOTP(secret)
+    uri = totp.provisioning_uri(name=username, issuer_name="Cert Generator")
+
+    img = qrcode.make(uri, image_factory=qrcode.image.svg.SvgPathImage)
+    buf = io.BytesIO()
+    img.save(buf)
+    qr_svg = buf.getvalue().decode()
+
+    return jsonify({"secret": secret, "qr_svg": qr_svg, "provisioning_uri": uri})
+
+
+@app.post("/api/mfa/confirm")
+def mfa_confirm():
+    username = session.get("user")
+    if not username:
+        return jsonify({"error": "Not authenticated"}), 401
+    user = db.get_user(username)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    secret = session.get("mfa_setup_secret")
+    if not secret:
+        return jsonify({"error": "No MFA setup in progress"}), 400
+
+    data = request.get_json()
+    code = (data.get("code") or "").strip()
+    if not code:
+        return jsonify({"error": "Verification code is required"}), 400
+
+    totp = pyotp.TOTP(secret)
+    if not totp.verify(code, valid_window=1):
+        return jsonify({"error": "Invalid verification code. Check your authenticator app and try again."}), 400
+
+    db.update_user_totp(user["id"], secret, True)
+    db.delete_trusted_devices(user["id"])
+    session.pop("mfa_setup_secret", None)
+    log.info("MFA enabled for user: %s", username)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/mfa/disable")
+def mfa_disable():
+    username = session.get("user")
+    if not username:
+        return jsonify({"error": "Not authenticated"}), 401
+    user = db.get_user(username)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    if not user.get("totp_enabled"):
+        return jsonify({"error": "MFA is not enabled"}), 400
+
+    data = request.get_json()
+    password = (data.get("password") or "").strip()
+    code = (data.get("code") or "").strip()
+    if not password or not code:
+        return jsonify({"error": "Password and verification code are required"}), 400
+    if not db.verify_user(username, password):
+        return jsonify({"error": "Invalid password"}), 400
+    totp = pyotp.TOTP(user["totp_secret"])
+    if not totp.verify(code, valid_window=1):
+        return jsonify({"error": "Invalid verification code"}), 400
+
+    db.update_user_totp(user["id"], None, False)
+    db.delete_trusted_devices(user["id"])
+    log.info("MFA disabled for user: %s", username)
+    return jsonify({"ok": True})
+
+
+@app.get("/api/mfa/status")
+def mfa_status():
+    username = session.get("user")
+    if not username:
+        return jsonify({"error": "Not authenticated"}), 401
+    user = db.get_user(username)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify({
+        "enabled": bool(user.get("totp_enabled")),
+        "require_password": bool(user.get("require_password")),
+        "trusted_device_count": db.count_trusted_devices(user["id"]),
+    })
+
+
+@app.post("/api/mfa/require-password")
+def mfa_require_password():
+    username = session.get("user")
+    if not username:
+        return jsonify({"error": "Not authenticated"}), 401
+    user = db.get_user(username)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    data = request.get_json()
+    require = bool(data.get("require_password"))
+    db.update_user_require_password(user["id"], require)
+    log.info("Require-password set to %s for user: %s", require, username)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/mfa/revoke-devices")
+def mfa_revoke_devices():
+    username = session.get("user")
+    if not username:
+        return jsonify({"error": "Not authenticated"}), 401
+    user = db.get_user(username)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    count = db.delete_trusted_devices(user["id"])
+    log.info("Revoked %d trusted devices for user: %s", count, username)
+    return jsonify({"ok": True, "revoked": count})
 
 
 @app.get("/api/download")

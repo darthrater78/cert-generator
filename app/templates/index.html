@@ -562,7 +562,7 @@ body {
   <div class="sidebar">
     <div class="sidebar-header">
       <h1>Cert Generator</h1>
-      <div class="version">v1.6.0</div>
+      <div class="version">v1.7.0</div>
     </div>
     <div class="sidebar-section">
       <div class="section-header" onclick="toggleSection('ca')">
@@ -609,8 +609,11 @@ body {
         <button class="btn-help" style="margin:0;flex:1" onclick="showRestoreModal()">&#128229; Restore</button>
       </div>
       <button class="btn-help" style="margin:0" id="btnEncryption" onclick="showEncryptionSettings()">&#x1f512; Encryption Settings</button>
+      {% if server_mode %}
+      <button class="btn-help" style="margin:0" id="btnMFA" onclick="showMFASettings()">&#x1f510; MFA Settings</button>
+      {% endif %}
       <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator" onclick="return openExternal(event, this.href)">&#8599; GitHub Repo</a>
-      <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator/releases/tag/v1.6.0" onclick="return openExternal(event, this.href)">&#8599; Release Notes</a>
+      <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator/releases/tag/v1.7.0" onclick="return openExternal(event, this.href)">&#8599; Release Notes</a>
       {% if server_mode %}
       <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:12px;color:var(--text-dim)">Signed in as <strong style="color:var(--text)">{{ username }}</strong></span>
@@ -1571,6 +1574,92 @@ body {
   </div>
 </div>
 
+<div id="mfaModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>MFA Settings</h3>
+
+    <div id="mfaOff">
+      <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">
+        Two-factor authentication is <strong style="color:var(--danger)">OFF</strong>. Enable it to require a verification code from an authenticator app when signing in.
+      </p>
+      <div class="step-note" style="margin-bottom:16px">
+        <strong>How it works:</strong> After enabling, you'll scan a QR code with an authenticator app (Google Authenticator, Authy, 1Password, etc.). Each time you sign in, you'll enter a 6-digit code from the app.<br><br>
+        <strong>Trust devices:</strong> You can mark devices as trusted to skip the verification code for 30 days.
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="hideModal('mfaModal')">Cancel</button>
+        <button class="btn btn-primary" onclick="doMFASetup()">Enable MFA</button>
+      </div>
+    </div>
+
+    <div id="mfaSetup" class="hidden">
+      <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">
+        Scan this QR code with your authenticator app, then enter the 6-digit code to confirm.
+      </p>
+      <div id="mfaQRCode" style="display:flex;justify-content:center;margin-bottom:16px;background:white;border-radius:var(--radius);padding:12px"></div>
+      <div style="margin-bottom:16px">
+        <label style="font-size:12px;color:var(--text-dim)">Manual entry key</label>
+        <code id="mfaSecretKey" style="display:block;font-size:13px;word-break:break-all;background:var(--bg);padding:8px;border-radius:var(--radius);user-select:all"></code>
+      </div>
+      <div class="form-row full">
+        <div class="form-group">
+          <label>Verification Code</label>
+          <input type="text" id="mfaSetupCode" placeholder="000000" maxlength="6" inputmode="numeric" style="letter-spacing:0.2em;text-align:center">
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="cancelMFASetup()">Cancel</button>
+        <button class="btn btn-primary" onclick="doMFAConfirm()">Verify &amp; Enable</button>
+      </div>
+    </div>
+
+    <div id="mfaOn" class="hidden">
+      <p style="font-size:13px;color:var(--text-dim);margin-bottom:16px">
+        Two-factor authentication is <strong style="color:var(--success)">ON</strong>. A verification code is required when signing in from untrusted devices.
+      </p>
+
+      <div class="card" style="margin-bottom:12px">
+        <h3 style="font-size:13px">Session Settings</h3>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+          <input type="checkbox" id="mfaRequirePassword" onchange="doToggleRequirePassword()">
+          <label for="mfaRequirePassword" style="margin:0;font-size:13px;color:var(--text-dim);cursor:pointer">Require password on every visit</label>
+        </div>
+        <p style="font-size:11px;color:var(--text-dim);margin-top:6px">When off, trusted devices auto-login without a password. When on, your password is always required but trusted devices skip the MFA code.</p>
+      </div>
+
+      <div class="card" style="margin-bottom:12px">
+        <h3 style="font-size:13px">Trusted Devices</h3>
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px">
+          <span id="mfaTrustedCount">0</span> device(s) currently trusted.
+        </p>
+        <button class="btn btn-danger btn-sm" onclick="doRevokeDevices()">Revoke All Trusted Devices</button>
+      </div>
+
+      <div class="card">
+        <h3 style="font-size:13px">Disable MFA</h3>
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Enter your password and a verification code to disable two-factor authentication.</p>
+        <div class="form-row full">
+          <div class="form-group">
+            <label>Password</label>
+            <input type="password" id="mfaDisablePassword" placeholder="Enter password">
+          </div>
+        </div>
+        <div class="form-row full">
+          <div class="form-group">
+            <label>Verification Code</label>
+            <input type="text" id="mfaDisableCode" placeholder="000000" maxlength="6" inputmode="numeric" style="letter-spacing:0.2em;text-align:center">
+          </div>
+        </div>
+        <button class="btn btn-danger btn-sm" onclick="doMFADisable()">Disable MFA</button>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="hideModal('mfaModal')">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="toast-container" id="toasts"></div>
 
 <script>
@@ -2374,6 +2463,107 @@ async function doChangePassword() {
     });
     hideModal('encryptionModal');
     toast('Master password changed');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function showMFASettings() {
+  try {
+    const res = await api('/api/mfa/status');
+    const status = await res.json();
+    if (status.enabled) {
+      document.getElementById('mfaOff').classList.add('hidden');
+      document.getElementById('mfaSetup').classList.add('hidden');
+      document.getElementById('mfaOn').classList.remove('hidden');
+      document.getElementById('mfaRequirePassword').checked = status.require_password;
+      document.getElementById('mfaTrustedCount').textContent = status.trusted_device_count;
+      document.getElementById('mfaDisablePassword').value = '';
+      document.getElementById('mfaDisableCode').value = '';
+    } else {
+      document.getElementById('mfaOff').classList.remove('hidden');
+      document.getElementById('mfaSetup').classList.add('hidden');
+      document.getElementById('mfaOn').classList.add('hidden');
+    }
+    showModal('mfaModal');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function doMFASetup() {
+  try {
+    const res = await api('/api/mfa/setup', { method: 'POST' });
+    const data = await res.json();
+    document.getElementById('mfaOff').classList.add('hidden');
+    document.getElementById('mfaSetup').classList.remove('hidden');
+    document.getElementById('mfaQRCode').innerHTML = data.qr_svg;
+    document.getElementById('mfaSecretKey').textContent = data.secret;
+    document.getElementById('mfaSetupCode').value = '';
+    document.getElementById('mfaSetupCode').focus();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function cancelMFASetup() {
+  document.getElementById('mfaSetup').classList.add('hidden');
+  document.getElementById('mfaOff').classList.remove('hidden');
+}
+
+async function doMFAConfirm() {
+  const code = document.getElementById('mfaSetupCode').value.trim();
+  if (!code || code.length !== 6) { toast('Enter the 6-digit code from your authenticator app', 'error'); return; }
+  try {
+    await api('/api/mfa/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    });
+    hideModal('mfaModal');
+    toast('MFA enabled — verification codes are now required when signing in');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function doMFADisable() {
+  const password = document.getElementById('mfaDisablePassword').value;
+  const code = document.getElementById('mfaDisableCode').value.trim();
+  if (!password || !code) { toast('Password and verification code are required', 'error'); return; }
+  if (!confirm('Disable MFA? Verification codes will no longer be required when signing in.')) return;
+  try {
+    await api('/api/mfa/disable', {
+      method: 'POST',
+      body: JSON.stringify({ password, code }),
+    });
+    hideModal('mfaModal');
+    toast('MFA disabled');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function doToggleRequirePassword() {
+  const require_password = document.getElementById('mfaRequirePassword').checked;
+  try {
+    await api('/api/mfa/require-password', {
+      method: 'POST',
+      body: JSON.stringify({ require_password }),
+    });
+    toast(require_password ? 'Password required on every visit' : 'Trusted devices will auto-login');
+  } catch (e) {
+    document.getElementById('mfaRequirePassword').checked = !require_password;
+    toast(e.message, 'error');
+  }
+}
+
+async function doRevokeDevices() {
+  if (!confirm('Revoke all trusted devices? Everyone will need to re-authenticate.')) return;
+  try {
+    const res = await api('/api/mfa/revoke-devices', { method: 'POST' });
+    const data = await res.json();
+    document.getElementById('mfaTrustedCount').textContent = '0';
+    toast('Revoked ' + data.revoked + ' trusted device(s)');
   } catch (e) {
     toast(e.message, 'error');
   }
