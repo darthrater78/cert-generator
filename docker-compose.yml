@@ -24,3 +24,11 @@ services:
       #   python3 -c "import secrets; print(secrets.token_hex(32))"
       # Then set it in a .env file next to this compose file.
       - SECRET_KEY=${SECRET_KEY}
+      # ── Account recovery (one-time use) ──────────────────────────
+      # Uncomment to reset on next container start, then re-comment.
+      #
+      # Reset a user's password:
+      #   - RESET_PASSWORD=admin:newpassword
+      #
+      # Disable MFA and clear trusted devices for a user:
+      #   - RESET_MFA=admin
