@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import secrets
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,14 @@ CREATE TABLE IF NOT EXISTS users (
     created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS trusted_devices (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT    NOT NULL,
+    created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    expires_at TEXT    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS certificates (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     ca_id       INTEGER NOT NULL REFERENCES certificate_authorities(id),
@@ -97,6 +106,11 @@ def init_db() -> None:
         ssh_cols = {r[1] for r in conn.execute("PRAGMA table_info(ssh_keys)").fetchall()}
         if "imported" not in ssh_cols:
             conn.execute("ALTER TABLE ssh_keys ADD COLUMN imported INTEGER NOT NULL DEFAULT 0")
+        user_cols = {r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "totp_secret" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT")
+            conn.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0")
+            conn.execute("ALTER TABLE users ADD COLUMN require_password INTEGER NOT NULL DEFAULT 0")
 
 
 _master_key: bytes | None = None
@@ -122,7 +136,7 @@ def _maybe_decrypt(data: bytes) -> bytes:
 
 
 def _decrypt_row(row: dict[str, Any]) -> dict[str, Any]:
-    for col in ("key_pem", "private_key"):
+    for col in ("key_pem", "private_key", "totp_secret"):
         if col in row and isinstance(row[col], bytes):
             row[col] = _maybe_decrypt(row[col])
     return row
@@ -220,6 +234,11 @@ def _encrypt_all_sensitive_columns() -> None:
             enc = _maybe_encrypt(row[1])
             if enc != row[1]:
                 conn.execute("UPDATE ssh_keys SET private_key = ? WHERE id = ?", (enc, row[0]))
+        for row in conn.execute("SELECT id, totp_secret FROM users WHERE totp_secret IS NOT NULL").fetchall():
+            raw = row[1].encode() if isinstance(row[1], str) else row[1]
+            enc = _maybe_encrypt(raw)
+            if enc != raw:
+                conn.execute("UPDATE users SET totp_secret = ? WHERE id = ?", (enc, row[0]))
 
 
 def _decrypt_all_sensitive_columns() -> None:
@@ -236,6 +255,12 @@ def _decrypt_all_sensitive_columns() -> None:
             dec = _maybe_decrypt(row[1])
             if dec != row[1]:
                 conn.execute("UPDATE ssh_keys SET private_key = ? WHERE id = ?", (dec, row[0]))
+        for row in conn.execute("SELECT id, totp_secret FROM users WHERE totp_secret IS NOT NULL").fetchall():
+            val = row[1]
+            if isinstance(val, bytes):
+                dec = _maybe_decrypt(val)
+                if dec != val:
+                    conn.execute("UPDATE users SET totp_secret = ? WHERE id = ?", (dec.decode(), row[0]))
 
 
 def save_ca(
@@ -428,12 +453,19 @@ def export_all_data() -> dict[str, Any]:
             "SELECT * FROM certificates ORDER BY id").fetchall()]
         ssh_keys = [_row_to_exportable(r) for r in conn.execute(
             "SELECT * FROM ssh_keys ORDER BY id").fetchall()]
+        users = []
+        for r in conn.execute("SELECT id, username, password_hash, totp_secret, totp_enabled, require_password, created_at FROM users ORDER BY id").fetchall():
+            u = dict(r)
+            if u.get("totp_secret") and isinstance(u["totp_secret"], bytes):
+                u["totp_secret"] = _maybe_decrypt(u["totp_secret"]).decode()
+            users.append(u)
     return {
         "version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "certificate_authorities": cas,
         "certificates": certs,
         "ssh_keys": ssh_keys,
+        "users": users,
     }
 
 
@@ -480,10 +512,24 @@ def import_all_data(data: dict[str, Any]) -> dict[str, int]:
                  key.get("has_passphrase", 0), key.get("imported", 0), key["created_at"]),
             )
 
+        for user in data.get("users", []):
+            secret_val = user.get("totp_secret")
+            if secret_val is not None and _master_key is not None:
+                secret_val = _maybe_encrypt(secret_val.encode())
+            conn.execute(
+                """INSERT OR REPLACE INTO users
+                   (id, username, password_hash, totp_secret, totp_enabled, require_password, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (user["id"], user["username"], user["password_hash"],
+                 secret_val, user.get("totp_enabled", 0),
+                 user.get("require_password", 0), user["created_at"]),
+            )
+
     counts = {
         "cas": len(data.get("certificate_authorities", [])),
         "certs": len(data.get("certificates", [])),
         "ssh_keys": len(data.get("ssh_keys", [])),
+        "users": len(data.get("users", [])),
     }
     return counts
 
@@ -512,3 +558,94 @@ def verify_user(username: str, password: str) -> bool:
         if row is None:
             return False
         return _bcrypt.checkpw(password.encode(), row["password_hash"].encode())
+
+
+def get_user(username: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id, username, totp_enabled, totp_secret, require_password FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        if d.get("totp_secret") and isinstance(d["totp_secret"], bytes):
+            d["totp_secret"] = _maybe_decrypt(d["totp_secret"]).decode()
+        return d
+
+
+def get_user_by_id(user_id: int) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id, username, totp_enabled, totp_secret, require_password FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        if d.get("totp_secret") and isinstance(d["totp_secret"], bytes):
+            d["totp_secret"] = _maybe_decrypt(d["totp_secret"]).decode()
+        return d
+
+
+def update_user_totp(user_id: int, totp_secret: str | None, enabled: bool) -> None:
+    with _connect() as conn:
+        secret_val: str | bytes | None = totp_secret
+        if totp_secret is not None and _master_key is not None:
+            secret_val = _maybe_encrypt(totp_secret.encode())
+        conn.execute(
+            "UPDATE users SET totp_secret = ?, totp_enabled = ? WHERE id = ?",
+            (secret_val, int(enabled), user_id),
+        )
+
+
+def update_user_require_password(user_id: int, require_password: bool) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE users SET require_password = ? WHERE id = ?",
+            (int(require_password), user_id),
+        )
+
+
+def create_trusted_device(user_id: int, token_hash: str, expires_at: str) -> int:
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO trusted_devices (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
+            (user_id, token_hash, expires_at),
+        )
+        return cur.lastrowid
+
+
+def verify_trusted_device(token_hash: str) -> dict[str, Any] | None:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT td.user_id, u.username, u.require_password "
+            "FROM trusted_devices td JOIN users u ON u.id = td.user_id "
+            "WHERE td.token_hash = ? AND td.expires_at > ?",
+            (token_hash, now),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def delete_trusted_devices(user_id: int) -> int:
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM trusted_devices WHERE user_id = ?", (user_id,))
+        return cur.rowcount
+
+
+def count_trusted_devices(user_id: int) -> int:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM trusted_devices WHERE user_id = ? AND expires_at > ?",
+            (user_id, now),
+        ).fetchone()
+        return row[0]
+
+
+def cleanup_expired_devices() -> int:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM trusted_devices WHERE expires_at <= ?", (now,))
+        return cur.rowcount

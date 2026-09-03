@@ -32,6 +32,8 @@ Both modes have full feature parity — the same UI, database format, and capabi
 - **Database encryption** — encrypt all private keys at rest with AES-256-GCM using a master password derived via Scrypt; unlock screen on startup when enabled
 - **Backup and restore** — export all data (CAs, certificates, SSH keys) to an AES-256 encrypted `.certbak` file; restore replaces all data from a backup. Backup files are portable between Docker and desktop — create on one, restore on the other
 - **Login authentication** — username/password login for server mode (first-launch setup, bcrypt-hashed passwords, session-based auth)
+- **TOTP multi-factor authentication** — optional TOTP second factor using any authenticator app (Google Authenticator, Authy, 1Password, etc.); enable/disable from the MFA Settings panel, requires password + code to disable
+- **Trusted devices** — "Trust this device for 30 days" skips MFA on subsequent logins; trust tokens are SHA-256 hashed and stored server-side, revocable at any time from MFA Settings
 - **Structured logging** — request and operation logging with timestamps, configurable via `LOG_LEVEL` environment variable
 
 ## Requirements
@@ -119,6 +121,8 @@ The embedded web server is hardened for both desktop and server use:
 
 **Server mode (Docker / standalone):**
 - **Login authentication** — on first launch, you create an admin account; all subsequent access requires sign-in with username and password (bcrypt-hashed, session-based)
+- **TOTP MFA** — optional second factor via any authenticator app; enable per-user from MFA Settings
+- **Trusted devices** — "Trust this device" sets an httpOnly cookie with a SHA-256 hashed token; auto-login skips password and MFA for 30 days unless "Require password every visit" is enabled
 - **Session cookies** — httpOnly, signed with `SECRET_KEY`
 
 **Both modes:**
@@ -172,6 +176,15 @@ All CAs, certificates, and SSH keys are stored in a SQLite database. When databa
 The database format is identical in both modes. Use **Backup** to create an encrypted `.certbak` file on one and **Restore** to load it on the other — this is the supported way to migrate data between Docker and desktop.
 
 ## Version history
+
+### v1.7.0 — 2026-09-03
+
+- **TOTP multi-factor authentication** — enable a TOTP second factor from the new MFA Settings panel in the sidebar; scan the QR code with any authenticator app (Google Authenticator, Authy, 1Password, etc.) and enter a verification code to confirm setup; requires both password and TOTP code to disable
+- **Trusted devices** — "Trust this device for 30 days" checkbox on login and MFA verification pages; trust tokens are SHA-256 hashed and stored server-side; revoke all trusted devices from MFA Settings
+- **Require password every visit** — opt-in setting (off by default) that forces password entry on each visit even with a trusted device; toggle from MFA Settings
+- TOTP secrets are encrypted at rest when database encryption is enabled
+- Trusted device cleanup runs automatically on login to remove expired tokens
+- Backup/restore preserves MFA settings (TOTP secret, enabled state, require-password preference); trusted devices are not backed up (they are per-device and ephemeral)
 
 ### v1.6.0 — 2026-09-02
 
