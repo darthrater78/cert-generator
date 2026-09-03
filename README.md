@@ -177,6 +177,12 @@ The database format is identical in both modes. Use **Backup** to create an encr
 
 ## Version history
 
+### v1.7.1 — 2026-09-03
+
+- **Fixed Docker build** — added missing `pyotp` and `qrcode` dependencies that caused `ModuleNotFoundError` on container startup
+- **Dockerfile now installs from requirements.txt** instead of a hardcoded package list, preventing future dependency drift between the manifest and the container
+- Updated `requirements.txt` to match current `pyproject.toml` server dependencies
+
 ### v1.7.0 — 2026-09-03
 
 - **TOTP multi-factor authentication** — enable a TOTP second factor from the new MFA Settings panel in the sidebar; scan the QR code with any authenticator app (Google Authenticator, Authy, 1Password, etc.) and enter a verification code to confirm setup; requires both password and TOTP code to disable
