@@ -33,7 +33,7 @@ Both modes have full feature parity — the same UI, database format, and capabi
 - **Backup and restore** — export all data (CAs, certificates, SSH keys) to an AES-256 encrypted `.certbak` file; restore replaces all data from a backup. Backup files are portable between Docker and desktop — create on one, restore on the other
 - **Login authentication** — username/password login for server mode (first-launch setup, bcrypt-hashed passwords, session-based auth)
 - **TOTP multi-factor authentication** — optional TOTP second factor using any authenticator app (Google Authenticator, Authy, 1Password, etc.); enable/disable from the MFA Settings panel, requires password + code to disable
-- **Trusted devices** — "Trust this device for 30 days" skips MFA on subsequent logins; trust tokens are SHA-256 hashed and stored server-side, revocable at any time from MFA Settings
+- **Trusted devices** — "Trust this device for 30 days" skips MFA on subsequent logins; trust tokens are SHA-256 hashed and stored server-side with auto-detected device labels (browser + OS); view and revoke individual devices from Account Settings or MFA Settings
 - **Structured logging** — request and operation logging with timestamps, configurable via `LOG_LEVEL` environment variable
 
 ## Requirements
@@ -207,6 +207,12 @@ All CAs, certificates, and SSH keys are stored in a SQLite database. When databa
 The database format is identical in both modes. Use **Backup** to create an encrypted `.certbak` file on one and **Restore** to load it on the other — this is the supported way to migrate data between Docker and desktop.
 
 ## Version history
+
+### v1.9.0 — 2026-09-04
+
+- **Account Settings panel** — new sidebar button providing a standalone settings view independent of MFA; "Require password every visit" toggle moved here from the MFA Settings modal so it's accessible without MFA enabled
+- **Per-device trusted device management** — trusted devices now show browser and OS labels (auto-detected from user-agent); view individual devices with creation and expiry dates; revoke devices individually or all at once from Account Settings or MFA Settings
+- Fixed device label detection for iPhone/iPad user agents that were incorrectly identified as macOS
 
 ### v1.8.0 — 2026-09-03
 

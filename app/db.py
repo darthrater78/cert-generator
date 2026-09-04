@@ -111,6 +111,9 @@ def init_db() -> None:
             conn.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT")
             conn.execute("ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0")
             conn.execute("ALTER TABLE users ADD COLUMN require_password INTEGER NOT NULL DEFAULT 0")
+        td_cols = {r[1] for r in conn.execute("PRAGMA table_info(trusted_devices)").fetchall()}
+        if "label" not in td_cols:
+            conn.execute("ALTER TABLE trusted_devices ADD COLUMN label TEXT NOT NULL DEFAULT ''")
 
 
 _master_key: bytes | None = None
@@ -617,11 +620,11 @@ def update_user_require_password(user_id: int, require_password: bool) -> None:
         )
 
 
-def create_trusted_device(user_id: int, token_hash: str, expires_at: str) -> int:
+def create_trusted_device(user_id: int, token_hash: str, expires_at: str, label: str = "") -> int:
     with _connect() as conn:
         cur = conn.execute(
-            "INSERT INTO trusted_devices (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
-            (user_id, token_hash, expires_at),
+            "INSERT INTO trusted_devices (user_id, token_hash, expires_at, label) VALUES (?, ?, ?, ?)",
+            (user_id, token_hash, expires_at, label),
         )
         return cur.lastrowid
 
@@ -636,6 +639,26 @@ def verify_trusted_device(token_hash: str) -> dict[str, Any] | None:
             (token_hash, now),
         ).fetchone()
         return dict(row) if row else None
+
+
+def list_trusted_devices(user_id: int) -> list[dict[str, Any]]:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, label, created_at, expires_at FROM trusted_devices "
+            "WHERE user_id = ? AND expires_at > ? ORDER BY created_at DESC",
+            (user_id, now),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def delete_trusted_device(device_id: int, user_id: int) -> bool:
+    with _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM trusted_devices WHERE id = ? AND user_id = ?",
+            (device_id, user_id),
+        )
+        return cur.rowcount > 0
 
 
 def delete_trusted_devices(user_id: int) -> int:

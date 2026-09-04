@@ -544,6 +544,68 @@ body {
   font-size: 11px; color: var(--text-dim); cursor: pointer; margin-left: auto;
 }
 .encryption-banner .banner-dismiss input { margin: 0; }
+
+.hamburger {
+  display: none;
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 110;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 22px;
+  width: 40px;
+  height: 40px;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+}
+.sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 99;
+}
+@media (max-width: 768px) {
+  .hamburger { display: flex; }
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 100;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    width: 280px;
+    max-width: 85vw;
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar.open + .sidebar-backdrop,
+  .sidebar-backdrop.open { display: block; }
+  .main { width: 100%; }
+  .main-header { padding: 12px 16px 12px 60px; }
+  .main-content { padding: 16px; }
+  .form-row { grid-template-columns: 1fr; }
+  .cert-table { min-width: 480px; font-size: 12px; }
+  .cert-table th, .cert-table td { padding: 8px 6px; }
+  .ca-info-grid { grid-template-columns: 1fr 1fr; }
+  .export-section { flex-direction: column; align-items: stretch; }
+  .export-section select,
+  .export-section input,
+  .export-section button { width: 100%; }
+  .header-actions { width: 100%; justify-content: flex-start; }
+  .header-actions .btn { font-size: 11px; padding: 5px 8px; }
+  .empty-state { padding: 24px 16px; }
+  .empty-state .icon { font-size: 36px; }
+  .guide-modal { width: 100%; }
+  .toast-container { bottom: 12px; right: 12px; left: 12px; }
+  .toast { font-size: 12px; }
+}
 </style>
 </head>
 <body>
@@ -559,10 +621,11 @@ body {
 </div>
 
 <div class="app">
-  <div class="sidebar">
+  <button class="hamburger" id="hamburgerBtn" onclick="toggleMobileMenu()" aria-label="Menu">&#9776;</button>
+  <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <h1>Cert Generator</h1>
-      <div class="version">v1.8.0</div>
+      <div class="version">v1.9.0</div>
     </div>
     <div class="sidebar-section">
       <div class="section-header" onclick="toggleSection('ca')">
@@ -611,9 +674,10 @@ body {
       <button class="btn-help" style="margin:0" id="btnEncryption" onclick="showEncryptionSettings()">&#x1f512; Encryption Settings</button>
       {% if server_mode %}
       <button class="btn-help" style="margin:0" id="btnMFA" onclick="showMFASettings()">&#x1f510; MFA Settings</button>
+      <button class="btn-help" style="margin:0" onclick="showAccountSettings()">&#9881; Account Settings</button>
       {% endif %}
       <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator" onclick="return openExternal(event, this.href)">&#8599; GitHub Repo</a>
-      <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator/releases/tag/v1.8.0" onclick="return openExternal(event, this.href)">&#8599; Release Notes</a>
+      <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator/releases/tag/v1.9.0" onclick="return openExternal(event, this.href)">&#8599; Release Notes</a>
       {% if server_mode %}
       <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:12px;color:var(--text-dim)">Signed in as <strong style="color:var(--text)">{{ username }}</strong></span>
@@ -622,6 +686,7 @@ body {
       {% endif %}
     </div>
   </div>
+  <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="toggleMobileMenu()"></div>
 
   <div class="main">
     <div id="welcomeView" class="main-content">
@@ -1619,20 +1684,11 @@ body {
       </p>
 
       <div class="card" style="margin-bottom:12px">
-        <h3 style="font-size:13px">Session Settings</h3>
-        <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
-          <input type="checkbox" id="mfaRequirePassword" onchange="doToggleRequirePassword()">
-          <label for="mfaRequirePassword" style="margin:0;font-size:13px;color:var(--text-dim);cursor:pointer">Require password on every visit</label>
-        </div>
-        <p style="font-size:11px;color:var(--text-dim);margin-top:6px">When off, trusted devices auto-login without a password. When on, your password is always required but trusted devices skip the MFA code.</p>
-      </div>
-
-      <div class="card" style="margin-bottom:12px">
         <h3 style="font-size:13px">Trusted Devices</h3>
-        <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px">
-          <span id="mfaTrustedCount">0</span> device(s) currently trusted.
-        </p>
-        <button class="btn btn-danger btn-sm" onclick="doRevokeDevices()">Revoke All Trusted Devices</button>
+        <div id="mfaDeviceList" style="margin-top:8px"></div>
+        <div style="margin-top:8px">
+          <button class="btn btn-danger btn-sm" onclick="doRevokeDevices()">Revoke All</button>
+        </div>
       </div>
 
       <div class="card">
@@ -1660,9 +1716,50 @@ body {
   </div>
 </div>
 
+<div id="accountModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>Account Settings</h3>
+
+    <div class="card" style="margin-bottom:12px">
+      <h3 style="font-size:13px">Session Settings</h3>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+        <input type="checkbox" id="acctRequirePassword" onchange="doToggleRequirePasswordAcct()">
+        <label for="acctRequirePassword" style="margin:0;font-size:13px;color:var(--text-dim);cursor:pointer">Require password on every visit</label>
+      </div>
+      <p style="font-size:11px;color:var(--text-dim);margin-top:6px">When off, trusted devices auto-login without a password. When on, your password is always required but trusted devices skip the MFA code.</p>
+    </div>
+
+    <div class="card" style="margin-bottom:12px">
+      <h3 style="font-size:13px">Trusted Devices</h3>
+      <div id="acctDeviceList" style="margin-top:8px"></div>
+      <div style="margin-top:8px">
+        <button class="btn btn-danger btn-sm" onclick="doRevokeDevicesAcct()">Revoke All</button>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="hideModal('accountModal')">Close</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast-container" id="toasts"></div>
 
 <script>
+function toggleMobileMenu() {
+  const sidebar = document.getElementById('sidebar');
+  const backdrop = document.getElementById('sidebarBackdrop');
+  const btn = document.getElementById('hamburgerBtn');
+  const open = sidebar.classList.toggle('open');
+  if (open) { backdrop.classList.add('open'); btn.style.display = 'none'; }
+  else { backdrop.classList.remove('open'); btn.style.display = ''; }
+}
+function closeMobileMenu() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebarBackdrop').classList.remove('open');
+  document.getElementById('hamburgerBtn').style.display = '';
+}
+
 const SERVER_MODE = {{ 'true' if server_mode else 'false' }};
 let currentCAId = null;
 let currentSSHKeyId = null;
@@ -1705,7 +1802,7 @@ function toast(msg, type = 'success') {
   setTimeout(() => el.remove(), 3000);
 }
 
-function showModal(id) { document.getElementById(id).classList.remove('hidden'); }
+function showModal(id) { closeMobileMenu(); document.getElementById(id).classList.remove('hidden'); }
 function hideModal(id) { document.getElementById(id).classList.add('hidden'); }
 
 function showCreateCA() { showModal('createCAModal'); document.getElementById('caDomain').focus(); }
@@ -1746,6 +1843,7 @@ async function loadCAs() {
 }
 
 async function selectCA(caId) {
+  closeMobileMenu();
   currentCAId = caId;
   currentSSHKeyId = null;
   const res = await api('/api/ca/' + caId);
@@ -2119,6 +2217,7 @@ async function loadSSHKeys() {
 }
 
 async function selectSSHKey(keyId) {
+  closeMobileMenu();
   currentSSHKeyId = keyId;
   currentCAId = null;
   const res = await api('/api/ssh-keys/' + keyId);
@@ -2468,6 +2567,33 @@ async function doChangePassword() {
   }
 }
 
+function renderDeviceList(devices, containerId) {
+  const el = document.getElementById(containerId);
+  if (!devices.length) {
+    el.innerHTML = '<p style="font-size:12px;color:var(--text-dim)">No trusted devices.</p>';
+    return;
+  }
+  el.innerHTML = devices.map(function(d) {
+    const label = escapeHtml(d.label || 'Unknown device');
+    const created = formatDate(d.created_at);
+    const expires = formatDate(d.expires_at);
+    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">' +
+      '<div style="min-width:0">' +
+        '<div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + label + '</div>' +
+        '<div style="font-size:11px;color:var(--text-dim)">Trusted ' + created + ' · Expires ' + expires + '</div>' +
+      '</div>' +
+      '<button class="btn btn-ghost btn-sm" style="flex-shrink:0;margin-left:8px;color:var(--danger)" onclick="doRevokeDevice(' + d.id + ')">Revoke</button>' +
+    '</div>';
+  }).join('');
+}
+
+async function loadDeviceList(containerId) {
+  const res = await api('/api/devices');
+  const data = await res.json();
+  renderDeviceList(data.devices, containerId);
+  return data.devices.length;
+}
+
 async function showMFASettings() {
   try {
     const res = await api('/api/mfa/status');
@@ -2476,10 +2602,9 @@ async function showMFASettings() {
       document.getElementById('mfaOff').classList.add('hidden');
       document.getElementById('mfaSetup').classList.add('hidden');
       document.getElementById('mfaOn').classList.remove('hidden');
-      document.getElementById('mfaRequirePassword').checked = status.require_password;
-      document.getElementById('mfaTrustedCount').textContent = status.trusted_device_count;
       document.getElementById('mfaDisablePassword').value = '';
       document.getElementById('mfaDisableCode').value = '';
+      await loadDeviceList('mfaDeviceList');
     } else {
       document.getElementById('mfaOff').classList.remove('hidden');
       document.getElementById('mfaSetup').classList.add('hidden');
@@ -2543,16 +2668,19 @@ async function doMFADisable() {
   }
 }
 
-async function doToggleRequirePassword() {
-  const require_password = document.getElementById('mfaRequirePassword').checked;
+async function doRevokeDevice(deviceId) {
+  if (!confirm('Revoke this trusted device?')) return;
   try {
-    await api('/api/mfa/require-password', {
-      method: 'POST',
-      body: JSON.stringify({ require_password }),
-    });
-    toast(require_password ? 'Password required on every visit' : 'Trusted devices will auto-login');
+    await api('/api/devices/' + deviceId, { method: 'DELETE' });
+    toast('Device revoked');
+    // Refresh whichever device list is visible
+    if (!document.getElementById('mfaModal').classList.contains('hidden')) {
+      await loadDeviceList('mfaDeviceList');
+    }
+    if (!document.getElementById('accountModal').classList.contains('hidden')) {
+      await loadDeviceList('acctDeviceList');
+    }
   } catch (e) {
-    document.getElementById('mfaRequirePassword').checked = !require_password;
     toast(e.message, 'error');
   }
 }
@@ -2562,9 +2690,44 @@ async function doRevokeDevices() {
   try {
     const res = await api('/api/mfa/revoke-devices', { method: 'POST' });
     const data = await res.json();
-    document.getElementById('mfaTrustedCount').textContent = '0';
     toast('Revoked ' + data.revoked + ' trusted device(s)');
+    if (!document.getElementById('mfaModal').classList.contains('hidden')) {
+      await loadDeviceList('mfaDeviceList');
+    }
+    if (!document.getElementById('accountModal').classList.contains('hidden')) {
+      await loadDeviceList('acctDeviceList');
+    }
   } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function doRevokeDevicesAcct() {
+  return doRevokeDevices();
+}
+
+async function showAccountSettings() {
+  try {
+    const res = await api('/api/account/status');
+    const status = await res.json();
+    document.getElementById('acctRequirePassword').checked = status.require_password;
+    await loadDeviceList('acctDeviceList');
+    showModal('accountModal');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function doToggleRequirePasswordAcct() {
+  const require_password = document.getElementById('acctRequirePassword').checked;
+  try {
+    await api('/api/account/require-password', {
+      method: 'POST',
+      body: JSON.stringify({ require_password }),
+    });
+    toast(require_password ? 'Password required on every visit' : 'Trusted devices will auto-login');
+  } catch (e) {
+    document.getElementById('acctRequirePassword').checked = !require_password;
     toast(e.message, 'error');
   }
 }
