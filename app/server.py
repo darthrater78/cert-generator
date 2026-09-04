@@ -135,11 +135,33 @@ def _auth_set_cookie() -> Response:
     return resp
 
 
+def _device_label_from_ua(ua: str) -> str:
+    if not ua:
+        return "Unknown device"
+    ua_lower = ua.lower()
+    browser = "Browser"
+    for name in ("Firefox", "Edg", "Chrome", "Safari", "Opera"):
+        if name.lower() in ua_lower:
+            browser = "Edge" if name == "Edg" else name
+            break
+    os_name = "Unknown OS"
+    for pattern, label in [
+        ("windows", "Windows"), ("iphone", "iOS"), ("ipad", "iPadOS"),
+        ("android", "Android"), ("macintosh", "macOS"), ("mac os", "macOS"),
+        ("linux", "Linux"), ("cros", "ChromeOS"),
+    ]:
+        if pattern in ua_lower:
+            os_name = label
+            break
+    return f"{browser} on {os_name}"
+
+
 def _create_trust_cookie(user_id: int, response: Response) -> Response:
     raw_token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
     expires_at = (datetime.now(timezone.utc) + timedelta(days=TRUST_DURATION_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    db.create_trusted_device(user_id, token_hash, expires_at)
+    label = _device_label_from_ua(request.headers.get("User-Agent", ""))
+    db.create_trusted_device(user_id, token_hash, expires_at, label)
     response.set_cookie(
         TRUST_COOKIE_NAME, raw_token,
         max_age=TRUST_DURATION_DAYS * 86400,
@@ -364,6 +386,61 @@ def mfa_revoke_devices():
     count = db.delete_trusted_devices(user["id"])
     log.info("Revoked %d trusted devices for user: %s", count, username)
     return jsonify({"ok": True, "revoked": count})
+
+
+@app.get("/api/account/status")
+def account_status():
+    username = session.get("user")
+    if not username:
+        return jsonify({"error": "Not authenticated"}), 401
+    user = db.get_user(username)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify({
+        "require_password": bool(user.get("require_password")),
+        "mfa_enabled": bool(user.get("totp_enabled")),
+    })
+
+
+@app.post("/api/account/require-password")
+def account_require_password():
+    username = session.get("user")
+    if not username:
+        return jsonify({"error": "Not authenticated"}), 401
+    user = db.get_user(username)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    data = request.get_json()
+    require = bool(data.get("require_password"))
+    db.update_user_require_password(user["id"], require)
+    log.info("Require-password set to %s for user: %s", require, username)
+    return jsonify({"ok": True})
+
+
+@app.get("/api/devices")
+def list_devices():
+    username = session.get("user")
+    if not username:
+        return jsonify({"error": "Not authenticated"}), 401
+    user = db.get_user(username)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    devices = db.list_trusted_devices(user["id"])
+    return jsonify({"devices": devices})
+
+
+@app.delete("/api/devices/<int:device_id>")
+def delete_device(device_id: int):
+    username = session.get("user")
+    if not username:
+        return jsonify({"error": "Not authenticated"}), 401
+    user = db.get_user(username)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    if not db.delete_trusted_device(device_id, user["id"]):
+        return jsonify({"error": "Device not found"}), 404
+    log.info("Revoked trusted device %d for user: %s", device_id, username)
+    return jsonify({"ok": True})
 
 
 @app.get("/api/download")
