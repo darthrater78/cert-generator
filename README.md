@@ -36,6 +36,11 @@ Both modes have full feature parity — the same UI, database format, and capabi
 - **Trusted devices** — "Trust this device for 30 days" skips MFA on subsequent logins; trust tokens are SHA-256 hashed and stored server-side with auto-detected device labels (browser + OS); view and revoke individual devices from Account Settings or MFA Settings
 - **Structured logging** — request and operation logging with timestamps, configurable via `LOG_LEVEL` environment variable
 
+<img width="2373" height="474" alt="image" src="https://github.com/user-attachments/assets/a2f5d634-46ea-4e9d-9e8e-f98c4480abe1" />
+<img width="574" height="517" alt="image" src="https://github.com/user-attachments/assets/e9dc86c0-e838-4b7b-ad1d-fd01772388a7" />
+<img width="1345" height="832" alt="image" src="https://github.com/user-attachments/assets/dff10eb2-da88-4eac-8b27-0647439b233d" />
+
+
 ## Requirements
 
 - Python 3.10+
