@@ -19,7 +19,7 @@ Both modes have full feature parity — the same UI, database format, and capabi
 - **Certificate templates** matching Windows CA templates — Web Server, Computer, Client Authentication, User (Smart Card Logon), Code Signing, Email (S/MIME) — each with the correct key usage and extended key usage extensions
 - **Track all certificates** — view status (active/revoked/expired), details, and metadata
 - **Export in multiple formats** — PEM, DER, CRT (.crt), PKCS12 (.pfx)
-- **Export parts individually** — full bundle, certificate only, private key only, or full chain (cert + CA)
+- **Export parts individually** — full bundle, certificate only, private key only, or full chain (cert + every issuing CA up to the root)
 - **Password-protected exports** — optionally encrypt the private key (PEM); PKCS12 bundles always require a password (the export dialog pre-fills `changeit` for Windows compatibility)
 - **Optional CA chain inclusion** — choose whether to bundle the issuing CA certificate when exporting issued certs
 - **In-app import guide** — step-by-step instructions for importing certificates on Windows, macOS, and Linux for each template type
@@ -117,8 +117,8 @@ Opens on `http://0.0.0.0:5000`. Same login and UI as Docker. Configure with envi
 | `DB_DIR` | `~/.cert-generator` | Database directory |
 | `EXPORT_DIR` | `~/Downloads` | Desktop mode only: where exports are saved. Server mode sends exports straight to the browser |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
-| `RESET_PASSWORD` | — | One-time: reset a user's password (`username:newpassword`) |
-| `RESET_MFA` | — | One-time: disable MFA and clear trusted devices for a user |
+| `RESET_PASSWORD` | — | One-time: reset a user's password (`username:newpassword`), clear their trusted devices, and end their sessions |
+| `RESET_MFA` | — | One-time: disable MFA, clear trusted devices, and end sessions for a user |
 
 ### Desktop app (from source)
 
@@ -128,6 +128,15 @@ python -m app.main
 ```
 
 This opens a native window with the full UI. App token authentication is handled automatically.
+
+### Running tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+CI runs the same suite on Python 3.10 and 3.14 and builds the Docker image for every push and pull request to `master`.
 
 ## Server hardening
 
@@ -190,10 +199,10 @@ With both MFA and database encryption enabled, the MFA page asks for the encrypt
 1. Launch the app (Docker: `docker compose up -d`, Desktop: run `CertGenerator.exe`)
 2. Server mode: create your admin account on first launch, then sign in
 3. Click **+ CA** and enter a domain name (e.g. `example.com`) and lifetime
-3. Select your CA in the sidebar
-4. Click **+ Issue Certificate** to generate leaf certs
-5. Use **Export** to download certificates in your preferred format
-6. Click **+ SSH Key** to generate an SSH key pair, or **Import SSH Key** to add an existing key
+4. Select your CA in the sidebar
+5. Click **+ Issue Certificate** to generate leaf certs
+6. Use **Export** to download certificates in your preferred format
+7. Click **+ SSH Key** to generate an SSH key pair, or **Import SSH Key** to add an existing key
 
 ## Supported algorithms
 
@@ -212,7 +221,7 @@ With both MFA and database encryption enabled, the MFA page asks for the encrypt
 | PEM | `.pem` | Base64-encoded, widely supported |
 | DER | `.der` | Binary format |
 | CRT | `.crt` | DER-encoded with Windows-native extension |
-| PKCS12 | `.pfx` | Bundled cert + key, optional password protection |
+| PKCS12 | `.pfx` | Bundled cert + key, password required |
 
 Export options per certificate:
 - **Certificate + Key** — full bundle
@@ -233,7 +242,7 @@ The database format is identical in both modes. Use **Backup** to create an encr
 
 ## Version history
 
-### Unreleased
+### v2.0.0 — 2026-09-14
 
 **Security**
 - Database encryption fails closed: while locked, creating or importing keys returns an error instead of storing them unencrypted
