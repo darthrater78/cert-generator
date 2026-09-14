@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import secrets
+import threading
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
@@ -23,38 +26,30 @@ Algorithm = Literal["ed25519", "ecdsa-p256", "ecdsa-p384", "rsa-2048", "rsa-4096
 ALGORITHMS: list[Algorithm] = ["ed25519", "ecdsa-p256", "ecdsa-p384", "rsa-2048", "rsa-4096"]
 
 
+_KEY_USAGE_FLAGS = (
+    "digital_signature", "content_commitment", "key_encipherment", "data_encipherment",
+    "key_agreement", "key_cert_sign", "crl_sign", "encipher_only", "decipher_only",
+)
+
+
+def _key_usage(**enabled: bool) -> dict[str, bool]:
+    flags = dict.fromkeys(_KEY_USAGE_FLAGS, False)
+    flags.update(enabled)
+    return flags
+
+
 CERT_TEMPLATES: dict[str, dict] = {
     "web-server": {
         "label": "Web Server",
         "description": "Server Authentication",
-        "key_usage": {
-            "digital_signature": True,
-            "key_encipherment": True,
-            "content_commitment": False,
-            "data_encipherment": False,
-            "key_agreement": False,
-            "key_cert_sign": False,
-            "crl_sign": False,
-            "encipher_only": False,
-            "decipher_only": False,
-        },
+        "key_usage": _key_usage(digital_signature=True, key_encipherment=True),
         "extended_key_usage": [x509.oid.ExtendedKeyUsageOID.SERVER_AUTH],
         "default_days": 365,
     },
     "computer": {
         "label": "Computer",
         "description": "Client Authentication, Server Authentication",
-        "key_usage": {
-            "digital_signature": True,
-            "key_encipherment": True,
-            "content_commitment": False,
-            "data_encipherment": False,
-            "key_agreement": False,
-            "key_cert_sign": False,
-            "crl_sign": False,
-            "encipher_only": False,
-            "decipher_only": False,
-        },
+        "key_usage": _key_usage(digital_signature=True, key_encipherment=True),
         "extended_key_usage": [
             x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH,
             x509.oid.ExtendedKeyUsageOID.SERVER_AUTH,
@@ -64,51 +59,21 @@ CERT_TEMPLATES: dict[str, dict] = {
     "client-auth": {
         "label": "Client Authentication",
         "description": "Client Authentication",
-        "key_usage": {
-            "digital_signature": True,
-            "key_encipherment": False,
-            "content_commitment": False,
-            "data_encipherment": False,
-            "key_agreement": False,
-            "key_cert_sign": False,
-            "crl_sign": False,
-            "encipher_only": False,
-            "decipher_only": False,
-        },
+        "key_usage": _key_usage(digital_signature=True),
         "extended_key_usage": [x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH],
         "default_days": 365,
     },
     "code-signing": {
         "label": "Code Signing",
         "description": "Code Signing",
-        "key_usage": {
-            "digital_signature": True,
-            "key_encipherment": False,
-            "content_commitment": False,
-            "data_encipherment": False,
-            "key_agreement": False,
-            "key_cert_sign": False,
-            "crl_sign": False,
-            "encipher_only": False,
-            "decipher_only": False,
-        },
+        "key_usage": _key_usage(digital_signature=True),
         "extended_key_usage": [x509.oid.ExtendedKeyUsageOID.CODE_SIGNING],
         "default_days": 365,
     },
     "email": {
         "label": "Email (S/MIME)",
         "description": "Email Protection",
-        "key_usage": {
-            "digital_signature": True,
-            "key_encipherment": True,
-            "content_commitment": True,
-            "data_encipherment": False,
-            "key_agreement": False,
-            "key_cert_sign": False,
-            "crl_sign": False,
-            "encipher_only": False,
-            "decipher_only": False,
-        },
+        "key_usage": _key_usage(digital_signature=True, key_encipherment=True, content_commitment=True),
         "extended_key_usage": [x509.oid.ExtendedKeyUsageOID.EMAIL_PROTECTION],
         "default_days": 365,
         "include_email": True,
@@ -116,17 +81,7 @@ CERT_TEMPLATES: dict[str, dict] = {
     "user": {
         "label": "User",
         "description": "Client Authentication, Smart Card Logon",
-        "key_usage": {
-            "digital_signature": True,
-            "key_encipherment": True,
-            "content_commitment": False,
-            "data_encipherment": False,
-            "key_agreement": False,
-            "key_cert_sign": False,
-            "crl_sign": False,
-            "encipher_only": False,
-            "decipher_only": False,
-        },
+        "key_usage": _key_usage(digital_signature=True, key_encipherment=True),
         "extended_key_usage": [
             x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH,
             SMARTCARD_LOGON_OID,
@@ -339,7 +294,7 @@ def issue_certificate(
 
     san_entries: list[x509.GeneralName] = []
     for d in san_domains:
-        san_entries.append(x509.DNSName(d))
+        san_entries.append(_san_name(d))
     if email and tmpl.get("include_email"):
         san_entries.append(x509.RFC822Name(email))
     if upn and tmpl.get("include_upn"):
@@ -414,6 +369,31 @@ def issue_certificate(
     )
 
 
+def _san_name(value: str) -> x509.GeneralName:
+    try:
+        return x509.IPAddress(ipaddress.ip_address(value))
+    except ValueError:
+        return x509.DNSName(value)
+
+
+def ca_allows_subordinate_ca(ca_cert_pem: bytes) -> bool:
+    """False when the CA's basicConstraints path length forbids issuing further CAs."""
+    cert = x509.load_pem_x509_certificate(ca_cert_pem)
+    try:
+        constraints = cert.extensions.get_extension_for_class(x509.BasicConstraints).value
+    except x509.ExtensionNotFound:
+        return False
+    return constraints.ca and constraints.path_length != 0
+
+
+def _parse_timestamp(value: str) -> datetime:
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        parsed = datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def _encode_utf8_string(value: str) -> bytes:
     encoded = value.encode("utf-8")
     length = len(encoded)
@@ -444,7 +424,7 @@ def generate_crl(
     for serial_hex, revoked_at in revoked_serials:
         serial_int = int(serial_hex, 16)
         try:
-            rev_date = datetime.fromisoformat(revoked_at).replace(tzinfo=timezone.utc)
+            rev_date = _parse_timestamp(revoked_at)
         except (ValueError, TypeError):
             rev_date = now
         revoked_cert = (
@@ -510,7 +490,9 @@ def export_certificate(
         if ca_cert_pem:
             ca_certs = [x509.load_pem_x509_certificate(ca_cert_pem)]
 
-        pfx_password = (password or "changeit").encode("utf-8")
+        if not password:
+            raise ValueError("A password is required for PKCS#12 export")
+        pfx_password = password.encode("utf-8")
         pfx_data = pkcs12.serialize_key_and_certificates(
             name=None,
             key=key,
@@ -607,7 +589,7 @@ def parse_ssh_key(
     key = None
     detected_passphrase = False
 
-    loaders: list[tuple[str, callable]] = [
+    loaders: list[tuple[str, Callable[..., object]]] = [
         ("ssh", serialization.load_ssh_private_key),
         ("pem", serialization.load_pem_private_key),
         ("der", serialization.load_der_private_key),
@@ -720,9 +702,18 @@ def _ssh_fingerprint(public_key) -> str:
 _COLUMN_ENC_PREFIX = b"ENC\x01"
 
 
+# Each scrypt derivation uses ~128 MB; cap how many run at once.
+_KDF_SLOTS = threading.BoundedSemaphore(2)
+
+
+def _scrypt(password: str, salt: bytes) -> bytes:
+    with _KDF_SLOTS:
+        kdf = Scrypt(salt=salt, length=32, n=2**17, r=8, p=1)
+        return kdf.derive(password.encode("utf-8"))
+
+
 def derive_master_key(password: str, salt: bytes) -> bytes:
-    kdf = Scrypt(salt=salt, length=32, n=2**17, r=8, p=1)
-    return kdf.derive(password.encode("utf-8"))
+    return _scrypt(password, salt)
 
 
 def encrypt_column(data: bytes, key: bytes) -> bytes:
@@ -751,8 +742,7 @@ _BACKUP_VERSION = 1
 
 def encrypt_backup(plaintext: bytes, password: str) -> bytes:
     salt = secrets.token_bytes(32)
-    kdf = Scrypt(salt=salt, length=32, n=2**17, r=8, p=1)
-    key = kdf.derive(password.encode("utf-8"))
+    key = _scrypt(password, salt)
     nonce = secrets.token_bytes(12)
     ciphertext = AESGCM(key).encrypt(nonce, plaintext, None)
     return _BACKUP_MAGIC + bytes([_BACKUP_VERSION]) + salt + nonce + ciphertext
@@ -766,8 +756,7 @@ def decrypt_backup(data: bytes, password: str) -> bytes:
     salt = data[8:40]
     nonce = data[40:52]
     ciphertext = data[52:]
-    kdf = Scrypt(salt=salt, length=32, n=2**17, r=8, p=1)
-    key = kdf.derive(password.encode("utf-8"))
+    key = _scrypt(password, salt)
     try:
         return AESGCM(key).decrypt(nonce, ciphertext, None)
     except InvalidTag:

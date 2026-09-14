@@ -27,6 +27,7 @@ def main() -> None:
         "--hidden-import", "app.crypto_engine",
         "--hidden-import", "app.db",
         "--hidden-import", "app.main",
+        "--hidden-import", "app.security",
         str(ROOT / "run.py"),
     ]
     print("Running:", " ".join(cmd))

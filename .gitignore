@@ -11,3 +11,6 @@ venv/
 *.sqlite
 data/
 *.spec
+
+# Dev Skills session scratch
+.claude/dev-skills-gates.md

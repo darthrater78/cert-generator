@@ -7,20 +7,20 @@ A tool for creating Certificate Authorities and issuing self-signed certificates
 | Mode | Best for | How it runs |
 |------|----------|-------------|
 | **Docker** (recommended) | Servers, shared access | Web app at `http://host:5000` with login authentication |
-| **Standalone EXE** | Individual workstations | Native Windows window, no install needed |
+| **Standalone EXE** | Individual workstations | Native Windows window, built from source with PyInstaller |
 
 Both modes have full feature parity — the same UI, database format, and capabilities. The only differences are how you access it (browser vs native window) and authentication (login vs automatic app token).
 
 ## Features
 
 - **Create Certificate Authorities** with configurable domain, name, algorithm, and lifetime
-- **Intermediate CAs** — create subordinate CAs from any root CA; intermediates can issue their own certificates
-- **Issue leaf certificates** signed by any CA (root or intermediate), with SAN (Subject Alternative Name) support including wildcards
+- **Intermediate CAs** — create subordinate CAs from any root CA; intermediates can issue their own certificates (intermediates are issued with path length 0, so they cannot create further CAs)
+- **Issue leaf certificates** signed by any CA (root or intermediate), with SAN (Subject Alternative Name) support including wildcards and IP addresses
 - **Certificate templates** matching Windows CA templates — Web Server, Computer, Client Authentication, User (Smart Card Logon), Code Signing, Email (S/MIME) — each with the correct key usage and extended key usage extensions
 - **Track all certificates** — view status (active/revoked/expired), details, and metadata
 - **Export in multiple formats** — PEM, DER, CRT (.crt), PKCS12 (.pfx)
-- **Export parts individually** — full bundle, certificate only, private key only, or full chain (cert + CA)
-- **Password-protected exports** — optionally encrypt the private key (PEM) or the whole bundle (PKCS12) with a password (PKCS12 defaults to `changeit` for Windows compatibility)
+- **Export parts individually** — full bundle, certificate only, private key only, or full chain (cert + every issuing CA up to the root)
+- **Password-protected exports** — optionally encrypt the private key (PEM); PKCS12 bundles always require a password (the export dialog pre-fills `changeit` for Windows compatibility)
 - **Optional CA chain inclusion** — choose whether to bundle the issuing CA certificate when exporting issued certs
 - **In-app import guide** — step-by-step instructions for importing certificates on Windows, macOS, and Linux for each template type
 - **Modern crypto algorithms** — Ed25519, ECDSA P-256, ECDSA P-384, RSA-2048, RSA-4096
@@ -68,22 +68,33 @@ docker compose up -d
 
 Open `http://localhost:5000` in your browser. On first launch you'll be prompted to create an admin account. All data is persisted in Docker volumes.
 
-To set a stable session secret (recommended — without this, sessions are lost on container restart):
+To set a stable session secret (recommended — without this, everyone must sign in again after a container restart), put it in a `.env` file next to `docker-compose.yml` so it survives later `docker compose` commands:
 
 ```bash
-SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))") docker compose up -d
+echo "SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')" >> .env
+docker compose up -d
 ```
+
+#### HTTPS and network exposure
+
+The server speaks plain HTTP. For anything beyond a trusted LAN, put it behind a reverse proxy that terminates TLS (Caddy, nginx, Traefik), then:
+
+- set `COOKIE_SECURE=true` so session and trusted-device cookies are only sent over HTTPS
+- publish the port on loopback only (`"127.0.0.1:5000:5000"` in `docker-compose.yml`) so the proxy is the only way in
+- set `SETUP_TOKEN` before first launch if the instance is reachable before you create the admin account
+
+Proxies that rewrite the `Host` header should forward the original as `X-Forwarded-Host`; the cross-site request check accepts either.
 
 ### Standalone EXE (Windows desktop)
 
-Download `CertGenerator.exe` from the [latest release](https://github.com/darthrater78/cert-generator/releases/latest). Double-click to run — no Python installation needed. The desktop app runs as a native window; no login is required, and no network port is exposed.
-
-To build from source:
+Releases don't include a prebuilt EXE, so build it on a Windows machine:
 
 ```bash
-pip install pyinstaller
+pip install ".[desktop]" pyinstaller
 python build.py
 ```
+
+This produces `dist/CertGenerator.exe`, a single file you can copy to other Windows machines and run without Python. The desktop app runs as a native window; no login is required, and no network port is exposed.
 
 ### Server mode (without Docker)
 
@@ -100,12 +111,14 @@ Opens on `http://0.0.0.0:5000`. Same login and UI as Docker. Configure with envi
 |----------|---------|-------------|
 | `PORT` | `5000` | Server port |
 | `HOST` | `0.0.0.0` | Bind address |
-| `SECRET_KEY` | random | Session secret (set for persistent sessions) |
+| `SECRET_KEY` | random | Session secret (set for persistent sessions; an empty value also means random) |
+| `COOKIE_SECURE` | `false` | Set `true` when served over HTTPS so cookies are HTTPS-only |
+| `SETUP_TOKEN` | — | If set, the first-run setup page requires this token |
 | `DB_DIR` | `~/.cert-generator` | Database directory |
-| `EXPORT_DIR` | `~/Downloads` | Export download directory |
+| `EXPORT_DIR` | `~/Downloads` | Desktop mode only: where exports are saved. Server mode sends exports straight to the browser |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
-| `RESET_PASSWORD` | — | One-time: reset a user's password (`username:newpassword`) |
-| `RESET_MFA` | — | One-time: disable MFA and clear trusted devices for a user |
+| `RESET_PASSWORD` | — | One-time: reset a user's password (`username:newpassword`), clear their trusted devices, and end their sessions |
+| `RESET_MFA` | — | One-time: disable MFA, clear trusted devices, and end sessions for a user |
 
 ### Desktop app (from source)
 
@@ -115,6 +128,15 @@ python -m app.main
 ```
 
 This opens a native window with the full UI. App token authentication is handled automatically.
+
+### Running tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+CI runs the same suite on Python 3.10 and 3.14 and builds the Docker image for every push and pull request to `master`.
 
 ## Server hardening
 
@@ -127,13 +149,18 @@ The embedded web server is hardened for both desktop and server use:
 - **Auto-shutdown** — the server thread is daemonic and shuts down when the window closes
 
 **Server mode (Docker / standalone):**
-- **Login authentication** — on first launch, you create an admin account; all subsequent access requires sign-in with username and password (bcrypt-hashed, session-based)
-- **TOTP MFA** — optional second factor via any authenticator app; enable per-user from MFA Settings
-- **Trusted devices** — "Trust this device" sets an httpOnly cookie with a SHA-256 hashed token; auto-login skips password and MFA for 30 days unless "Require password every visit" is enabled
-- **Session cookies** — httpOnly, signed with `SECRET_KEY`
+- **Login authentication** — on first launch, you create an admin account (optionally gated by `SETUP_TOKEN`); all subsequent access requires sign-in with username and password (bcrypt-hashed, session-based)
+- **Brute-force protection** — repeated failed passwords, MFA codes, or encryption passwords lock that account's attempts for 1 minute, doubling up to 15 minutes. Trusted devices are unaffected
+- **TOTP MFA** — optional second factor via any authenticator app; enable per-user from MFA Settings. Each code is accepted only once
+- **Trusted devices** — "Trust this device" sets an httpOnly cookie with a SHA-256 hashed token; auto-login skips password and MFA for 30 days unless "Require password every visit" is enabled. Signing out forgets the device
+- **Session revocation** — password resets, MFA changes, "Revoke all devices", and backup restores end every other session
+- **Session cookies** — httpOnly, `SameSite=Lax`, signed with `SECRET_KEY`; `Secure` when `COOKIE_SECURE=true`
+- **Cross-site request protection** — state-changing requests from other sites are rejected (using `Sec-Fetch-Site`, falling back to `Origin`)
+- **Security headers** — Content-Security-Policy, `X-Frame-Options: DENY`, `nosniff`, and `Cache-Control: no-store` on API responses
+- **No key material on the server's disk** — exports and backups stream to the browser instead of being written to an export folder
 
 **Both modes:**
-- **CSRF protection** — POST/DELETE/PUT requests must originate from the bound address (desktop) or carry a valid session (server)
+- **Encryption fails closed** — while an encrypted database is locked, anything that would store a private key is refused rather than written in plaintext
 - **Clean exit** — `sys.exit(0)` after the UI closes ensures proper cleanup
 
 ### Account recovery
@@ -163,17 +190,19 @@ RESET_PASSWORD=admin:newpassword python -m app.serve
 RESET_MFA=admin python -m app.serve
 ```
 
-`RESET_MFA` disables TOTP, clears all trusted devices, and turns off "Require password every visit" for the named user. Neither variable affects database encryption — the master encryption password is separate from the login password.
+`RESET_MFA` disables TOTP, clears all trusted devices, and turns off "Require password every visit" for the named user. `RESET_PASSWORD` also clears the user's trusted devices. Both end every existing session for that user, so recovering from a compromised account locks the intruder out. Neither variable affects database encryption — the master encryption password is separate from the login password.
+
+With both MFA and database encryption enabled, the MFA page asks for the encryption password after a restart, because the MFA secret is encrypted too. Entering it also unlocks the database.
 
 ### Quick start
 
 1. Launch the app (Docker: `docker compose up -d`, Desktop: run `CertGenerator.exe`)
 2. Server mode: create your admin account on first launch, then sign in
 3. Click **+ CA** and enter a domain name (e.g. `example.com`) and lifetime
-3. Select your CA in the sidebar
-4. Click **+ Issue Certificate** to generate leaf certs
-5. Use **Export** to download certificates in your preferred format
-6. Click **+ SSH Key** to generate an SSH key pair, or **Import SSH Key** to add an existing key
+4. Select your CA in the sidebar
+5. Click **+ Issue Certificate** to generate leaf certs
+6. Use **Export** to download certificates in your preferred format
+7. Click **+ SSH Key** to generate an SSH key pair, or **Import SSH Key** to add an existing key
 
 ## Supported algorithms
 
@@ -192,7 +221,7 @@ RESET_MFA=admin python -m app.serve
 | PEM | `.pem` | Base64-encoded, widely supported |
 | DER | `.der` | Binary format |
 | CRT | `.crt` | DER-encoded with Windows-native extension |
-| PKCS12 | `.pfx` | Bundled cert + key, optional password protection |
+| PKCS12 | `.pfx` | Bundled cert + key, password required |
 
 Export options per certificate:
 - **Certificate + Key** — full bundle
@@ -207,11 +236,43 @@ All CAs, certificates, and SSH keys are stored in a SQLite database. When databa
 | Mode | Database path | Exports path |
 |------|--------------|--------------|
 | **Desktop** | `~/.cert-generator/certs.db` | `~/Downloads/` |
-| **Docker** | `/data/db/certs.db` (host: `/opt/docker/cert-generator/db/`) | `/data/exports/` (host: `/opt/docker/cert-generator/exports/`) |
+| **Docker** | `/data/db/certs.db` (host: `/opt/docker/cert-generator/db/`) | Downloaded by your browser; nothing is kept on the server |
 
 The database format is identical in both modes. Use **Backup** to create an encrypted `.certbak` file on one and **Restore** to load it on the other — this is the supported way to migrate data between Docker and desktop.
 
 ## Version history
+
+### v2.0.0 — 2026-09-14
+
+**Security**
+- Database encryption fails closed: while locked, creating or importing keys returns an error instead of storing them unencrypted
+- Login, MFA, and encryption-password attempts are rate limited; TOTP codes cannot be replayed
+- Cross-site request protection, `SameSite=Lax` session cookies, optional `COOKIE_SECURE`, and CSP / frame / nosniff headers in server mode
+- Sessions can be revoked: password resets, MFA changes, "Revoke all devices", and restores end other sessions; signing out forgets the trusted device
+- Server-mode exports stream to the browser instead of accumulating unencrypted keys in `/data/exports`
+- Optional `SETUP_TOKEN` for first-run setup; setup can no longer race to create two admins
+- Constant-time token comparison and exact Origin matching in desktop mode; username timing no longer reveals valid accounts
+- Request size capped at 32 MB; concurrent Scrypt derivations limited
+- Dependencies pinned to exact versions; Docker base image pinned by digest; release workflow actions pinned by SHA, tag-on-default-branch check, and `latest` only moves for the newest release
+- CI now runs tests on Python 3.10 and 3.14 and builds the image on every push and pull request
+
+**Fixed**
+- MFA users could not sign in after a restart with database encryption enabled (500 error), and `RESET_MFA` crashed at startup in that state
+- An empty `SECRET_KEY` from Docker Compose broke setup and login
+- Intermediate CAs could be created under intermediates with path length 0, producing invalid chains; deleting a root with a three-level hierarchy failed
+- Full-chain export now includes every issuer up to the root
+- IP addresses in SANs are encoded as IP addresses, not DNS names; invalid SAN entries are rejected
+- CRLs record the actual revocation time instead of the issue time
+- Passwords longer than 72 bytes caused a 500 with bcrypt 5; MFA disable no longer trims the login password
+- Malformed JSON request bodies return 400 instead of 500; database connections are closed; encryption password changes run in a single transaction
+
+**Behavior changes**
+- `GET /api/download` is removed. In server mode, export, CRL, and backup endpoints return the file itself (`Content-Disposition: attachment`) instead of JSON with a server path. Desktop mode is unchanged
+- PKCS12 exports without a password return 400 instead of silently using `changeit`
+- Sign out is now a POST; visiting `/logout` directly returns to the app
+- Resetting a password clears that user's trusted devices; enabling or disabling MFA and "Revoke all devices" sign out other sessions
+- Creating an intermediate under an intermediate returns 400
+- Files left in `/data/exports` by earlier versions are not deleted automatically; the server logs a warning at startup if any exist
 
 ### v1.9.0 — 2026-09-04
 
