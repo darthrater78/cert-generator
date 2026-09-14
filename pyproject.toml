@@ -16,7 +16,7 @@ dependencies = [
 Repository = "https://github.com/darthrater78/cert-generator"
 
 [project.optional-dependencies]
-desktop = ["pywebview==5.3.2"]
+desktop = ["pywebview==6.2.1"]
 
 [project.scripts]
 cert-generator = "app.main:main"
