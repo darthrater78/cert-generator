@@ -681,7 +681,9 @@ body {
       {% if server_mode %}
       <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:12px;color:var(--text-dim)">Signed in as <strong style="color:var(--text)">{{ username }}</strong></span>
-        <a href="/logout" style="font-size:12px;color:var(--text-dim);text-decoration:none" onmouseover="this.style.color='var(--danger)'" onmouseout="this.style.color='var(--text-dim)'">Sign out</a>
+        <form method="POST" action="/logout" style="margin:0">
+          <button type="submit" style="font-size:12px;color:var(--text-dim);background:none;border:none;padding:0;cursor:pointer" onmouseover="this.style.color='var(--danger)'" onmouseout="this.style.color='var(--text-dim)'">Sign out</button>
+        </form>
       </div>
       {% endif %}
     </div>
@@ -1789,6 +1791,9 @@ async function api(url, opts = {}) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Request failed' }));
+    if (res.status === 423 && err.locked) {
+      document.getElementById('unlockOverlay').classList.remove('hidden');
+    }
     throw new Error(err.error || 'Request failed');
   }
   return res;
@@ -2070,8 +2075,7 @@ async function exportCRL() {
   if (!currentCAId) return;
   try {
     const res = await api('/api/ca/' + currentCAId + '/crl');
-    const result = await res.json();
-    triggerDownload(result.path);
+    await handleExportResponse(res);
   } catch (e) {
     toast(e.message, 'error');
   }
@@ -2086,18 +2090,36 @@ function updateCaPasswordVisibility() {
   else if (!document.getElementById('caExportPassword').value) document.getElementById('caExportPassword').value = 'changeit';
 }
 
-function triggerDownload(path) {
-  if (SERVER_MODE) {
-    window.open('/api/download?path=' + encodeURIComponent(path), '_blank');
+function filenameFromDisposition(header) {
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (encoded) return decodeURIComponent(encoded[1]);
+  const plain = /filename="?([^";]+)"?/i.exec(header);
+  return plain ? plain[1] : 'download';
+}
+
+// Server mode streams the file back; desktop mode saves it and returns the path.
+async function handleExportResponse(res) {
+  if (!SERVER_MODE) {
+    const result = await res.json();
+    toast('Saved to ' + result.path);
+    return;
   }
-  toast('Saved to ' + path);
+  const name = filenameFromDisposition(res.headers.get('Content-Disposition') || '');
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  toast('Downloaded ' + name);
 }
 
 async function saveExport(url, body) {
   try {
     const res = await api(url, { method: 'POST', body: JSON.stringify(body) });
-    const result = await res.json();
-    triggerDownload(result.path);
+    await handleExportResponse(res);
   } catch (e) {
     toast(e.message, 'error');
   }
@@ -2162,9 +2184,12 @@ function formatDate(iso) {
 }
 
 function escapeHtml(s) {
-  const div = document.createElement('div');
-  div.textContent = s || '';
-  return div.innerHTML;
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function showGuideTab(tabId, btn) {
@@ -2335,8 +2360,7 @@ async function exportSSHKey() {
       method: 'POST',
       body: JSON.stringify({ part, format: fmt, passphrase: passphrase || undefined, original_passphrase: originalPassphrase || undefined }),
     });
-    const result = await res.json();
-    triggerDownload(result.path);
+    await handleExportResponse(res);
   } catch (e) {
     toast(e.message, 'error');
   }
@@ -2382,9 +2406,8 @@ async function createBackup() {
       method: 'POST',
       body: JSON.stringify({ password: pw }),
     });
-    const result = await res.json();
     hideModal('backupModal');
-    triggerDownload(result.path);
+    await handleExportResponse(res);
   } catch (e) {
     toast(e.message, 'error');
   }

@@ -92,6 +92,22 @@ button:hover { background: var(--accent-hover); }
   text-decoration: none;
 }
 .footer a:hover { color: var(--danger); }
+.footer .link-button {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.footer .link-button:hover { color: var(--danger); background: none; }
+.hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin: -8px 0 12px;
+}
 </style>
 </head>
 <body>
@@ -104,15 +120,20 @@ button:hover { background: var(--accent-hover); }
   <form method="POST" action="/mfa">
     <label for="code">Verification Code</label>
     <input type="text" id="code" name="code" autocomplete="one-time-code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" required autofocus placeholder="000000">
+    {% if locked %}
+    <label for="encryption_password">Encryption Password</label>
+    <input type="password" id="encryption_password" name="encryption_password" autocomplete="off" required>
+    <div class="hint">The database is locked. Your encryption password is needed to read your MFA secret, and unlocks the database.</div>
+    {% endif %}
     <div class="checkbox-row">
       <input type="checkbox" id="trust_device" name="trust_device" value="1">
       <label for="trust_device" style="margin:0">Trust this device for 30 days</label>
     </div>
     <button type="submit">Verify</button>
   </form>
-  <div class="footer">
-    <a href="/logout">Sign out</a>
-  </div>
+  <form class="footer" method="POST" action="/logout">
+    <button type="submit" class="link-button">Sign out</button>
+  </form>
 </div>
 </body>
 </html>

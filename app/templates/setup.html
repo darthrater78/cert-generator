@@ -82,11 +82,16 @@ button:hover { background: var(--accent-hover); }
   <div class="error">{{ error }}</div>
   {% endif %}
   <form method="POST" action="/setup">
+    {% if setup_token_required %}
+    <label for="setup_token">Setup Token</label>
+    <input type="password" id="setup_token" name="setup_token" autocomplete="off" required>
+    <div class="hint">The value of the SETUP_TOKEN environment variable</div>
+    {% endif %}
     <label for="username">Username</label>
     <input type="text" id="username" name="username" autocomplete="username" required autofocus value="{{ username or '' }}">
     <label for="password">Password</label>
     <input type="password" id="password" name="password" autocomplete="new-password" required>
-    <div class="hint">Minimum 8 characters</div>
+    <div class="hint">8 characters to 72 bytes</div>
     <label for="confirm">Confirm Password</label>
     <input type="password" id="confirm" name="confirm" autocomplete="new-password" required>
     <button type="submit">Create Account</button>

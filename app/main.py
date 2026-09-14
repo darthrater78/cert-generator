@@ -9,7 +9,6 @@ import webbrowser
 import webview
 from werkzeug.serving import make_server
 
-from .db import init_db
 from .server import app, set_app_token, set_bound_port
 
 ALLOWED_EXTERNAL_HOSTS = {"github.com"}
@@ -32,8 +31,6 @@ def _find_free_port() -> int:
 
 
 def main() -> None:
-    init_db()
-
     port = _find_free_port()
     token = secrets.token_urlsafe(32)
     set_bound_port(port)

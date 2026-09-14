@@ -18,12 +18,18 @@ services:
     environment:
       - TZ=America/New_York
       - PORT=5000
-      # SECRET_KEY signs session cookies. Without it, a random key is generated
-      # on each startup and users must re-login after a container restart.
+      # SECRET_KEY signs session cookies. If it is unset or empty, a random key
+      # is generated on each startup and users must sign in again after a restart.
       # Generate a persistent key once:
       #   python3 -c "import secrets; print(secrets.token_hex(32))"
       # Then set it in a .env file next to this compose file.
-      - SECRET_KEY=${SECRET_KEY}
+      - SECRET_KEY=${SECRET_KEY:-}
+      # Set to true when the app is served over HTTPS (e.g. behind a reverse proxy)
+      # so session and trusted-device cookies are only sent over HTTPS.
+      # - COOKIE_SECURE=true
+      # Require this token on the first-run setup page, so nobody else can claim
+      # the admin account before you do. Remove it once setup is complete.
+      # - SETUP_TOKEN=${SETUP_TOKEN:-}
       # ── Account recovery (one-time use) ──────────────────────────
       # Uncomment to reset on next container start, then re-comment.
       #
