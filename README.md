@@ -7,7 +7,7 @@ A tool for creating Certificate Authorities and issuing self-signed certificates
 | Mode | Best for | How it runs |
 |------|----------|-------------|
 | **Docker** (recommended) | Servers, shared access | Web app at `http://host:5000` with login authentication |
-| **Standalone EXE** | Individual workstations | Native Windows window, no install needed |
+| **Standalone EXE** | Individual workstations | Native Windows window, built from source with PyInstaller |
 
 Both modes have full feature parity — the same UI, database format, and capabilities. The only differences are how you access it (browser vs native window) and authentication (login vs automatic app token).
 
@@ -87,14 +87,14 @@ Proxies that rewrite the `Host` header should forward the original as `X-Forward
 
 ### Standalone EXE (Windows desktop)
 
-Download `CertGenerator.exe` from the [latest release](https://github.com/darthrater78/cert-generator/releases/latest). Double-click to run — no Python installation needed. The desktop app runs as a native window; no login is required, and no network port is exposed.
-
-To build from source:
+Releases don't include a prebuilt EXE, so build it on a Windows machine:
 
 ```bash
-pip install pyinstaller
+pip install ".[desktop]" pyinstaller
 python build.py
 ```
+
+This produces `dist/CertGenerator.exe`, a single file you can copy to other Windows machines and run without Python. The desktop app runs as a native window; no login is required, and no network port is exposed.
 
 ### Server mode (without Docker)
 
