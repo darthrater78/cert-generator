@@ -606,29 +606,38 @@ body {
   .toast-container { bottom: 12px; right: 12px; left: 12px; }
   .toast { font-size: 12px; }
 }
+.signout-link {
+  font-size: 12px;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.signout-link:hover { color: var(--danger); }
 </style>
 </head>
-<body>
+<body data-server-mode="{{ 'true' if server_mode else 'false' }}">
 <div id="unlockOverlay" class="unlock-overlay hidden">
   <div class="unlock-box">
     <div class="lock-icon">&#x1f512;</div>
     <h2>Database Locked</h2>
     <p class="subtitle">Enter your master password to decrypt private keys</p>
-    <input type="password" id="unlockPassword" placeholder="Master password" onkeydown="if(event.key==='Enter')doUnlock()">
+    <input type="password" id="unlockPassword" placeholder="Master password" data-enter="doUnlock">
     <div class="error-msg" id="unlockError"></div>
-    <button class="btn btn-primary" style="width:100%" onclick="doUnlock()">Unlock</button>
+    <button class="btn btn-primary" style="width:100%" data-action="doUnlock">Unlock</button>
   </div>
 </div>
 
 <div class="app">
-  <button class="hamburger" id="hamburgerBtn" onclick="toggleMobileMenu()" aria-label="Menu">&#9776;</button>
+  <button class="hamburger" id="hamburgerBtn" data-action="toggleMobileMenu" aria-label="Menu">&#9776;</button>
   <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <h1>Cert Generator</h1>
-      <div class="version">v2.0.0</div>
+      <div class="version">v{{ app_version }}</div>
     </div>
     <div class="sidebar-section">
-      <div class="section-header" onclick="toggleSection('ca')">
+      <div class="section-header" data-action="toggleSection" data-arg="ca">
         <span class="section-chevron open" id="caChevron">&#9654;</span>
         <h3>Certificate Authorities</h3>
         <span class="section-count" id="caCount">0</span>
@@ -637,65 +646,72 @@ body {
 
       <hr class="section-divider">
 
-      <div class="section-header" onclick="toggleSection('ssh')">
+      <div class="section-header" data-action="toggleSection" data-arg="ssh">
         <span class="section-chevron open" id="sshChevron">&#9654;</span>
         <h3>SSH Keys</h3>
         <span class="section-count" id="sshCount">0</span>
       </div>
       <ul class="ca-list" id="sshList"></ul>
     </div>
+    <div id="legacyExportsBanner" class="encryption-banner hidden">
+      <h4>&#9888; Old Export Files on the Server</h4>
+      <p><span id="legacyExportsCount">0</span> files in <code id="legacyExportsDir"></code> were written by versions before 2.0.0 and may contain unencrypted private keys.</p>
+      <div class="banner-actions">
+        <button class="btn btn-danger btn-sm" data-action="deleteLegacyExports">Review &amp; Delete</button>
+      </div>
+    </div>
     <div id="encryptionBanner" class="encryption-banner hidden">
       <h4>&#x1f512; Protect Private Keys</h4>
       <p>Your private keys are stored unencrypted. Set a master password to encrypt them at rest with AES-256-GCM. If someone copies your database file, they cannot read your keys without the password.</p>
       <div class="banner-actions">
-        <button class="btn btn-primary btn-sm" onclick="showEncryptionSettings()">Enable Encryption</button>
+        <button class="btn btn-primary btn-sm" data-action="showEncryptionSettings">Enable Encryption</button>
         <label class="banner-dismiss">
           <input type="checkbox" id="bannerDismissCheck"> Don't show again
         </label>
-        <button class="btn btn-ghost btn-sm" onclick="dismissEncryptionBanner()">Dismiss</button>
+        <button class="btn btn-ghost btn-sm" data-action="dismissEncryptionBanner">Dismiss</button>
       </div>
     </div>
     <div class="sidebar-actions">
       <div class="btn-row">
-        <button class="btn-new-ca" style="margin:0" onclick="showCreateSSHKey()">+ SSH Key</button>
-        <button class="btn-new-ca" style="margin:0;background:transparent;border:1px solid var(--border);color:var(--text-dim)" onclick="showImportSSHKey()">&#8615; Import SSH Key</button>
+        <button class="btn-new-ca" style="margin:0" data-action="showCreateSSHKey">+ SSH Key</button>
+        <button class="btn-new-ca" style="margin:0;background:transparent;border:1px solid var(--border);color:var(--text-dim)" data-action="showImportSSHKey">&#8615; Import SSH Key</button>
       </div>
       <div class="btn-row">
-        <button class="btn-new-ca" style="margin:0;background:transparent;border:1px solid var(--border);color:var(--text-dim)" onclick="showCreateCA()">+ CA</button>
+        <button class="btn-new-ca" style="margin:0;background:transparent;border:1px solid var(--border);color:var(--text-dim)" data-action="showCreateCA">+ CA</button>
       </div>
       <div class="btn-row">
-        <button class="btn-help" style="margin:0;flex:1" onclick="showGuide()">? CA Guide</button>
-        <button class="btn-help" style="margin:0;flex:1" onclick="showSSHGuide()">? SSH Guide</button>
+        <button class="btn-help" style="margin:0;flex:1" data-action="showGuide">? CA Guide</button>
+        <button class="btn-help" style="margin:0;flex:1" data-action="showSSHGuide">? SSH Guide</button>
       </div>
       <div class="btn-row">
-        <button class="btn-help" style="margin:0;flex:1" onclick="showBackupModal()">&#128230; Backup</button>
-        <button class="btn-help" style="margin:0;flex:1" onclick="showRestoreModal()">&#128229; Restore</button>
+        <button class="btn-help" style="margin:0;flex:1" data-action="showBackupModal">&#128230; Backup</button>
+        <button class="btn-help" style="margin:0;flex:1" data-action="showRestoreModal">&#128229; Restore</button>
       </div>
-      <button class="btn-help" style="margin:0" id="btnEncryption" onclick="showEncryptionSettings()">&#x1f512; Encryption Settings</button>
+      <button class="btn-help" style="margin:0" id="btnEncryption" data-action="showEncryptionSettings">&#x1f512; Encryption Settings</button>
       {% if server_mode %}
-      <button class="btn-help" style="margin:0" id="btnMFA" onclick="showMFASettings()">&#x1f510; MFA Settings</button>
-      <button class="btn-help" style="margin:0" onclick="showAccountSettings()">&#9881; Account Settings</button>
+      <button class="btn-help" style="margin:0" id="btnMFA" data-action="showMFASettings">&#x1f510; MFA Settings</button>
+      <button class="btn-help" style="margin:0" data-action="showAccountSettings">&#9881; Account Settings</button>
       {% endif %}
-      <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator" onclick="return openExternal(event, this.href)">&#8599; GitHub Repo</a>
-      <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator/releases/tag/v2.0.0" onclick="return openExternal(event, this.href)">&#8599; Release Notes</a>
+      <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator" data-action="openExternalLink">&#8599; GitHub Repo</a>
+      <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator/releases/tag/v{{ app_version }}" data-action="openExternalLink">&#8599; Release Notes</a>
       {% if server_mode %}
       <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:12px;color:var(--text-dim)">Signed in as <strong style="color:var(--text)">{{ username }}</strong></span>
         <form method="POST" action="/logout" style="margin:0">
-          <button type="submit" style="font-size:12px;color:var(--text-dim);background:none;border:none;padding:0;cursor:pointer" onmouseover="this.style.color='var(--danger)'" onmouseout="this.style.color='var(--text-dim)'">Sign out</button>
+          <button type="submit" class="signout-link">Sign out</button>
         </form>
       </div>
       {% endif %}
     </div>
   </div>
-  <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="toggleMobileMenu()"></div>
+  <div class="sidebar-backdrop" id="sidebarBackdrop" data-action="toggleMobileMenu"></div>
 
   <div class="main">
     <div id="welcomeView" class="main-content">
       <div class="empty-state">
         <div class="icon">&#x1f512;</div>
         <p>Create a Certificate Authority to start issuing certificates for your posture demos.</p>
-        <button class="btn btn-primary" style="margin-top: 16px" onclick="showCreateCA()">Create CA</button>
+        <button class="btn btn-primary" style="margin-top: 16px" data-action="showCreateCA">Create CA</button>
       </div>
     </div>
 
@@ -703,9 +719,9 @@ body {
       <div class="main-header">
         <h2 id="caViewTitle"></h2>
         <div class="header-actions">
-          <button class="btn btn-ghost btn-sm" id="btnCreateIntermediate" onclick="showCreateIntermediate()">+ Intermediate CA</button>
-          <button class="btn btn-ghost btn-sm" onclick="showIssueCert()">+ Issue Certificate</button>
-          <button class="btn btn-danger btn-sm" onclick="deleteCurrentCA()">Delete CA</button>
+          <button class="btn btn-ghost btn-sm" id="btnCreateIntermediate" data-action="showCreateIntermediate">+ Intermediate CA</button>
+          <button class="btn btn-ghost btn-sm" data-action="showIssueCert">+ Issue Certificate</button>
+          <button class="btn btn-danger btn-sm" data-action="deleteCurrentCA">Delete CA</button>
         </div>
       </div>
       <div class="main-content">
@@ -714,13 +730,13 @@ body {
           <div class="ca-info-grid" id="caInfo"></div>
           <div class="export-section">
             <span style="font-size:12px;color:var(--text-dim)">Export CA:</span>
-            <select id="caExportFormat" onchange="updateCaPasswordVisibility()">
+            <select id="caExportFormat" data-change="updateCaPasswordVisibility">
               <option value="pkcs12">PKCS12 (.pfx)</option>
               <option value="pem">PEM</option>
               <option value="der">DER</option>
               <option value="crt">CRT (.crt)</option>
             </select>
-            <select id="caExportPart" onchange="updateCaPasswordVisibility()">
+            <select id="caExportPart" data-change="updateCaPasswordVisibility">
               <option value="both">Certificate + Key</option>
               <option value="public">Certificate Only</option>
               <option value="private">Private Key Only</option>
@@ -728,9 +744,16 @@ body {
             <input type="password" id="caExportPassword" value="changeit" title="Default password: changeit" placeholder="Default: changeit"
               style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;width:160px;outline:none">
             <span style="font-size:11px;color:var(--text-dim);margin-left:-4px" title="Default password is 'changeit'. Required for Windows certificate import.">(default: changeit)</span>
-            <button class="btn btn-ghost btn-sm" onclick="exportCA()">Download</button>
+            <button class="btn btn-ghost btn-sm" data-action="exportCA">Download</button>
             <span style="border-left:1px solid var(--border);height:20px;margin:0 4px"></span>
-            <button class="btn btn-ghost btn-sm" onclick="exportCRL()" title="Generate and download a CRL file signed by this CA. Import into Windows cert stores to provide offline revocation status.">Export CRL</button>
+            <select id="crlLifetime" title="How long the CRL stays valid. Endpoints treat revocation data as stale after this, so re-export and re-import before it expires.">
+              <option value="7">CRL valid 7 days</option>
+              <option value="30">CRL valid 30 days</option>
+              <option value="90">CRL valid 90 days</option>
+              <option value="365">CRL valid 1 year</option>
+              <option value="3650" selected>CRL valid 10 years</option>
+            </select>
+            <button class="btn btn-ghost btn-sm" data-action="exportCRL" title="Generate and download a CRL file signed by this CA. Import into Windows cert stores to provide offline revocation status.">Export CRL</button>
           </div>
         </div>
 
@@ -763,7 +786,7 @@ body {
       <div class="main-header">
         <h2 id="sshKeyViewTitle"></h2>
         <div class="header-actions">
-          <button class="btn btn-danger btn-sm" onclick="deleteSSHKey()">Delete Key</button>
+          <button class="btn btn-danger btn-sm" data-action="deleteSSHKey">Delete Key</button>
         </div>
       </div>
       <div class="main-content">
@@ -775,7 +798,7 @@ body {
           <h3>Public Key</h3>
           <div class="pubkey-box" id="sshPubKey"></div>
           <div class="copy-row">
-            <button class="btn btn-ghost btn-sm" onclick="copyPublicKey()">Copy Public Key</button>
+            <button class="btn btn-ghost btn-sm" data-action="copyPublicKey">Copy Public Key</button>
           </div>
         </div>
         <div class="card">
@@ -793,9 +816,9 @@ body {
               style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;width:160px;outline:none;display:none">
             <input type="password" id="sshExportPassphrase" placeholder="Export passphrase (optional)"
               style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;width:180px;outline:none">
-            <button class="btn btn-ghost btn-sm" onclick="exportSSHKey()">Download</button>
+            <button class="btn btn-ghost btn-sm" data-action="exportSSHKey">Download</button>
             <span style="border-left:1px solid var(--border);height:20px;margin:0 4px"></span>
-            <button class="btn btn-ghost btn-sm" onclick="copyPrivateKey()" title="Copy private key PEM to clipboard for Bitwarden SSH import">Copy Private Key (Bitwarden)</button>
+            <button class="btn btn-ghost btn-sm" data-action="copyPrivateKey" title="Copy private key PEM to clipboard for Bitwarden SSH import">Copy Private Key (Bitwarden)</button>
           </div>
         </div>
       </div>
@@ -835,8 +858,8 @@ body {
       </div>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="hideModal('createSSHKeyModal')">Cancel</button>
-      <button class="btn btn-primary" onclick="generateSSHKey()">Generate Key Pair</button>
+      <button class="btn btn-ghost" data-action="hideModal" data-arg="createSSHKeyModal">Cancel</button>
+      <button class="btn btn-primary" data-action="generateSSHKey">Generate Key Pair</button>
     </div>
   </div>
 </div>
@@ -867,8 +890,8 @@ body {
       </div>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="hideModal('importSSHKeyModal')">Cancel</button>
-      <button class="btn btn-primary" onclick="importSSHKey()">Import Key</button>
+      <button class="btn btn-ghost" data-action="hideModal" data-arg="importSSHKeyModal">Cancel</button>
+      <button class="btn btn-primary" data-action="importSSHKey">Import Key</button>
     </div>
   </div>
 </div>
@@ -911,8 +934,8 @@ body {
       </div>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="hideModal('createCAModal')">Cancel</button>
-      <button class="btn btn-primary" onclick="createCA()">Create CA</button>
+      <button class="btn btn-ghost" data-action="hideModal" data-arg="createCAModal">Cancel</button>
+      <button class="btn btn-primary" data-action="createCA">Create CA</button>
     </div>
   </div>
 </div>
@@ -923,7 +946,7 @@ body {
     <div class="form-row full">
       <div class="form-group">
         <label>Certificate Template</label>
-        <select id="certTemplate" onchange="onTemplateChange()">
+        <select id="certTemplate" data-change="onTemplateChange">
           <option value="web-server">Web Server</option>
           <option value="computer">Computer</option>
           <option value="client-auth">Client Authentication</option>
@@ -988,8 +1011,8 @@ body {
       </label>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="hideModal('issueCertModal')">Cancel</button>
-      <button class="btn btn-primary" onclick="issueCert()">Issue Certificate</button>
+      <button class="btn btn-ghost" data-action="hideModal" data-arg="issueCertModal">Cancel</button>
+      <button class="btn btn-primary" data-action="issueCert">Issue Certificate</button>
     </div>
   </div>
 </div>
@@ -1038,8 +1061,8 @@ body {
       </div>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="hideModal('createIntermediateModal')">Cancel</button>
-      <button class="btn btn-primary" onclick="createIntermediate()">Create Intermediate CA</button>
+      <button class="btn btn-ghost" data-action="hideModal" data-arg="createIntermediateModal">Cancel</button>
+      <button class="btn btn-primary" data-action="createIntermediate">Create Intermediate CA</button>
     </div>
   </div>
 </div>
@@ -1080,8 +1103,8 @@ body {
       </label>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="hideModal('exportCertModal')">Cancel</button>
-      <button class="btn btn-primary" onclick="doExportCert()">Download</button>
+      <button class="btn btn-ghost" data-action="hideModal" data-arg="exportCertModal">Cancel</button>
+      <button class="btn btn-primary" data-action="doExportCert">Download</button>
     </div>
   </div>
 </div>
@@ -1091,14 +1114,14 @@ body {
     <h3>Certificate Import Guide</h3>
     <p class="guide-subtitle">How to create, export, and install certificates for each template.</p>
     <div class="guide-tabs" id="guideTabs">
-      <button class="guide-tab active" onclick="showGuideTab('guide-general',this)">General</button>
-      <button class="guide-tab" onclick="showGuideTab('guide-computer',this)">Computer</button>
-      <button class="guide-tab" onclick="showGuideTab('guide-webserver',this)">Web Server</button>
-      <button class="guide-tab" onclick="showGuideTab('guide-clientauth',this)">Client Auth</button>
-      <button class="guide-tab" onclick="showGuideTab('guide-user',this)">User</button>
-      <button class="guide-tab" onclick="showGuideTab('guide-codesigning',this)">Code Signing</button>
-      <button class="guide-tab" onclick="showGuideTab('guide-email',this)">Email (S/MIME)</button>
-      <button class="guide-tab" onclick="showGuideTab('guide-crl',this)">CRL (Revocation)</button>
+      <button class="guide-tab active" data-action="showGuideTab" data-arg="guide-general">General</button>
+      <button class="guide-tab" data-action="showGuideTab" data-arg="guide-computer">Computer</button>
+      <button class="guide-tab" data-action="showGuideTab" data-arg="guide-webserver">Web Server</button>
+      <button class="guide-tab" data-action="showGuideTab" data-arg="guide-clientauth">Client Auth</button>
+      <button class="guide-tab" data-action="showGuideTab" data-arg="guide-user">User</button>
+      <button class="guide-tab" data-action="showGuideTab" data-arg="guide-codesigning">Code Signing</button>
+      <button class="guide-tab" data-action="showGuideTab" data-arg="guide-email">Email (S/MIME)</button>
+      <button class="guide-tab" data-action="showGuideTab" data-arg="guide-crl">CRL (Revocation)</button>
     </div>
 
     <div class="guide-content" id="guide-general">
@@ -1380,7 +1403,7 @@ body {
     </div>
 
     <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="hideModal('guideModal')">Close</button>
+      <button class="btn btn-ghost" data-action="hideModal" data-arg="guideModal">Close</button>
     </div>
   </div>
 </div>
@@ -1404,8 +1427,8 @@ body {
       </div>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="hideModal('backupModal')">Cancel</button>
-      <button class="btn btn-primary" onclick="createBackup()">Create Encrypted Backup</button>
+      <button class="btn btn-ghost" data-action="hideModal" data-arg="backupModal">Cancel</button>
+      <button class="btn btn-primary" data-action="createBackup">Create Encrypted Backup</button>
     </div>
   </div>
 </div>
@@ -1431,8 +1454,8 @@ body {
       </div>
     </div>
     <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="hideModal('restoreModal')">Cancel</button>
-      <button class="btn btn-danger" onclick="restoreBackup()">Replace All Data</button>
+      <button class="btn btn-ghost" data-action="hideModal" data-arg="restoreModal">Cancel</button>
+      <button class="btn btn-danger" data-action="restoreBackup">Replace All Data</button>
     </div>
   </div>
 </div>
@@ -1442,11 +1465,11 @@ body {
     <h3>SSH Key Guide</h3>
     <p class="guide-subtitle">How to generate, export, and use SSH key pairs.</p>
     <div class="guide-tabs" id="sshGuideTabs">
-      <button class="guide-tab active" onclick="showSSHGuideTab('sshguide-overview',this)">Overview</button>
-      <button class="guide-tab" onclick="showSSHGuideTab('sshguide-bitwarden',this)">Bitwarden</button>
-      <button class="guide-tab" onclick="showSSHGuideTab('sshguide-linux',this)">Linux / macOS</button>
-      <button class="guide-tab" onclick="showSSHGuideTab('sshguide-windows',this)">Windows</button>
-      <button class="guide-tab" onclick="showSSHGuideTab('sshguide-github',this)">GitHub / GitLab</button>
+      <button class="guide-tab active" data-action="showSSHGuideTab" data-arg="sshguide-overview">Overview</button>
+      <button class="guide-tab" data-action="showSSHGuideTab" data-arg="sshguide-bitwarden">Bitwarden</button>
+      <button class="guide-tab" data-action="showSSHGuideTab" data-arg="sshguide-linux">Linux / macOS</button>
+      <button class="guide-tab" data-action="showSSHGuideTab" data-arg="sshguide-windows">Windows</button>
+      <button class="guide-tab" data-action="showSSHGuideTab" data-arg="sshguide-github">GitHub / GitLab</button>
     </div>
 
     <div class="guide-content" id="sshguide-overview">
@@ -1558,7 +1581,7 @@ body {
     </div>
 
     <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="hideModal('sshGuideModal')">Close</button>
+      <button class="btn btn-ghost" data-action="hideModal" data-arg="sshGuideModal">Close</button>
     </div>
   </div>
 </div>
@@ -1589,8 +1612,8 @@ body {
         </div>
       </div>
       <div class="modal-actions">
-        <button class="btn btn-ghost" onclick="hideModal('encryptionModal')">Cancel</button>
-        <button class="btn btn-primary" onclick="doEnableEncryption()">Enable Encryption</button>
+        <button class="btn btn-ghost" data-action="hideModal" data-arg="encryptionModal">Cancel</button>
+        <button class="btn btn-primary" data-action="doEnableEncryption">Enable Encryption</button>
       </div>
     </div>
 
@@ -1619,7 +1642,7 @@ body {
             <input type="password" id="encChangeConfirm" placeholder="Re-enter new password">
           </div>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="doChangePassword()">Change Password</button>
+        <button class="btn btn-primary btn-sm" data-action="doChangePassword">Change Password</button>
       </div>
 
       <div class="card">
@@ -1631,11 +1654,11 @@ body {
             <input type="password" id="encDisablePassword" placeholder="Enter current password to confirm">
           </div>
         </div>
-        <button class="btn btn-danger btn-sm" onclick="doDisableEncryption()">Disable Encryption</button>
+        <button class="btn btn-danger btn-sm" data-action="doDisableEncryption">Disable Encryption</button>
       </div>
 
       <div class="modal-actions">
-        <button class="btn btn-ghost" onclick="hideModal('encryptionModal')">Close</button>
+        <button class="btn btn-ghost" data-action="hideModal" data-arg="encryptionModal">Close</button>
       </div>
     </div>
   </div>
@@ -1654,8 +1677,8 @@ body {
         <strong>Trust devices:</strong> You can mark devices as trusted to skip the verification code for 30 days.
       </div>
       <div class="modal-actions">
-        <button class="btn btn-ghost" onclick="hideModal('mfaModal')">Cancel</button>
-        <button class="btn btn-primary" onclick="doMFASetup()">Enable MFA</button>
+        <button class="btn btn-ghost" data-action="hideModal" data-arg="mfaModal">Cancel</button>
+        <button class="btn btn-primary" data-action="doMFASetup">Enable MFA</button>
       </div>
     </div>
 
@@ -1675,8 +1698,8 @@ body {
         </div>
       </div>
       <div class="modal-actions">
-        <button class="btn btn-ghost" onclick="cancelMFASetup()">Cancel</button>
-        <button class="btn btn-primary" onclick="doMFAConfirm()">Verify &amp; Enable</button>
+        <button class="btn btn-ghost" data-action="cancelMFASetup">Cancel</button>
+        <button class="btn btn-primary" data-action="doMFAConfirm">Verify &amp; Enable</button>
       </div>
     </div>
 
@@ -1689,7 +1712,7 @@ body {
         <h3 style="font-size:13px">Trusted Devices</h3>
         <div id="mfaDeviceList" style="margin-top:8px"></div>
         <div style="margin-top:8px">
-          <button class="btn btn-danger btn-sm" onclick="doRevokeDevices()">Revoke All</button>
+          <button class="btn btn-danger btn-sm" data-action="doRevokeDevices">Revoke All</button>
         </div>
       </div>
 
@@ -1708,11 +1731,11 @@ body {
             <input type="text" id="mfaDisableCode" placeholder="000000" maxlength="6" inputmode="numeric" style="letter-spacing:0.2em;text-align:center">
           </div>
         </div>
-        <button class="btn btn-danger btn-sm" onclick="doMFADisable()">Disable MFA</button>
+        <button class="btn btn-danger btn-sm" data-action="doMFADisable">Disable MFA</button>
       </div>
 
       <div class="modal-actions">
-        <button class="btn btn-ghost" onclick="hideModal('mfaModal')">Close</button>
+        <button class="btn btn-ghost" data-action="hideModal" data-arg="mfaModal">Close</button>
       </div>
     </div>
   </div>
@@ -1725,7 +1748,7 @@ body {
     <div class="card" style="margin-bottom:12px">
       <h3 style="font-size:13px">Session Settings</h3>
       <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
-        <input type="checkbox" id="acctRequirePassword" onchange="doToggleRequirePasswordAcct()">
+        <input type="checkbox" id="acctRequirePassword" data-change="doToggleRequirePasswordAcct">
         <label for="acctRequirePassword" style="margin:0;font-size:13px;color:var(--text-dim);cursor:pointer">Require password on every visit</label>
       </div>
       <p style="font-size:11px;color:var(--text-dim);margin-top:6px">When off, trusted devices auto-login without a password. When on, your password is always required but trusted devices skip the MFA code.</p>
@@ -1735,1043 +1758,18 @@ body {
       <h3 style="font-size:13px">Trusted Devices</h3>
       <div id="acctDeviceList" style="margin-top:8px"></div>
       <div style="margin-top:8px">
-        <button class="btn btn-danger btn-sm" onclick="doRevokeDevicesAcct()">Revoke All</button>
+        <button class="btn btn-danger btn-sm" data-action="doRevokeDevicesAcct">Revoke All</button>
       </div>
     </div>
 
     <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="hideModal('accountModal')">Close</button>
+      <button class="btn btn-ghost" data-action="hideModal" data-arg="accountModal">Close</button>
     </div>
   </div>
 </div>
 
 <div class="toast-container" id="toasts"></div>
 
-<script>
-function toggleMobileMenu() {
-  const sidebar = document.getElementById('sidebar');
-  const backdrop = document.getElementById('sidebarBackdrop');
-  const btn = document.getElementById('hamburgerBtn');
-  const open = sidebar.classList.toggle('open');
-  if (open) { backdrop.classList.add('open'); btn.style.display = 'none'; }
-  else { backdrop.classList.remove('open'); btn.style.display = ''; }
-}
-function closeMobileMenu() {
-  document.getElementById('sidebar').classList.remove('open');
-  document.getElementById('sidebarBackdrop').classList.remove('open');
-  document.getElementById('hamburgerBtn').style.display = '';
-}
-
-const SERVER_MODE = {{ 'true' if server_mode else 'false' }};
-let currentCAId = null;
-let currentSSHKeyId = null;
-let exportCertId = null;
-
-const TEMPLATE_LABELS = {
-  'web-server': 'Web Server',
-  'computer': 'Computer',
-  'client-auth': 'Client Auth',
-  'user': 'User',
-  'code-signing': 'Code Signing',
-  'email': 'Email (S/MIME)',
-};
-const TEMPLATE_DESCS = {
-  'web-server': 'Server Authentication',
-  'computer': 'Client Authentication, Server Authentication',
-  'client-auth': 'Client Authentication',
-  'user': 'Client Authentication, Smart Card Logon',
-  'code-signing': 'Code Signing',
-  'email': 'Email Protection',
-};
-
-async function api(url, opts = {}) {
-  const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...opts.headers },
-    ...opts,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Request failed' }));
-    if (res.status === 423 && err.locked) {
-      document.getElementById('unlockOverlay').classList.remove('hidden');
-    }
-    throw new Error(err.error || 'Request failed');
-  }
-  return res;
-}
-
-function toast(msg, type = 'success') {
-  const el = document.createElement('div');
-  el.className = 'toast toast-' + type;
-  el.textContent = msg;
-  document.getElementById('toasts').appendChild(el);
-  setTimeout(() => el.remove(), 3000);
-}
-
-function showModal(id) { closeMobileMenu(); document.getElementById(id).classList.remove('hidden'); }
-function hideModal(id) { document.getElementById(id).classList.add('hidden'); }
-
-function showCreateCA() { showModal('createCAModal'); document.getElementById('caDomain').focus(); }
-function showIssueCert() { showModal('issueCertModal'); document.getElementById('certCN').focus(); }
-
-async function loadCAs() {
-  const res = await api('/api/ca');
-  const cas = await res.json();
-  const list = document.getElementById('caList');
-  list.innerHTML = '';
-
-  const roots = cas.filter(c => !c.parent_ca_id);
-  const childrenOf = (pid) => cas.filter(c => c.parent_ca_id === pid);
-
-  roots.forEach(ca => {
-    const li = document.createElement('li');
-    li.className = 'ca-item' + (ca.id === currentCAId ? ' active' : '');
-    li.innerHTML = '<span class="dot"></span><span class="ca-name">' +
-      escapeHtml(ca.name) + '</span>';
-    li.onclick = () => selectCA(ca.id);
-    list.appendChild(li);
-
-    childrenOf(ca.id).forEach(child => {
-      const cli = document.createElement('li');
-      cli.className = 'ca-item intermediate' + (child.id === currentCAId ? ' active' : '');
-      cli.innerHTML = '<span class="dot"></span><span class="ca-name">' +
-        escapeHtml(child.name) + '</span>';
-      cli.onclick = () => selectCA(child.id);
-      list.appendChild(cli);
-    });
-  });
-
-  document.getElementById('caCount').textContent = cas.length;
-  if (cas.length === 0 && !currentSSHKeyId) {
-    document.getElementById('welcomeView').classList.remove('hidden');
-    document.getElementById('caView').classList.add('hidden');
-  }
-}
-
-async function selectCA(caId) {
-  closeMobileMenu();
-  currentCAId = caId;
-  currentSSHKeyId = null;
-  const res = await api('/api/ca/' + caId);
-  const ca = await res.json();
-
-  document.getElementById('welcomeView').classList.add('hidden');
-  document.getElementById('sshKeyView').classList.add('hidden');
-  document.getElementById('caView').classList.remove('hidden');
-  document.getElementById('caViewTitle').textContent = ca.name;
-
-  const isRoot = ca.is_root;
-  document.getElementById('btnCreateIntermediate').classList.toggle('hidden', !isRoot);
-
-  const expired = new Date(ca.not_after) < new Date();
-  const typeBadge = isRoot
-    ? '<span class="badge badge-active">Root</span>'
-    : '<span class="badge badge-algo">Intermediate</span>';
-  document.getElementById('caInfo').innerHTML =
-    infoItem('Type', typeBadge) +
-    infoItem('Domain', escapeHtml(ca.domain)) +
-    infoItem('Algorithm', '<span class="badge badge-algo">' + escapeHtml(ca.algorithm) + '</span>') +
-    infoItem('Serial', serialToggle(ca.serial)) +
-    infoItem('Created', formatDate(ca.not_before)) +
-    infoItem('Expires', formatDate(ca.not_after)) +
-    infoItem('Status', expired
-      ? '<span class="badge badge-expired">Expired</span>'
-      : '<span class="badge badge-active">Active</span>');
-
-  updateCaPasswordVisibility();
-  loadCerts(caId);
-  loadCAs();
-}
-
-async function loadCerts(caId) {
-  const res = await api('/api/ca/' + caId + '/certs');
-  const certs = await res.json();
-  const tbody = document.getElementById('certTableBody');
-  const noCerts = document.getElementById('noCerts');
-
-  if (certs.length === 0) {
-    tbody.innerHTML = '';
-    noCerts.classList.remove('hidden');
-    document.getElementById('certTableContainer').querySelector('table').classList.add('hidden');
-    return;
-  }
-
-  noCerts.classList.add('hidden');
-  document.getElementById('certTableContainer').querySelector('table').classList.remove('hidden');
-
-  tbody.innerHTML = certs.map(c => {
-    const expired = new Date(c.not_after) < new Date();
-    let status = '';
-    if (c.revoked) status = '<span class="badge badge-revoked">Revoked</span>';
-    else if (expired) status = '<span class="badge badge-expired">Expired</span>';
-    else status = '<span class="badge badge-active">Active</span>';
-
-    const tmplLabel = TEMPLATE_LABELS[c.template] || c.template || 'Web Server';
-    return '<tr>' +
-      '<td>' + escapeHtml(c.common_name) + '</td>' +
-      '<td><span class="badge badge-algo">' + escapeHtml(tmplLabel) + '</span></td>' +
-      '<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(c.san_domains) + '</td>' +
-      '<td><span class="badge badge-algo">' + escapeHtml(c.algorithm) + '</span></td>' +
-      '<td>' + formatDate(c.not_after) + '</td>' +
-      '<td>' + status + '</td>' +
-      '<td>' +
-        '<button class="btn btn-ghost btn-sm" onclick="showExportCert(' + c.id + ')">Export</button> ' +
-        (!c.revoked ? '<button class="btn btn-ghost btn-sm" onclick="revokeCert(' + c.id + ')">Revoke</button> ' : '') +
-        '<button class="btn btn-danger btn-sm" onclick="deleteCert(' + c.id + ')">Delete</button>' +
-      '</td></tr>';
-  }).join('');
-}
-
-function lifetimeDaysFromInputs(valueId, unitId) {
-  const value = parseInt(document.getElementById(valueId).value);
-  const unit = document.getElementById(unitId).value;
-  return unit === 'years' ? value * 365 : value;
-}
-
-async function createCA() {
-  const domain = document.getElementById('caDomain').value.trim();
-  if (!domain) { toast('Domain is required', 'error'); return; }
-
-  try {
-    const res = await api('/api/ca', {
-      method: 'POST',
-      body: JSON.stringify({
-        domain,
-        name: document.getElementById('caName').value.trim(),
-        algorithm: document.getElementById('caAlgorithm').value,
-        lifetime_days: lifetimeDaysFromInputs('caLifetime', 'caLifetimeUnit'),
-      }),
-    });
-    const ca = await res.json();
-    hideModal('createCAModal');
-    document.getElementById('caDomain').value = '';
-    document.getElementById('caName').value = '';
-    toast('CA created: ' + ca.name);
-    selectCA(ca.id);
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function deleteCurrentCA() {
-  if (!currentCAId) return;
-  if (!confirm('Delete this CA and all its certificates?')) return;
-  try {
-    await api('/api/ca/' + currentCAId, { method: 'DELETE' });
-    currentCAId = null;
-    document.getElementById('caView').classList.add('hidden');
-    document.getElementById('welcomeView').classList.remove('hidden');
-    toast('CA deleted');
-    loadCAs();
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-function showCreateIntermediate() {
-  document.getElementById('intermediateParent').value = document.getElementById('caViewTitle').textContent;
-  showModal('createIntermediateModal');
-  document.getElementById('intermediateDomain').focus();
-}
-
-async function createIntermediate() {
-  const domain = document.getElementById('intermediateDomain').value.trim();
-  if (!domain) { toast('Domain is required', 'error'); return; }
-
-  try {
-    const res = await api('/api/ca/' + currentCAId + '/intermediate', {
-      method: 'POST',
-      body: JSON.stringify({
-        domain,
-        name: document.getElementById('intermediateName').value.trim(),
-        algorithm: document.getElementById('intermediateAlgorithm').value,
-        lifetime_days: lifetimeDaysFromInputs('intermediateLifetime', 'intermediateLifetimeUnit'),
-      }),
-    });
-    const ca = await res.json();
-    hideModal('createIntermediateModal');
-    document.getElementById('intermediateDomain').value = '';
-    document.getElementById('intermediateName').value = '';
-    toast('Intermediate CA created: ' + ca.name);
-    selectCA(ca.id);
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-function onTemplateChange() {
-  const tmpl = document.getElementById('certTemplate').value;
-  document.getElementById('templateDesc').textContent = TEMPLATE_DESCS[tmpl] || '';
-  const showEmail = tmpl === 'email' || tmpl === 'user';
-  document.getElementById('emailRow').style.display = showEmail ? '' : 'none';
-  if (!showEmail) document.getElementById('certEmail').value = '';
-  document.getElementById('upnRow').style.display = tmpl === 'user' ? '' : 'none';
-  if (tmpl !== 'user') document.getElementById('certUPN').value = '';
-}
-
-async function issueCert() {
-  const cn = document.getElementById('certCN').value.trim();
-  if (!cn) { toast('Common name is required', 'error'); return; }
-
-  const template = document.getElementById('certTemplate').value;
-  const email = document.getElementById('certEmail').value.trim();
-  const upn = document.getElementById('certUPN').value.trim();
-  const includeCrlDp = document.getElementById('certIncludeCRL').checked;
-
-  try {
-    const res = await api('/api/ca/' + currentCAId + '/certs', {
-      method: 'POST',
-      body: JSON.stringify({
-        common_name: cn,
-        san_domains: document.getElementById('certSANs').value.trim() || cn,
-        algorithm: document.getElementById('certAlgorithm').value,
-        lifetime_days: lifetimeDaysFromInputs('certLifetime', 'certLifetimeUnit'),
-        template: template,
-        email: email || undefined,
-        upn: upn || undefined,
-        include_crl_dp: includeCrlDp,
-      }),
-    });
-    const cert = await res.json();
-    hideModal('issueCertModal');
-    document.getElementById('certCN').value = '';
-    document.getElementById('certSANs').value = '';
-    document.getElementById('certEmail').value = '';
-    document.getElementById('certUPN').value = '';
-    document.getElementById('certIncludeCRL').checked = false;
-    toast('Certificate issued: ' + cert.common_name);
-    loadCerts(currentCAId);
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-function showExportCert(certId) {
-  exportCertId = certId;
-  document.getElementById('certExportFormat').value = 'pkcs12';
-  document.getElementById('certExportPart').value = 'both';
-  document.getElementById('certExportPassword').value = 'changeit';
-  document.getElementById('certExportChain').checked = false;
-  updateCertPasswordVisibility();
-  showModal('exportCertModal');
-}
-
-async function doExportCert() {
-  const fmt = document.getElementById('certExportFormat').value;
-  const part = document.getElementById('certExportPart').value;
-  const password = document.getElementById('certExportPassword').value;
-  const includeChain = document.getElementById('certExportChain').checked;
-  await saveExport('/api/export/cert/' + exportCertId, { format: fmt, part, password: password || undefined, include_chain: includeChain });
-  hideModal('exportCertModal');
-}
-
-async function exportCA() {
-  const fmt = document.getElementById('caExportFormat').value;
-  const part = document.getElementById('caExportPart').value;
-  const password = document.getElementById('caExportPassword').value;
-  await saveExport('/api/export/ca/' + currentCAId, { format: fmt, part, password: password || undefined });
-}
-
-async function exportCRL() {
-  if (!currentCAId) return;
-  try {
-    const res = await api('/api/ca/' + currentCAId + '/crl');
-    await handleExportResponse(res);
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-function updateCaPasswordVisibility() {
-  const fmt = document.getElementById('caExportFormat').value;
-  const part = document.getElementById('caExportPart').value;
-  const show = part === 'both' && fmt !== 'der' && fmt !== 'crt';
-  document.getElementById('caExportPassword').style.display = show ? '' : 'none';
-  if (!show) document.getElementById('caExportPassword').value = '';
-  else if (!document.getElementById('caExportPassword').value) document.getElementById('caExportPassword').value = 'changeit';
-}
-
-function filenameFromDisposition(header) {
-  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(header);
-  if (encoded) return decodeURIComponent(encoded[1]);
-  const plain = /filename="?([^";]+)"?/i.exec(header);
-  return plain ? plain[1] : 'download';
-}
-
-// Server mode streams the file back; desktop mode saves it and returns the path.
-async function handleExportResponse(res) {
-  if (!SERVER_MODE) {
-    const result = await res.json();
-    toast('Saved to ' + result.path);
-    return;
-  }
-  const name = filenameFromDisposition(res.headers.get('Content-Disposition') || '');
-  const url = URL.createObjectURL(await res.blob());
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = name;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
-  toast('Downloaded ' + name);
-}
-
-async function saveExport(url, body) {
-  try {
-    const res = await api(url, { method: 'POST', body: JSON.stringify(body) });
-    await handleExportResponse(res);
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function revokeCert(certId) {
-  if (!confirm('Revoke this certificate?')) return;
-  try {
-    await api('/api/certs/' + certId + '/revoke', { method: 'POST' });
-    toast('Certificate revoked');
-    loadCerts(currentCAId);
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function deleteCert(certId) {
-  if (!confirm('Permanently delete this certificate?')) return;
-  try {
-    await api('/api/certs/' + certId, { method: 'DELETE' });
-    toast('Certificate deleted');
-    loadCerts(currentCAId);
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-function updateCertPasswordVisibility() {
-  const fmt = document.getElementById('certExportFormat').value;
-  const part = document.getElementById('certExportPart').value;
-  const showPw = part === 'both' && fmt !== 'der' && fmt !== 'crt';
-  document.getElementById('pfxPasswordRow').style.display = showPw ? '' : 'none';
-  if (!showPw) document.getElementById('certExportPassword').value = '';
-  else if (!document.getElementById('certExportPassword').value) document.getElementById('certExportPassword').value = 'changeit';
-  const showChain = (part === 'both' || part === 'chain') && fmt !== 'der' && fmt !== 'crt';
-  document.getElementById('chainRow').style.display = showChain ? '' : 'none';
-  if (!showChain) document.getElementById('certExportChain').checked = false;
-}
-document.getElementById('certExportFormat').addEventListener('change', updateCertPasswordVisibility);
-document.getElementById('certExportPart').addEventListener('change', updateCertPasswordVisibility);
-
-function infoItem(label, value) {
-  return '<div class="info-item"><label>' + label + '</label><span>' + value + '</span></div>';
-}
-
-function serialToggle(serial) {
-  const esc = escapeHtml(serial);
-  const short = escapeHtml(serial.substring(0, 16)) + '…';
-  return '<span class="serial-toggle" data-full="' + esc + '" data-short="' + escapeHtml(short) + '" onclick="toggleSerial(this)" title="Click to expand">' + short + '</span>';
-}
-
-function toggleSerial(el) {
-  const expanded = el.dataset.expanded === '1';
-  el.textContent = expanded ? el.dataset.short : el.dataset.full;
-  el.dataset.expanded = expanded ? '' : '1';
-}
-
-function formatDate(iso) {
-  if (!iso) return '-';
-  const d = new Date(iso);
-  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
-}
-
-function escapeHtml(s) {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function showGuideTab(tabId, btn) {
-  document.querySelectorAll('.guide-content').forEach(el => el.classList.add('hidden'));
-  document.querySelectorAll('.guide-tab').forEach(el => el.classList.remove('active'));
-  document.getElementById(tabId).classList.remove('hidden');
-  btn.classList.add('active');
-}
-
-function showGuide() {
-  showGuideTab('guide-general', document.querySelector('.guide-tab'));
-  showModal('guideModal');
-}
-
-function openExternal(event, url) {
-  event.preventDefault();
-  if (window.pywebview && window.pywebview.api && window.pywebview.api.open_external) {
-    window.pywebview.api.open_external(url);
-  } else {
-    window.open(url, '_blank');
-  }
-  return false;
-}
-
-function toggleSection(section) {
-  const chevron = document.getElementById(section + 'Chevron');
-  const list = document.getElementById(section === 'ca' ? 'caList' : 'sshList');
-  const isOpen = chevron.classList.contains('open');
-  chevron.classList.toggle('open', !isOpen);
-  list.style.display = isOpen ? 'none' : '';
-}
-
-async function loadSSHKeys() {
-  const res = await api('/api/ssh-keys');
-  const keys = await res.json();
-  const list = document.getElementById('sshList');
-  list.innerHTML = '';
-  document.getElementById('sshCount').textContent = keys.length;
-
-  keys.forEach(k => {
-    const li = document.createElement('li');
-    li.className = 'ssh-item' + (k.id === currentSSHKeyId ? ' active' : '');
-    const algoBadge = k.algorithm.toUpperCase().replace('-', ' ');
-    const importedBadge = k.imported ? '<span class="ca-type-badge" style="background:var(--accent);color:#fff;font-size:9px;padding:1px 5px">IMPORTED</span>' : '';
-    li.innerHTML = '<svg class="ssh-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg><span class="ssh-name">' +
-      escapeHtml(k.name) + '</span>' + importedBadge + '<span class="ca-type-badge">' + escapeHtml(algoBadge) + '</span>';
-    li.onclick = () => selectSSHKey(k.id);
-    list.appendChild(li);
-  });
-}
-
-async function selectSSHKey(keyId) {
-  closeMobileMenu();
-  currentSSHKeyId = keyId;
-  currentCAId = null;
-  const res = await api('/api/ssh-keys/' + keyId);
-  const key = await res.json();
-
-  document.getElementById('welcomeView').classList.add('hidden');
-  document.getElementById('caView').classList.add('hidden');
-  document.getElementById('sshKeyView').classList.remove('hidden');
-  document.getElementById('sshKeyViewTitle').textContent = key.name;
-
-  document.getElementById('sshKeyInfo').innerHTML =
-    infoItem('Algorithm', '<span class="badge badge-algo">' + escapeHtml(key.algorithm.toUpperCase().replace('-', ' ')) + '</span>') +
-    infoItem('Source', key.imported ? '<span class="badge" style="background:var(--accent);color:#fff">Imported</span>' : '<span class="badge badge-algo">Generated</span>') +
-    infoItem('Fingerprint', '<span style="font-family:monospace;font-size:11px">' + escapeHtml(key.fingerprint) + '</span>') +
-    infoItem('Comment', escapeHtml(key.comment || '(none)')) +
-    infoItem('Passphrase', key.has_passphrase ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-expired">No</span>') +
-    infoItem('Created', formatDate(key.created_at));
-
-  document.getElementById('sshPubKey').textContent = key.public_key || '';
-  document.getElementById('sshOriginalPassphrase').value = '';
-  document.getElementById('sshOriginalPassphrase').style.display = key.has_passphrase ? '' : 'none';
-  document.getElementById('sshExportPassphrase').value = '';
-
-  loadCAs();
-  loadSSHKeys();
-}
-
-function showCreateSSHKey() {
-  document.getElementById('sshKeyName').value = '';
-  document.getElementById('sshKeyAlgorithm').value = 'rsa-4096';
-  document.getElementById('sshKeyPassphrase').value = '';
-  document.getElementById('sshKeyComment').value = '';
-  showModal('createSSHKeyModal');
-  document.getElementById('sshKeyName').focus();
-}
-
-async function generateSSHKey() {
-  const name = document.getElementById('sshKeyName').value.trim();
-  if (!name) { toast('Key name is required', 'error'); return; }
-
-  try {
-    const res = await api('/api/ssh-keys', {
-      method: 'POST',
-      body: JSON.stringify({
-        name,
-        algorithm: document.getElementById('sshKeyAlgorithm').value,
-        passphrase: document.getElementById('sshKeyPassphrase').value || undefined,
-        comment: document.getElementById('sshKeyComment').value.trim() || undefined,
-      }),
-    });
-    const key = await res.json();
-    hideModal('createSSHKeyModal');
-    toast('SSH key generated: ' + key.name);
-    selectSSHKey(key.id);
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-function showImportSSHKey() {
-  document.getElementById('importSSHKeyName').value = '';
-  document.getElementById('importSSHKeyData').value = '';
-  document.getElementById('importSSHKeyPassphrase').value = '';
-  document.getElementById('importSSHKeyComment').value = '';
-  showModal('importSSHKeyModal');
-  document.getElementById('importSSHKeyName').focus();
-}
-
-async function importSSHKey() {
-  const name = document.getElementById('importSSHKeyName').value.trim();
-  const privateKey = document.getElementById('importSSHKeyData').value.trim();
-  const passphrase = document.getElementById('importSSHKeyPassphrase').value || undefined;
-  const comment = document.getElementById('importSSHKeyComment').value.trim() || undefined;
-
-  if (!name) { toast('Key name is required', 'error'); return; }
-  if (!privateKey) { toast('Private key is required', 'error'); return; }
-
-  try {
-    const res = await api('/api/ssh-keys/import', {
-      method: 'POST',
-      body: JSON.stringify({ name, private_key: privateKey, passphrase, comment }),
-    });
-    const key = await res.json();
-    hideModal('importSSHKeyModal');
-    toast('SSH key imported: ' + key.name + ' (' + key.algorithm + ')');
-    selectSSHKey(key.id);
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function deleteSSHKey() {
-  if (!currentSSHKeyId) return;
-  if (!confirm('Delete this SSH key pair?')) return;
-  try {
-    await api('/api/ssh-keys/' + currentSSHKeyId, { method: 'DELETE' });
-    currentSSHKeyId = null;
-    document.getElementById('sshKeyView').classList.add('hidden');
-    document.getElementById('welcomeView').classList.remove('hidden');
-    toast('SSH key deleted');
-    loadSSHKeys();
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function exportSSHKey() {
-  if (!currentSSHKeyId) return;
-  const part = document.getElementById('sshExportPart').value;
-  const fmt = document.getElementById('sshExportFormat').value;
-  const passphrase = document.getElementById('sshExportPassphrase').value;
-  const originalPassphrase = document.getElementById('sshOriginalPassphrase').value;
-  try {
-    const res = await api('/api/export/ssh-key/' + currentSSHKeyId, {
-      method: 'POST',
-      body: JSON.stringify({ part, format: fmt, passphrase: passphrase || undefined, original_passphrase: originalPassphrase || undefined }),
-    });
-    await handleExportResponse(res);
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function copyPublicKey() {
-  const text = document.getElementById('sshPubKey').textContent;
-  if (!text) return;
-  try {
-    await navigator.clipboard.writeText(text);
-    toast('Public key copied to clipboard');
-  } catch (e) {
-    toast('Failed to copy: ' + e.message, 'error');
-  }
-}
-
-async function copyPrivateKey() {
-  if (!currentSSHKeyId) return;
-  try {
-    const res = await api('/api/ssh-keys/' + currentSSHKeyId + '/private');
-    const data = await res.json();
-    await navigator.clipboard.writeText(data.private_key);
-    toast('Private key copied — paste into Bitwarden SSH import');
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-function showBackupModal() {
-  document.getElementById('backupPassword').value = '';
-  document.getElementById('backupPasswordConfirm').value = '';
-  showModal('backupModal');
-  document.getElementById('backupPassword').focus();
-}
-
-async function createBackup() {
-  const pw = document.getElementById('backupPassword').value;
-  const pw2 = document.getElementById('backupPasswordConfirm').value;
-  if (!pw) { toast('Password is required', 'error'); return; }
-  if (pw !== pw2) { toast('Passwords do not match', 'error'); return; }
-  try {
-    const res = await api('/api/backup', {
-      method: 'POST',
-      body: JSON.stringify({ password: pw }),
-    });
-    hideModal('backupModal');
-    await handleExportResponse(res);
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-function showRestoreModal() {
-  document.getElementById('restoreFile').value = '';
-  document.getElementById('restorePassword').value = '';
-  showModal('restoreModal');
-}
-
-function arrayBufferToBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
-async function restoreBackup() {
-  const fileInput = document.getElementById('restoreFile');
-  const pw = document.getElementById('restorePassword').value;
-  if (!fileInput.files.length) { toast('Select a backup file', 'error'); return; }
-  if (!pw) { toast('Password is required', 'error'); return; }
-  if (!confirm('This will REPLACE ALL existing data. Are you sure?')) return;
-
-  const file = fileInput.files[0];
-  const arrayBuffer = await file.arrayBuffer();
-  const base64 = arrayBufferToBase64(arrayBuffer);
-
-  try {
-    const res = await api('/api/restore', {
-      method: 'POST',
-      body: JSON.stringify({ password: pw, file_data: base64 }),
-    });
-    const result = await res.json();
-    hideModal('restoreModal');
-    toast('Restored: ' + result.counts.cas + ' CAs, ' +
-          result.counts.certs + ' certs, ' +
-          result.counts.ssh_keys + ' SSH keys');
-    currentCAId = null;
-    currentSSHKeyId = null;
-    document.getElementById('caView').classList.add('hidden');
-    document.getElementById('sshKeyView').classList.add('hidden');
-    document.getElementById('welcomeView').classList.remove('hidden');
-    loadCAs();
-    loadSSHKeys();
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-function showSSHGuide() {
-  showSSHGuideTab('sshguide-overview', document.querySelector('#sshGuideTabs .guide-tab'));
-  showModal('sshGuideModal');
-}
-
-function showSSHGuideTab(tabId, btn) {
-  document.querySelectorAll('#sshGuideModal .guide-content').forEach(el => el.classList.add('hidden'));
-  document.querySelectorAll('#sshGuideTabs .guide-tab').forEach(el => el.classList.remove('active'));
-  document.getElementById(tabId).classList.remove('hidden');
-  btn.classList.add('active');
-}
-
-async function checkEncryptionStatus() {
-  try {
-    const res = await api('/api/settings/encryption');
-    const status = await res.json();
-
-    if (status.enabled && !status.unlocked) {
-      document.getElementById('unlockOverlay').classList.remove('hidden');
-      document.getElementById('unlockPassword').focus();
-      return false;
-    }
-
-    if (!status.enabled && !status.dismissed) {
-      document.getElementById('encryptionBanner').classList.remove('hidden');
-    }
-
-    return true;
-  } catch (e) {
-    return true;
-  }
-}
-
-async function doUnlock() {
-  const pw = document.getElementById('unlockPassword').value;
-  if (!pw) { document.getElementById('unlockError').textContent = 'Enter your password'; return; }
-  document.getElementById('unlockError').textContent = '';
-  try {
-    await api('/api/settings/encryption/unlock', {
-      method: 'POST',
-      body: JSON.stringify({ password: pw }),
-    });
-    document.getElementById('unlockOverlay').classList.add('hidden');
-    loadCAs();
-    loadSSHKeys();
-  } catch (e) {
-    document.getElementById('unlockError').textContent = e.message;
-    document.getElementById('unlockPassword').value = '';
-    document.getElementById('unlockPassword').focus();
-  }
-}
-
-async function showEncryptionSettings() {
-  try {
-    const res = await api('/api/settings/encryption');
-    const status = await res.json();
-    if (status.enabled) {
-      document.getElementById('encryptionOff').classList.add('hidden');
-      document.getElementById('encryptionOn').classList.remove('hidden');
-      document.getElementById('encChangeOld').value = '';
-      document.getElementById('encChangeNew').value = '';
-      document.getElementById('encChangeConfirm').value = '';
-      document.getElementById('encDisablePassword').value = '';
-    } else {
-      document.getElementById('encryptionOff').classList.remove('hidden');
-      document.getElementById('encryptionOn').classList.add('hidden');
-      document.getElementById('encEnablePassword').value = '';
-      document.getElementById('encEnableConfirm').value = '';
-    }
-    showModal('encryptionModal');
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function doEnableEncryption() {
-  const pw = document.getElementById('encEnablePassword').value;
-  const confirmPw = document.getElementById('encEnableConfirm').value;
-  if (!pw) { toast('Password is required', 'error'); return; }
-  if (pw !== confirmPw) { toast('Passwords do not match', 'error'); return; }
-  if (pw.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
-  try {
-    await api('/api/settings/encryption/enable', {
-      method: 'POST',
-      body: JSON.stringify({ password: pw, confirm: confirmPw }),
-    });
-    hideModal('encryptionModal');
-    document.getElementById('encryptionBanner').classList.add('hidden');
-    toast('Encryption enabled — private keys are now encrypted at rest');
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function doDisableEncryption() {
-  const pw = document.getElementById('encDisablePassword').value;
-  if (!pw) { toast('Password is required', 'error'); return; }
-  if (!confirm('Disable encryption? Private keys will be stored in plaintext.')) return;
-  try {
-    await api('/api/settings/encryption/disable', {
-      method: 'POST',
-      body: JSON.stringify({ password: pw }),
-    });
-    hideModal('encryptionModal');
-    toast('Encryption disabled — private keys are now stored in plaintext');
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function doChangePassword() {
-  const old_password = document.getElementById('encChangeOld').value;
-  const new_password = document.getElementById('encChangeNew').value;
-  const confirmPw = document.getElementById('encChangeConfirm').value;
-  if (!old_password || !new_password) { toast('Both passwords are required', 'error'); return; }
-  if (new_password !== confirmPw) { toast('New passwords do not match', 'error'); return; }
-  if (new_password.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
-  try {
-    await api('/api/settings/encryption/change-password', {
-      method: 'POST',
-      body: JSON.stringify({ old_password, new_password, confirm: confirmPw }),
-    });
-    hideModal('encryptionModal');
-    toast('Master password changed');
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-function renderDeviceList(devices, containerId) {
-  const el = document.getElementById(containerId);
-  if (!devices.length) {
-    el.innerHTML = '<p style="font-size:12px;color:var(--text-dim)">No trusted devices.</p>';
-    return;
-  }
-  el.innerHTML = devices.map(function(d) {
-    const label = escapeHtml(d.label || 'Unknown device');
-    const created = formatDate(d.created_at);
-    const expires = formatDate(d.expires_at);
-    return '<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">' +
-      '<div style="min-width:0">' +
-        '<div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + label + '</div>' +
-        '<div style="font-size:11px;color:var(--text-dim)">Trusted ' + created + ' · Expires ' + expires + '</div>' +
-      '</div>' +
-      '<button class="btn btn-ghost btn-sm" style="flex-shrink:0;margin-left:8px;color:var(--danger)" onclick="doRevokeDevice(' + d.id + ')">Revoke</button>' +
-    '</div>';
-  }).join('');
-}
-
-async function loadDeviceList(containerId) {
-  const res = await api('/api/devices');
-  const data = await res.json();
-  renderDeviceList(data.devices, containerId);
-  return data.devices.length;
-}
-
-async function showMFASettings() {
-  try {
-    const res = await api('/api/mfa/status');
-    const status = await res.json();
-    if (status.enabled) {
-      document.getElementById('mfaOff').classList.add('hidden');
-      document.getElementById('mfaSetup').classList.add('hidden');
-      document.getElementById('mfaOn').classList.remove('hidden');
-      document.getElementById('mfaDisablePassword').value = '';
-      document.getElementById('mfaDisableCode').value = '';
-      await loadDeviceList('mfaDeviceList');
-    } else {
-      document.getElementById('mfaOff').classList.remove('hidden');
-      document.getElementById('mfaSetup').classList.add('hidden');
-      document.getElementById('mfaOn').classList.add('hidden');
-    }
-    showModal('mfaModal');
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function doMFASetup() {
-  try {
-    const res = await api('/api/mfa/setup', { method: 'POST' });
-    const data = await res.json();
-    document.getElementById('mfaOff').classList.add('hidden');
-    document.getElementById('mfaSetup').classList.remove('hidden');
-    document.getElementById('mfaQRCode').innerHTML = data.qr_svg;
-    document.getElementById('mfaSecretKey').textContent = data.secret;
-    document.getElementById('mfaSetupCode').value = '';
-    document.getElementById('mfaSetupCode').focus();
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-function cancelMFASetup() {
-  document.getElementById('mfaSetup').classList.add('hidden');
-  document.getElementById('mfaOff').classList.remove('hidden');
-}
-
-async function doMFAConfirm() {
-  const code = document.getElementById('mfaSetupCode').value.trim();
-  if (!code || code.length !== 6) { toast('Enter the 6-digit code from your authenticator app', 'error'); return; }
-  try {
-    await api('/api/mfa/confirm', {
-      method: 'POST',
-      body: JSON.stringify({ code }),
-    });
-    hideModal('mfaModal');
-    toast('MFA enabled — verification codes are now required when signing in');
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function doMFADisable() {
-  const password = document.getElementById('mfaDisablePassword').value;
-  const code = document.getElementById('mfaDisableCode').value.trim();
-  if (!password || !code) { toast('Password and verification code are required', 'error'); return; }
-  if (!confirm('Disable MFA? Verification codes will no longer be required when signing in.')) return;
-  try {
-    await api('/api/mfa/disable', {
-      method: 'POST',
-      body: JSON.stringify({ password, code }),
-    });
-    hideModal('mfaModal');
-    toast('MFA disabled');
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function doRevokeDevice(deviceId) {
-  if (!confirm('Revoke this trusted device?')) return;
-  try {
-    await api('/api/devices/' + deviceId, { method: 'DELETE' });
-    toast('Device revoked');
-    // Refresh whichever device list is visible
-    if (!document.getElementById('mfaModal').classList.contains('hidden')) {
-      await loadDeviceList('mfaDeviceList');
-    }
-    if (!document.getElementById('accountModal').classList.contains('hidden')) {
-      await loadDeviceList('acctDeviceList');
-    }
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function doRevokeDevices() {
-  if (!confirm('Revoke all trusted devices? Everyone will need to re-authenticate.')) return;
-  try {
-    const res = await api('/api/mfa/revoke-devices', { method: 'POST' });
-    const data = await res.json();
-    toast('Revoked ' + data.revoked + ' trusted device(s)');
-    if (!document.getElementById('mfaModal').classList.contains('hidden')) {
-      await loadDeviceList('mfaDeviceList');
-    }
-    if (!document.getElementById('accountModal').classList.contains('hidden')) {
-      await loadDeviceList('acctDeviceList');
-    }
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function doRevokeDevicesAcct() {
-  return doRevokeDevices();
-}
-
-async function showAccountSettings() {
-  try {
-    const res = await api('/api/account/status');
-    const status = await res.json();
-    document.getElementById('acctRequirePassword').checked = status.require_password;
-    await loadDeviceList('acctDeviceList');
-    showModal('accountModal');
-  } catch (e) {
-    toast(e.message, 'error');
-  }
-}
-
-async function doToggleRequirePasswordAcct() {
-  const require_password = document.getElementById('acctRequirePassword').checked;
-  try {
-    await api('/api/account/require-password', {
-      method: 'POST',
-      body: JSON.stringify({ require_password }),
-    });
-    toast(require_password ? 'Password required on every visit' : 'Trusted devices will auto-login');
-  } catch (e) {
-    document.getElementById('acctRequirePassword').checked = !require_password;
-    toast(e.message, 'error');
-  }
-}
-
-async function dismissEncryptionBanner() {
-  const permanently = document.getElementById('bannerDismissCheck').checked;
-  document.getElementById('encryptionBanner').classList.add('hidden');
-  if (permanently) {
-    try { await api('/api/settings/encryption/dismiss', { method: 'POST' }); } catch (e) {}
-  }
-}
-
-async function initApp() {
-  const ready = await checkEncryptionStatus();
-  if (ready) {
-    loadCAs();
-    loadSSHKeys();
-  }
-}
-
-initApp();
-</script>
+<script src="/static/app.js?v={{ app_version }}"></script>
 </body>
 </html>

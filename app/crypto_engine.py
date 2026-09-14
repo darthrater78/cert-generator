@@ -441,6 +441,12 @@ def generate_crl(
     return crl.public_bytes(serialization.Encoding.DER)
 
 
+def crl_next_update(crl_der: bytes) -> str:
+    """The CRL's nextUpdate as an ISO 8601 UTC timestamp."""
+    crl = x509.load_der_x509_crl(crl_der)
+    return crl.next_update_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _detect_algorithm(key) -> Algorithm:
     if isinstance(key, ed25519.Ed25519PrivateKey):
         return "ed25519"

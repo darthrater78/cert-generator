@@ -1,6 +1,6 @@
 [project]
 name = "cert-generator"
-version = "2.0.0"
+version = "2.1.0"
 description = "Certificate Authority tool for generating and managing self-signed certificates"
 requires-python = ">=3.10"
 dependencies = [
@@ -16,7 +16,7 @@ dependencies = [
 Repository = "https://github.com/darthrater78/cert-generator"
 
 [project.optional-dependencies]
-desktop = ["pywebview==5.3.2"]
+desktop = ["pywebview==6.2.1"]
 
 [project.scripts]
 cert-generator = "app.main:main"
@@ -24,3 +24,6 @@ cert-generator-server = "app.serve:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Browser tests need Playwright browsers; run them with `-m e2e` (see README).
+addopts = "-m 'not e2e'"
+markers = ["e2e: end-to-end browser tests (Playwright)"]

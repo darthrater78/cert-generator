@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
+import signal
+import sys
 
 from waitress import serve
+
+from .legacy_exports import find_legacy_exports, legacy_export_dir
 
 from .db import (
     bump_session_version,
@@ -53,11 +56,18 @@ def _run_admin_resets() -> None:
 def _warn_about_configuration() -> None:
     if not os.environ.get("SECRET_KEY"):
         log.warning("SECRET_KEY is not set: a random key is in use and everyone must sign in again after a restart")
-    export_dir = os.environ.get("EXPORT_DIR")
-    if export_dir and Path(export_dir).is_dir() and any(Path(export_dir).iterdir()):
-        log.warning("%s contains files written by earlier versions. Exports are no longer stored "
-                    "on the server, and these files may include unencrypted private keys: review and delete them.",
-                    export_dir)
+    legacy = find_legacy_exports()
+    if legacy:
+        log.warning("%s contains %d export files written by versions before 2.0.0, which may include "
+                    "unencrypted private keys. Delete them from Encryption Settings in the web UI.",
+                    legacy_export_dir(), len(legacy))
+
+
+def _exit_on_sigterm(signum: int, _frame) -> None:
+    # A container's PID 1 has no default SIGTERM handler, so `docker stop` would
+    # otherwise wait out its timeout and kill the process.
+    log.info("Received signal %d, shutting down", signum)
+    sys.exit(0)
 
 
 def main() -> None:
@@ -73,8 +83,10 @@ def main() -> None:
     host = os.environ.get("HOST", "0.0.0.0")  # nosec B104
     port = int(os.environ.get("PORT", "5000"))
     set_bound_port(port)
+    signal.signal(signal.SIGTERM, _exit_on_sigterm)
     log.info("Listening on http://%s:%d", host, port)
     serve(app, host=host, port=port, threads=4)
+    log.info("Server stopped")
 
 
 if __name__ == "__main__":

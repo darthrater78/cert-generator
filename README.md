@@ -7,7 +7,7 @@ A tool for creating Certificate Authorities and issuing self-signed certificates
 | Mode | Best for | How it runs |
 |------|----------|-------------|
 | **Docker** (recommended) | Servers, shared access | Web app at `http://host:5000` with login authentication |
-| **Standalone EXE** | Individual workstations | Native Windows window, built from source with PyInstaller |
+| **Standalone EXE** | Individual workstations | Native Windows window, downloaded from the release — no install needed |
 
 Both modes have full feature parity — the same UI, database format, and capabilities. The only differences are how you access it (browser vs native window) and authentication (login vs automatic app token).
 
@@ -25,7 +25,7 @@ Both modes have full feature parity — the same UI, database format, and capabi
 - **In-app import guide** — step-by-step instructions for importing certificates on Windows, macOS, and Linux for each template type
 - **Modern crypto algorithms** — Ed25519, ECDSA P-256, ECDSA P-384, RSA-2048, RSA-4096
 - **Revoke certificates** to mark them as no longer trusted
-- **Offline CRL generation** — optionally embed a CRL Distribution Point in issued certificates and export a signed CRL file for manual import into Windows certificate stores, providing offline revocation status without a live server
+- **Offline CRL generation** — optionally embed a CRL Distribution Point in issued certificates and export a signed CRL file for manual import into Windows certificate stores, providing offline revocation status without a live server. Choose how long each CRL stays valid (7 days to 10 years, default 10 years); the CA page shows its next-update date and flags CRLs that need re-exporting
 - **SSH key generation** — generate Ed25519, ECDSA P-256/P-384, and RSA-2048/4096 SSH key pairs with optional passphrase protection
 - **SSH key import** — import existing SSH private keys from Bitwarden or other sources; supports OpenSSH, PEM PKCS#8, PEM traditional, and DER formats with automatic algorithm detection and optional passphrase; imported keys are visually marked and fully functional (export, copy, backup/restore)
 - **SSH key export** — download private keys in OpenSSH or PEM (PKCS#8) format, copy public keys, or copy private keys for Bitwarden SSH import
@@ -87,14 +87,23 @@ Proxies that rewrite the `Host` header should forward the original as `X-Forward
 
 ### Standalone EXE (Windows desktop)
 
-Releases don't include a prebuilt EXE, so build it on a Windows machine:
+Download `CertGenerator.exe` from the [latest release](https://github.com/darthrater78/cert-generator/releases/latest). Double-click to run — no Python installation needed. The desktop app runs as a native window; no login is required, and no network port is exposed.
+
+The EXE is not code-signed, so Windows SmartScreen shows a warning on first run. To confirm the file is the one GitHub Actions built from this repository, compare it with the release's `CertGenerator.exe.sha256`, or verify its build attestation with the [GitHub CLI](https://cli.github.com/):
 
 ```bash
-pip install ".[desktop]" pyinstaller
-python build.py
+gh attestation verify CertGenerator.exe --repo darthrater78/cert-generator
 ```
 
-This produces `dist/CertGenerator.exe`, a single file you can copy to other Windows machines and run without Python. The desktop app runs as a native window; no login is required, and no network port is exposed.
+To build it yourself on Windows:
+
+```bash
+pip install -r requirements-desktop.txt
+python build.py
+dist\CertGenerator.exe --self-test result.json
+```
+
+`--self-test` exercises the packaged app against a throwaway database without opening a window and writes the results to `result.json`; `--self-test-gui` also opens and checks the real window.
 
 ### Server mode (without Docker)
 
@@ -136,7 +145,27 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-CI runs the same suite on Python 3.10 and 3.14 and builds the Docker image for every push and pull request to `master`.
+Browser tests drive the real UI (downloads, sign-out, CRL export, mobile layout) with Playwright and check for JavaScript and Content-Security-Policy errors:
+
+```bash
+pip install -r requirements-e2e.txt
+python -m playwright install --with-deps chromium firefox webkit
+python -m pytest -m e2e --browser chromium --browser firefox --browser webkit
+```
+
+CI runs on every push and pull request to `master`:
+- the unit tests on Linux (Python 3.10 and 3.14) and Windows
+- the browser tests in Chromium, Firefox, and WebKit
+- a Windows EXE build and its `--self-test` / `--self-test-gui` checks (the EXE is kept as a workflow artifact for 7 days)
+- a Docker image build with a container smoke test, including a clean shutdown on `docker stop`
+
+### Releases
+
+Pushing a `vX.Y.Z` tag on `master` runs `.github/workflows/release.yml`. Both deliverables share one version line, and the changelog decides which of them a release publishes: the version's entry in this README's version history must carry a `#### Docker` section, a `#### Windows EXE` section, or both, and at least one is required.
+- **Docker image** — smoke-tested, pushed to `ghcr.io/darthrater78/cert-generator` as `X.Y.Z`, `X.Y`, and — only when the release includes Docker and is the newest — `latest`, with a build provenance attestation
+- **Windows EXE** — built and self-tested on Windows, attached to the GitHub release with a SHA-256 checksum and a build provenance attestation
+
+Whichever deliverable the entry lists is built, and the release is created only once those succeed. A deliverable with no section is not rebuilt: it stays at the version it last shipped, and the notes say so ("Docker image unchanged (2.1.0)"). GitHub's **Latest** release follows the newest release that includes the EXE, so `/releases/latest/download/CertGenerator.exe` always resolves to the current build.
 
 ## Server hardening
 
@@ -156,8 +185,9 @@ The embedded web server is hardened for both desktop and server use:
 - **Session revocation** — password resets, MFA changes, "Revoke all devices", and backup restores end every other session
 - **Session cookies** — httpOnly, `SameSite=Lax`, signed with `SECRET_KEY`; `Secure` when `COOKIE_SECURE=true`
 - **Cross-site request protection** — state-changing requests from other sites are rejected (using `Sec-Fetch-Site`, falling back to `Origin`)
-- **Security headers** — Content-Security-Policy, `X-Frame-Options: DENY`, `nosniff`, and `Cache-Control: no-store` on API responses
-- **No key material on the server's disk** — exports and backups stream to the browser instead of being written to an export folder
+- **Security headers** — a Content-Security-Policy that allows no inline script (`script-src 'self'`), `X-Frame-Options: DENY`, `nosniff`, and `Cache-Control: no-store` on API responses
+- **No key material on the server's disk** — exports and backups stream to the browser instead of being written to an export folder. If an older version left export files in `EXPORT_DIR`, a banner offers to review and delete them (only files matching the old export names are touched)
+- **Clean shutdown** — `docker stop` ends the server immediately instead of waiting for its timeout
 
 **Both modes:**
 - **Encryption fails closed** — while an encrypted database is locked, anything that would store a private key is refused rather than written in plaintext
@@ -241,6 +271,33 @@ All CAs, certificates, and SSH keys are stored in a SQLite database. When databa
 The database format is identical in both modes. Use **Backup** to create an encrypted `.certbak` file on one and **Restore** to load it on the other — this is the supported way to migrate data between Docker and desktop.
 
 ## Version history
+
+Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
+
+### v2.1.0 — 2026-09-14
+
+Resolves #15, #16, #17, #18, #19, and #20.
+
+**Docker and the Windows EXE now share one release line.** The EXE was never published before, so this release rebuilds the image at 2.1.0 — unchanged in behaviour from 2.0.0 apart from the fixes below — to bring both deliverables onto the same version. From here on a release publishes whichever of the two its changelog entry lists, and the other stays where it is.
+
+#### Docker
+- **CRL lifetime is configurable** (#15) — choose 7 days to 10 years when exporting a CRL (default stays 10 years); the CA page shows the CRL's next-update date and warns when it is expired or due within 30 days
+- **No inline script** (#16) — the page script moved to `/static/app.js` and inline event handlers were replaced, so the Content-Security-Policy now forbids inline script
+- **Old export cleanup** (#17) — a banner lists files that versions before 2.0.0 left in `EXPORT_DIR` and deletes them on confirmation; unrelated files, subfolders, and symlinks are left alone
+- **Clean shutdown** (#19) — the server handles SIGTERM, so `docker stop` returns in under a second instead of waiting 10 seconds
+- **Browser-tested UI** (#20) — Playwright tests cover every download, sign-out, CRL export, restore, the unlock screen, and the mobile menu in Chromium, Firefox, and WebKit
+- Image builds are smoke-tested before publishing and carry a build provenance attestation
+
+#### Windows EXE
+- **Released as a download** — releases that include the desktop app attach `CertGenerator.exe`, built and tested by GitHub Actions on Windows, with a SHA-256 checksum and a verifiable build provenance attestation (not code-signed)
+- **pywebview 6.2.1** (from 5.3.2) and pinned PyInstaller 6.22.3
+- **Self-test mode** — `CertGenerator.exe --self-test` and `--self-test-gui` check the packaged app against a throwaway database; CI runs both on every change
+- Static files (including the app icon) are now bundled; previously `/static` was missing from the EXE
+- Same CRL lifetime option (#15), page script changes (#16), and UI fixes as the Docker image
+
+#### Internal
+- `app/server.py` split into blueprints (`auth`, `account`, `pki`, `ssh`, `settings`) with shared helpers in `app/web.py`; long functions broken up (#18)
+- CI adds Windows unit tests, browser tests, the EXE build and self-test, and a container smoke test; `release.yml` builds the Docker image and the EXE from one tag, and `scripts/release_notes.py` decides which of them a release publishes from this changelog
 
 ### v2.0.0 — 2026-09-14
 

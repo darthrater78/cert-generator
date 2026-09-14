@@ -1,0 +1,279 @@
+name: Release
+
+# One tag, and the changelog picks what ships. README.md's entry for the version
+# carries a "#### Docker" and/or a "#### Windows EXE" section; each one present
+# builds and publishes that deliverable, and at least one is required. A
+# deliverable with no section is left at the version it last shipped, and the
+# release notes report it as unchanged.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      is_newest: ${{ steps.newest.outputs.is_newest }}
+      docker: ${{ steps.components.outputs.docker }}
+      exe: ${{ steps.components.outputs.exe }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify tag is on default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"; then
+            echo "Tag $GITHUB_REF_NAME is not on $DEFAULT_BRANCH."
+            echo "Releases come from the default branch only."
+            exit 1
+          fi
+
+      - name: Verify version and release notes
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          app_version="$(python3 -c 'import re; print(re.search(r"\"(.+)\"", open("app/__init__.py").read()).group(1))')"
+          project_version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+          if [ "$app_version" != "$version" ] || [ "$project_version" != "$version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match app/__init__.py ($app_version) or pyproject.toml ($project_version)."
+            exit 1
+          fi
+          python3 scripts/release_notes.py "$GITHUB_REF_NAME" --check
+
+      - name: Decide which deliverables this release ships
+        id: components
+        run: |
+          set -euo pipefail
+          python3 scripts/release_notes.py "$GITHUB_REF_NAME" --components | tee -a "$GITHUB_OUTPUT"
+
+      - name: Decide whether this is the newest release
+        id: newest
+        run: |
+          set -euo pipefail
+          newest="$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+          if [ "$GITHUB_REF_NAME" = "$newest" ]; then
+            echo "is_newest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_newest=false" >> "$GITHUB_OUTPUT"
+            echo "$GITHUB_REF_NAME is older than $newest; latest will not move."
+          fi
+
+  docker:
+    needs: verify
+    if: needs.verify.outputs.docker == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build image for smoke test
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          load: true
+          tags: cert-generator:release-test
+
+      - name: Smoke test container
+        run: bash scripts/test-container.sh cert-generator:release-test
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ needs.verify.outputs.is_newest }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Attest image provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  exe:
+    needs: verify
+    if: needs.verify.outputs.exe == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      sha256: ${{ steps.hash.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install build dependencies
+        run: python -m pip install -r requirements-desktop.txt
+
+      - name: Build EXE
+        run: python build.py
+
+      - name: Self-test EXE
+        shell: pwsh
+        run: scripts/test-exe.ps1 -Exe dist/CertGenerator.exe
+
+      - name: Checksum
+        id: hash
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist/CertGenerator.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  CertGenerator.exe" | Out-File -Encoding ascii -NoNewline dist/CertGenerator.exe.sha256
+          "sha256=$hash" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+
+      - name: Attest EXE provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/CertGenerator.exe
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-exe
+          path: |
+            dist/CertGenerator.exe
+            dist/CertGenerator.exe.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [verify, docker, exe]
+    # Runs when a skipped deliverable leaves its job skipped, but never past a failure.
+    if: >-
+      !cancelled() && needs.verify.result == 'success'
+      && (needs.docker.result == 'success' || needs.docker.result == 'skipped')
+      && (needs.exe.result == 'success' || needs.exe.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: needs.verify.outputs.exe == 'true'
+        with:
+          name: release-exe
+          path: assets
+
+      - name: Verify downloaded EXE matches the tested build
+        if: needs.verify.outputs.exe == 'true'
+        env:
+          EXPECTED: ${{ needs.exe.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          actual="$(sha256sum assets/CertGenerator.exe | cut -d' ' -f1)"
+          if [ "$actual" != "$EXPECTED" ]; then
+            echo "Checksum mismatch: $actual != $EXPECTED"
+            exit 1
+          fi
+
+      - name: Write release notes
+        env:
+          IMAGE_DIGEST: ${{ needs.docker.outputs.digest }}
+          EXE_SHA256: ${{ needs.exe.outputs.sha256 }}
+          IS_NEWEST: ${{ needs.verify.outputs.is_newest }}
+        run: |
+          set -euo pipefail
+          extra=()
+          if [ "$IS_NEWEST" != "true" ]; then extra+=(--not-newest); fi
+          if [ -n "$IMAGE_DIGEST" ]; then extra+=(--image-digest "$IMAGE_DIGEST"); fi
+          if [ -n "$EXE_SHA256" ]; then extra+=(--exe-sha256 "$EXE_SHA256"); fi
+          python3 scripts/release_notes.py "$GITHUB_REF_NAME" "${extra[@]}" > release-notes.md
+          cat release-notes.md
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IS_NEWEST: ${{ needs.verify.outputs.is_newest }}
+          HAS_EXE: ${{ needs.verify.outputs.exe }}
+        run: |
+          set -euo pipefail
+          assets=()
+          # Latest follows the newest release carrying an EXE, so that
+          # /releases/latest/download/CertGenerator.exe resolves to the current build.
+          latest=false
+          if [ "$HAS_EXE" = "true" ]; then
+            assets=(assets/CertGenerator.exe assets/CertGenerator.exe.sha256)
+            if [ "$IS_NEWEST" = "true" ]; then latest=true; fi
+          fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file release-notes.md --latest="$latest"
+            if [ "${#assets[@]}" -gt 0 ]; then
+              gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
+              --notes-file release-notes.md --latest="$latest" "${assets[@]}"
+          fi
+
+      - name: Verify release assets
+        if: needs.verify.outputs.exe == 'true'
+        run: |
+          set -euo pipefail
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[] | "\(.name) \(.size)"' | tee assets.txt
+          grep -q '^CertGenerator.exe [0-9]\{7,\}$' assets.txt
+          grep -q '^CertGenerator.exe.sha256 ' assets.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

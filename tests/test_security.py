@@ -206,7 +206,9 @@ def test_login_form_rejects_cross_site_post(admin_client, fresh_app):
 def test_security_headers(admin_client):
     resp = admin_client.get("/")
     assert resp.headers["X-Frame-Options"] == "DENY"
-    assert "frame-ancestors 'none'" in resp.headers["Content-Security-Policy"]
+    csp = resp.headers["Content-Security-Policy"]
+    assert "frame-ancestors 'none'" in csp
+    assert "script-src 'self';" in csp
     assert resp.headers["X-Content-Type-Options"] == "nosniff"
     assert admin_client.get("/api/ca").headers["Cache-Control"] == "no-store"
     cookie = admin_client.get_cookie("session")
