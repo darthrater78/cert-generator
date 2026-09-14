@@ -1,0 +1,4 @@
+# Browser tests (python -m pytest -m e2e); also run: python -m playwright install --with-deps
+-r requirements-dev.txt
+playwright==1.62.0
+pytest-playwright==0.9.0

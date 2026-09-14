@@ -99,6 +99,7 @@ _MIGRATIONS = (
     ("users", "session_version", "INTEGER NOT NULL DEFAULT 0"),
     ("trusted_devices", "label", "TEXT NOT NULL DEFAULT ''"),
     ("certificates", "revoked_at", "TEXT"),
+    ("certificate_authorities", "crl_next_update", "TEXT"),
 )
 
 _INDEXES = (
@@ -365,6 +366,11 @@ def get_ca(ca_id: int) -> dict[str, Any] | None:
         return _decrypt_row(dict(row)) if row else None
 
 
+def set_ca_crl_next_update(ca_id: int, next_update: str) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE certificate_authorities SET crl_next_update = ? WHERE id = ?", (next_update, ca_id))
+
+
 def get_ca_cert_chain(ca_id: int, max_depth: int = 16) -> list[bytes]:
     """Certificates from ``ca_id`` up to its root, nearest first."""
     chain: list[bytes] = []
@@ -582,6 +588,65 @@ def _import_rows(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _restore_cas(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    for ca in rows:
+        ca = _decode_blobs(ca)
+        conn.execute(
+            """INSERT INTO certificate_authorities
+               (id, parent_ca_id, name, domain, algorithm, not_before, not_after, serial, cert_pem, key_pem, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ca["id"], ca.get("parent_ca_id"), ca["name"], ca["domain"],
+             ca["algorithm"], ca["not_before"], ca["not_after"], ca["serial"],
+             ca["cert_pem"], _maybe_encrypt(ca["key_pem"]), ca["created_at"]),
+        )
+
+
+def _restore_certs(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    for cert in rows:
+        cert = _decode_blobs(cert)
+        conn.execute(
+            """INSERT INTO certificates
+               (id, ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial,
+                cert_pem, key_pem, revoked, revoked_at, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (cert["id"], cert["ca_id"], cert["common_name"], cert["san_domains"],
+             cert["algorithm"], cert.get("template", "web-server"),
+             cert["not_before"], cert["not_after"], cert["serial"],
+             cert["cert_pem"], _maybe_encrypt(cert["key_pem"]), cert.get("revoked", 0),
+             cert.get("revoked_at"), cert["created_at"]),
+        )
+
+
+def _restore_ssh_keys(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    for key in rows:
+        key = _decode_blobs(key)
+        conn.execute(
+            """INSERT INTO ssh_keys
+               (id, name, algorithm, comment, fingerprint, public_key, private_key, has_passphrase, imported, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (key["id"], key["name"], key["algorithm"], key.get("comment", ""),
+             key["fingerprint"], key["public_key"], _maybe_encrypt(key["private_key"]),
+             key.get("has_passphrase", 0), key.get("imported", 0), key["created_at"]),
+        )
+
+
+def _restore_users(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    for user in rows:
+        secret_val = user.get("totp_secret")
+        if secret_val is not None and _master_key is not None:
+            secret_val = _maybe_encrypt(secret_val.encode())
+        conn.execute(
+            """INSERT OR REPLACE INTO users
+               (id, username, password_hash, totp_secret, totp_enabled, require_password, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (user["id"], user["username"], user["password_hash"],
+             secret_val, user.get("totp_enabled", 0),
+             user.get("require_password", 0), user["created_at"]),
+        )
+    # Restored credentials may differ from the current ones: end all sessions.
+    conn.execute("UPDATE users SET session_version = session_version + 1")
+
+
 def import_all_data(data: dict[str, Any]) -> dict[str, int]:
     if data.get("version") != 1:
         raise ValueError("Unsupported backup data version")
@@ -595,60 +660,12 @@ def import_all_data(data: dict[str, Any]) -> dict[str, int]:
             conn.execute("DELETE FROM certificates")
             conn.execute("DELETE FROM certificate_authorities")
             conn.execute("DELETE FROM ssh_keys")
-
-            for ca in cas:
-                ca = _decode_blobs(ca)
-                conn.execute(
-                    """INSERT INTO certificate_authorities
-                       (id, parent_ca_id, name, domain, algorithm, not_before, not_after, serial, cert_pem, key_pem, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (ca["id"], ca.get("parent_ca_id"), ca["name"], ca["domain"],
-                     ca["algorithm"], ca["not_before"], ca["not_after"], ca["serial"],
-                     ca["cert_pem"], _maybe_encrypt(ca["key_pem"]), ca["created_at"]),
-                )
-
-            for cert in certs:
-                cert = _decode_blobs(cert)
-                conn.execute(
-                    """INSERT INTO certificates
-                       (id, ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial,
-                        cert_pem, key_pem, revoked, revoked_at, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (cert["id"], cert["ca_id"], cert["common_name"], cert["san_domains"],
-                     cert["algorithm"], cert.get("template", "web-server"),
-                     cert["not_before"], cert["not_after"], cert["serial"],
-                     cert["cert_pem"], _maybe_encrypt(cert["key_pem"]), cert.get("revoked", 0),
-                     cert.get("revoked_at"), cert["created_at"]),
-                )
-
-            for key in ssh_keys:
-                key = _decode_blobs(key)
-                conn.execute(
-                    """INSERT INTO ssh_keys
-                       (id, name, algorithm, comment, fingerprint, public_key, private_key, has_passphrase, imported, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (key["id"], key["name"], key["algorithm"], key.get("comment", ""),
-                     key["fingerprint"], key["public_key"], _maybe_encrypt(key["private_key"]),
-                     key.get("has_passphrase", 0), key.get("imported", 0), key["created_at"]),
-                )
-
-            for user in users:
-                secret_val = user.get("totp_secret")
-                if secret_val is not None and _master_key is not None:
-                    secret_val = _maybe_encrypt(secret_val.encode())
-                conn.execute(
-                    """INSERT OR REPLACE INTO users
-                       (id, username, password_hash, totp_secret, totp_enabled, require_password, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (user["id"], user["username"], user["password_hash"],
-                     secret_val, user.get("totp_enabled", 0),
-                     user.get("require_password", 0), user["created_at"]),
-                )
-            # Restored credentials may differ from the current ones: end all sessions.
-            conn.execute("UPDATE users SET session_version = session_version + 1")
+            _restore_cas(conn, cas)
+            _restore_certs(conn, certs)
+            _restore_ssh_keys(conn, ssh_keys)
+            _restore_users(conn, users)
     except (KeyError, TypeError, AttributeError, sqlite3.IntegrityError, ValueError) as e:
         raise ValueError(f"Invalid backup data: {e}") from e
-
     return {"cas": len(cas), "certs": len(certs), "ssh_keys": len(ssh_keys), "users": len(users)}
 
 

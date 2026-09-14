@@ -5,6 +5,7 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,13 +16,18 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }}, ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        # Oldest supported (pyproject requires-python) and the Docker image's version
-        python-version: ["3.10", "3.14"]
+        # Oldest supported (pyproject requires-python) and the Docker image's version,
+        # plus Windows for the desktop app's platform.
+        include:
+          - { os: ubuntu-latest, python-version: "3.10" }
+          - { os: ubuntu-latest, python-version: "3.14" }
+          - { os: windows-latest, python-version: "3.14" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,6 +42,72 @@ jobs:
 
       - name: Run tests
         run: python -m pytest
+
+  browser:
+    name: browser tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies and browsers
+        run: |
+          set -euo pipefail
+          python -m pip install -r requirements-e2e.txt
+          python -m playwright install --with-deps chromium firefox webkit
+
+      - name: Run browser tests
+        run: >
+          python -m pytest -m e2e tests/e2e
+          --browser chromium --browser firefox --browser webkit
+          --tracing retain-on-failure --output test-results
+
+      - name: Upload traces from failed tests
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-traces
+          path: test-results
+          retention-days: 7
+
+  windows-exe:
+    name: windows exe
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install build dependencies
+        run: python -m pip install -r requirements-desktop.txt
+
+      - name: Build EXE
+        run: python build.py
+
+      - name: Self-test EXE
+        shell: pwsh
+        run: scripts/test-exe.ps1 -Exe dist/CertGenerator.exe
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: CertGenerator-exe
+          path: |
+            dist/CertGenerator.exe
+            selftest-*.json
+          retention-days: 7
+          if-no-files-found: error
 
   docker-build:
     runs-on: ubuntu-latest
@@ -53,4 +125,8 @@ jobs:
         with:
           context: .
           push: false
+          load: true
           tags: cert-generator:ci
+
+      - name: Smoke test container
+        run: bash scripts/test-container.sh cert-generator:ci
