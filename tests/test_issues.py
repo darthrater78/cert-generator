@@ -220,12 +220,12 @@ def test_server_exits_promptly_on_sigterm(tmp_path):
             proc.kill()
 
 
-# ── Release notes: Docker and Windows EXE listed separately ─────────
+# ── Release notes: the changelog picks which deliverables ship ──────
 
 sys.path.insert(0, str(ROOT / "scripts"))
 import release_notes  # noqa: E402
 
-README_SAMPLE = """## Version history
+BOTH = """## Version history
 
 ### v2.1.0 — 2026-09-20
 
@@ -242,9 +242,27 @@ Shared intro.
 - Older entry
 """
 
+DOCKER_ONLY = """## Version history
+
+### v2.2.0 — 2026-09-25
+
+#### Docker
+- Server-only change
+
+""" + BOTH.split("## Version history\n\n", 1)[1]
+
+EXE_ONLY = """## Version history
+
+### v2.2.0 — 2026-09-25
+
+#### Windows EXE
+- Desktop-only change
+
+""" + BOTH.split("## Version history\n\n", 1)[1]
+
 
 def test_release_notes_have_separate_docker_and_exe_sections():
-    notes = release_notes.build_notes("2.1.0", README_SAMPLE, "sha256:abc", "deadbeef")
+    notes = release_notes.build_notes("2.1.0", BOTH, "sha256:abc", "deadbeef")
     docker = notes.index("## 🐳 Docker")
     exe = notes.index("## 🪟 Windows EXE")
     assert docker < exe
@@ -255,9 +273,46 @@ def test_release_notes_have_separate_docker_and_exe_sections():
     assert "compare/v2.0.0...v2.1.0" in notes
 
 
-def test_release_notes_require_both_sections():
-    readme = README_SAMPLE.replace("#### Windows EXE\n- Desktop change\n", "")
-    with pytest.raises(release_notes.NotesError, match="Windows EXE"):
+def test_release_notes_require_at_least_one_deliverable_section():
+    readme = BOTH.replace("#### Docker\n- Server change\n\n", "").replace(
+        "#### Windows EXE\n- Desktop change\n", "")
+    with pytest.raises(release_notes.NotesError, match="nothing to release"):
         release_notes.build_notes("2.1.0", readme, None, None)
     with pytest.raises(release_notes.NotesError, match="v9.9.9"):
-        release_notes.build_notes("9.9.9", README_SAMPLE, None, None)
+        release_notes.build_notes("9.9.9", BOTH, None, None)
+
+
+def test_docker_only_release_reports_the_exe_as_unchanged():
+    notes = release_notes.build_notes("2.2.0", DOCKER_ONLY, "sha256:abc", None)
+    assert "- Server-only change" in notes
+    assert "Windows EXE unchanged (2.1.0)" in notes
+    assert "releases/download/v2.1.0/CertGenerator.exe" in notes
+    assert "Download` CertGenerator.exe` from the assets" not in notes
+
+
+def test_exe_only_release_reports_the_docker_image_as_unchanged():
+    notes = release_notes.build_notes("2.2.0", EXE_ONLY, None, "deadbeef")
+    assert "- Desktop-only change" in notes
+    assert "Docker image unchanged (2.1.0)" in notes
+    assert "docker pull ghcr.io/darthrater78/cert-generator:2.1.0" in notes
+    assert "docker pull ghcr.io/darthrater78/cert-generator:2.2.0" not in notes
+
+
+def test_entries_predating_the_split_count_as_both_deliverables():
+    # Strip v2.1.0's subsections so it looks like a pre-split entry: it shipped
+    # the image and the EXE together, so it is the last release of each.
+    readme = EXE_ONLY.replace("#### Docker\n- Server change\n\n", "").replace(
+        "#### Windows EXE\n- Desktop change\n", "")
+    assert release_notes.previous_release_of(readme, "2.2.0", release_notes.DOCKER) == "2.1.0"
+    assert release_notes.previous_release_of(readme, "2.2.0", release_notes.EXE) == "2.1.0"
+
+
+def test_components_output_lists_what_the_version_ships(monkeypatch, capsys, tmp_path):
+    for readme, expected in ((BOTH, "docker=true\nexe=true\n"),
+                             (DOCKER_ONLY, "docker=true\nexe=false\n"),
+                             (EXE_ONLY, "docker=false\nexe=true\n")):
+        (tmp_path / "README.md").write_text(readme, encoding="utf-8")
+        monkeypatch.setattr(release_notes, "ROOT", tmp_path)
+        version = "2.1.0" if readme is BOTH else "2.2.0"
+        assert release_notes.main([f"v{version}", "--components"]) == 0
+        assert capsys.readouterr().out == expected

@@ -1,8 +1,10 @@
 name: Release
 
-# One tag publishes both deliverables: the Docker image and the Windows EXE.
-# The GitHub release is created only after both have been built and verified,
-# with separate Docker and Windows EXE sections taken from README.md.
+# One tag, and the changelog picks what ships. README.md's entry for the version
+# carries a "#### Docker" and/or a "#### Windows EXE" section; each one present
+# builds and publishes that deliverable, and at least one is required. A
+# deliverable with no section is left at the version it last shipped, and the
+# release notes report it as unchanged.
 
 on:
   push:
@@ -26,6 +28,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       is_newest: ${{ steps.newest.outputs.is_newest }}
+      docker: ${{ steps.components.outputs.docker }}
+      exe: ${{ steps.components.outputs.exe }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,6 +59,12 @@ jobs:
           fi
           python3 scripts/release_notes.py "$GITHUB_REF_NAME" --check
 
+      - name: Decide which deliverables this release ships
+        id: components
+        run: |
+          set -euo pipefail
+          python3 scripts/release_notes.py "$GITHUB_REF_NAME" --components | tee -a "$GITHUB_OUTPUT"
+
       - name: Decide whether this is the newest release
         id: newest
         run: |
@@ -69,6 +79,7 @@ jobs:
 
   docker:
     needs: verify
+    if: needs.verify.outputs.docker == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -133,6 +144,7 @@ jobs:
 
   exe:
     needs: verify
+    if: needs.verify.outputs.exe == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
@@ -185,6 +197,11 @@ jobs:
 
   publish:
     needs: [verify, docker, exe]
+    # Runs when a skipped deliverable leaves its job skipped, but never past a failure.
+    if: >-
+      !cancelled() && needs.verify.result == 'success'
+      && (needs.docker.result == 'success' || needs.docker.result == 'skipped')
+      && (needs.exe.result == 'success' || needs.exe.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -195,11 +212,13 @@ jobs:
           persist-credentials: false
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: needs.verify.outputs.exe == 'true'
         with:
           name: release-exe
           path: assets
 
       - name: Verify downloaded EXE matches the tested build
+        if: needs.verify.outputs.exe == 'true'
         env:
           EXPECTED: ${{ needs.exe.outputs.sha256 }}
         run: |
@@ -219,26 +238,38 @@ jobs:
           set -euo pipefail
           extra=()
           if [ "$IS_NEWEST" != "true" ]; then extra+=(--not-newest); fi
-          python3 scripts/release_notes.py "$GITHUB_REF_NAME" \
-            --image-digest "$IMAGE_DIGEST" --exe-sha256 "$EXE_SHA256" "${extra[@]}" > release-notes.md
+          if [ -n "$IMAGE_DIGEST" ]; then extra+=(--image-digest "$IMAGE_DIGEST"); fi
+          if [ -n "$EXE_SHA256" ]; then extra+=(--exe-sha256 "$EXE_SHA256"); fi
+          python3 scripts/release_notes.py "$GITHUB_REF_NAME" "${extra[@]}" > release-notes.md
           cat release-notes.md
 
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IS_NEWEST: ${{ needs.verify.outputs.is_newest }}
+          HAS_EXE: ${{ needs.verify.outputs.exe }}
         run: |
           set -euo pipefail
+          assets=()
+          # Latest follows the newest release carrying an EXE, so that
+          # /releases/latest/download/CertGenerator.exe resolves to the current build.
+          latest=false
+          if [ "$HAS_EXE" = "true" ]; then
+            assets=(assets/CertGenerator.exe assets/CertGenerator.exe.sha256)
+            if [ "$IS_NEWEST" = "true" ]; then latest=true; fi
+          fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" --notes-file release-notes.md
-            gh release upload "$GITHUB_REF_NAME" assets/CertGenerator.exe assets/CertGenerator.exe.sha256 --clobber
+            gh release edit "$GITHUB_REF_NAME" --notes-file release-notes.md --latest="$latest"
+            if [ "${#assets[@]}" -gt 0 ]; then
+              gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+            fi
           else
             gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
-              --notes-file release-notes.md --latest="$IS_NEWEST" \
-              assets/CertGenerator.exe assets/CertGenerator.exe.sha256
+              --notes-file release-notes.md --latest="$latest" "${assets[@]}"
           fi
 
       - name: Verify release assets
+        if: needs.verify.outputs.exe == 'true'
         run: |
           set -euo pipefail
           gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[] | "\(.name) \(.size)"' | tee assets.txt

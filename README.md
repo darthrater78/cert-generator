@@ -161,11 +161,11 @@ CI runs on every push and pull request to `master`:
 
 ### Releases
 
-Pushing a `vX.Y.Z` tag on `master` runs `.github/workflows/release.yml`, which publishes both deliverables from the same commit:
-- **Docker image** — smoke-tested, pushed to `ghcr.io/darthrater78/cert-generator` as `X.Y.Z`, `X.Y`, and (for the newest release) `latest`, with a build provenance attestation
+Pushing a `vX.Y.Z` tag on `master` runs `.github/workflows/release.yml`. Both deliverables share one version line, and the changelog decides which of them a release publishes: the version's entry in this README's version history must carry a `#### Docker` section, a `#### Windows EXE` section, or both, and at least one is required.
+- **Docker image** — smoke-tested, pushed to `ghcr.io/darthrater78/cert-generator` as `X.Y.Z`, `X.Y`, and — only when the release includes Docker and is the newest — `latest`, with a build provenance attestation
 - **Windows EXE** — built and self-tested on Windows, attached to the GitHub release with a SHA-256 checksum and a build provenance attestation
 
-The release is only created once both succeed. Its notes come from this README's version history, which must list each version's changes under separate `#### Docker` and `#### Windows EXE` headings.
+Whichever deliverable the entry lists is built, and the release is created only once those succeed. A deliverable with no section is not rebuilt: it stays at the version it last shipped, and the notes say so ("Docker image unchanged (2.1.0)"). GitHub's **Latest** release follows the newest release that includes the EXE, so `/releases/latest/download/CertGenerator.exe` always resolves to the current build.
 
 ## Server hardening
 
@@ -272,9 +272,13 @@ The database format is identical in both modes. Use **Backup** to create an encr
 
 ## Version history
 
-### Unreleased
+Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
+
+### v2.1.0 — 2026-09-14
 
 Resolves #15, #16, #17, #18, #19, and #20.
+
+**Docker and the Windows EXE now share one release line.** The EXE was never published before, so this release rebuilds the image at 2.1.0 — unchanged in behaviour from 2.0.0 apart from the fixes below — to bring both deliverables onto the same version. From here on a release publishes whichever of the two its changelog entry lists, and the other stays where it is.
 
 #### Docker
 - **CRL lifetime is configurable** (#15) — choose 7 days to 10 years when exporting a CRL (default stays 10 years); the CA page shows the CRL's next-update date and warns when it is expired or due within 30 days
@@ -285,7 +289,7 @@ Resolves #15, #16, #17, #18, #19, and #20.
 - Image builds are smoke-tested before publishing and carry a build provenance attestation
 
 #### Windows EXE
-- **Released as a download** — every release now attaches `CertGenerator.exe`, built and tested by GitHub Actions on Windows, with a SHA-256 checksum and a verifiable build provenance attestation (not code-signed)
+- **Released as a download** — releases that include the desktop app attach `CertGenerator.exe`, built and tested by GitHub Actions on Windows, with a SHA-256 checksum and a verifiable build provenance attestation (not code-signed)
 - **pywebview 6.2.1** (from 5.3.2) and pinned PyInstaller 6.22.3
 - **Self-test mode** — `CertGenerator.exe --self-test` and `--self-test-gui` check the packaged app against a throwaway database; CI runs both on every change
 - Static files (including the app icon) are now bundled; previously `/static` was missing from the EXE
@@ -293,7 +297,7 @@ Resolves #15, #16, #17, #18, #19, and #20.
 
 #### Internal
 - `app/server.py` split into blueprints (`auth`, `account`, `pki`, `ssh`, `settings`) with shared helpers in `app/web.py`; long functions broken up (#18)
-- CI adds Windows unit tests, browser tests, the EXE build and self-test, and a container smoke test; the Docker and EXE release steps are combined in `release.yml`
+- CI adds Windows unit tests, browser tests, the EXE build and self-test, and a container smoke test; `release.yml` builds the Docker image and the EXE from one tag, and `scripts/release_notes.py` decides which of them a release publishes from this changelog
 
 ### v2.0.0 — 2026-09-14
 
