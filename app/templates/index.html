@@ -83,7 +83,6 @@ body {
 }
 .theme-swatch:hover { filter: brightness(1.2); }
 .theme-swatch.active { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent-hover); }
-.theme-swatch.theme-dark { background: linear-gradient(135deg, #0f1117, #1a1d27); }
 .theme-swatch.theme-oled { background: #000000; }
 .theme-swatch.theme-flashbang { background: #ffffff; }
 .sidebar-section {
@@ -695,7 +694,6 @@ body {
           <div class="version">v{{ app_version }}</div>
         </div>
         <div class="theme-switcher" role="group" aria-label="Theme">
-          <button class="theme-swatch theme-dark" data-action="setTheme" data-arg="dark" title="Dark" aria-label="Dark theme"></button>
           <button class="theme-swatch theme-oled" data-action="setTheme" data-arg="oled" title="OLED Black" aria-label="OLED Black theme"></button>
           <button class="theme-swatch theme-flashbang" data-action="setTheme" data-arg="flashbang" title="Flashbang" aria-label="Flashbang White theme"></button>
         </div>
