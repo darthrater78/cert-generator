@@ -281,18 +281,6 @@ The database format is identical in both modes. Use **Backup** to create an encr
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
 
-### v2.2.0 — 2026-09-16
-
-Hardens the release pipeline itself; no application behavior changes.
-
-#### Docker
-- No functional change — rebuilt to exercise the hardened release pipeline below
-
-#### Internal
-- **`release.yml` now requires a passing CI run for the tagged commit**, not just that the tag is on `master`. Previously a commit that was merged but never tested — or whose tests failed — could still be tagged and released; the `verify` job now polls `ci.yml`'s result for that exact SHA (waiting up to 30 minutes for an in-flight run) and refuses to release if CI never ran or didn't pass
-- **`master` is now a protected branch**: pushes must come through a pull request with `ci.yml`'s checks passing, enforced for admins too — closes the gap the CI-status check above exists to catch
-- **New `lint-workflows.yml`** runs `actionlint` against `.github/workflows/**` on every change, catching YAML/expression mistakes in the workflow files themselves without waiting for a real CI or release run. It calls `scripts/lint-workflows.sh`, so the same check runs locally before pushing instead of only surfacing in CI
-
 ### v2.1.0 — 2026-09-14
 
 Resolves #15, #16, #17, #18, #19, and #20.
