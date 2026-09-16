@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Cert Generator</title>
 <link rel="icon" href="/static/icon.ico" type="image/x-icon">
+<script src="/static/theme-init.js?v={{ app_version }}"></script>
+<link rel="stylesheet" href="/static/theme.css?v={{ app_version }}">
 <style>
 :root {
   --bg: #0f1117;
@@ -49,20 +51,41 @@ body {
   padding: 20px;
   border-bottom: 1px solid var(--border);
 }
+.sidebar-header-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .sidebar-header h1 {
   font-size: 18px;
   font-weight: 600;
   letter-spacing: -0.02em;
-  background: linear-gradient(135deg, var(--text), var(--accent-hover));
+  background: linear-gradient(135deg, var(--text), var(--accent-hover), var(--text));
+  background-size: 200% auto;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+  animation: title-shimmer 6s ease-in-out infinite;
+}
+@keyframes title-shimmer {
+  0%, 100% { background-position: 0% center; }
+  50% { background-position: 100% center; }
 }
 .sidebar-header .version {
   font-size: 11px;
   color: var(--text-dim);
   margin-top: 2px;
 }
+.theme-switcher { display: flex; gap: 6px; margin-top: 2px; flex-shrink: 0; }
+.theme-swatch {
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  padding: 0;
+  transition: box-shadow 0.15s var(--ease), filter 0.15s var(--ease);
+}
+.theme-swatch:hover { filter: brightness(1.2); }
+.theme-swatch.active { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent-hover); }
+.theme-swatch.theme-dark { background: linear-gradient(135deg, #0f1117, #1a1d27); }
+.theme-swatch.theme-oled { background: #000000; }
+.theme-swatch.theme-flashbang { background: #ffffff; }
 .sidebar-section {
   padding: 12px;
   flex: 1;
@@ -666,8 +689,17 @@ body {
   <button class="hamburger" id="hamburgerBtn" data-action="toggleMobileMenu" aria-label="Menu">&#9776;</button>
   <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
-      <h1>Cert Generator</h1>
-      <div class="version">v{{ app_version }}</div>
+      <div class="sidebar-header-top">
+        <div>
+          <h1>Cert Generator</h1>
+          <div class="version">v{{ app_version }}</div>
+        </div>
+        <div class="theme-switcher" role="group" aria-label="Theme">
+          <button class="theme-swatch theme-dark" data-action="setTheme" data-arg="dark" title="Dark" aria-label="Dark theme"></button>
+          <button class="theme-swatch theme-oled" data-action="setTheme" data-arg="oled" title="OLED Black" aria-label="OLED Black theme"></button>
+          <button class="theme-swatch theme-flashbang" data-action="setTheme" data-arg="flashbang" title="Flashbang" aria-label="Flashbang White theme"></button>
+        </div>
+      </div>
     </div>
     <div class="sidebar-section">
       <div class="section-header" data-action="toggleSection" data-arg="ca">
