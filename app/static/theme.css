@@ -1,0 +1,28 @@
+/* Theme overrides. Default (indigo dark) lives in each page's :root block;
+   these swap the surface/text tokens only, so --accent and every hardcoded
+   accent-tinted rgba() in the page styles stay correct on every theme. */
+
+:root[data-theme="oled"] {
+  --bg: #000000;
+  --surface: #0a0a0a;
+  --surface-hover: #161616;
+  --border: #1f1f1f;
+  --text: #f2f2f2;
+  --text-dim: #8a8a8a;
+  --shadow: 0 4px 24px rgba(0,0,0,0.7);
+}
+
+:root[data-theme="flashbang"] {
+  --bg: #ffffff;
+  --surface: #f6f6f9;
+  --surface-hover: #ebebf2;
+  --border: #dcdce3;
+  --text: #0b0b0f;
+  --text-dim: #5b5b66;
+  --success: #16a34a;
+  --danger: #dc2626;
+  --danger-hover: #ef4444;
+  --warning: #b45309;
+  --shadow: 0 4px 24px rgba(15,15,25,0.1);
+  --glow: 0 0 0 3px rgba(99,102,241,0.2);
+}

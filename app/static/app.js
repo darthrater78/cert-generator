@@ -12,6 +12,19 @@ function closeMobileMenu() {
   document.getElementById('hamburgerBtn').style.display = '';
 }
 
+function setTheme(name) {
+  if (name === 'dark') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', name);
+  try { localStorage.setItem('theme', name); } catch (e) { /* storage blocked */ }
+  updateThemeSwitcherUI(name);
+}
+
+function updateThemeSwitcherUI(name) {
+  document.querySelectorAll('.theme-swatch').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.arg === name);
+  });
+}
+
 const SERVER_MODE = document.body.dataset.serverMode === 'true';
 let currentCAId = null;
 let currentSSHKeyId = null;
@@ -1072,6 +1085,7 @@ async function deleteLegacyExports() {
 }
 
 async function initApp() {
+  updateThemeSwitcherUI(document.documentElement.dataset.theme || 'dark');
   const ready = await checkEncryptionStatus();
   if (ready) {
     loadCAs();
@@ -1135,6 +1149,7 @@ const UI_ACTIONS = new Set([
   'showRestoreModal',
   'showSSHGuide',
   'showSSHGuideTab',
+  'setTheme',
   'toggleMobileMenu',
   'toggleSection',
   'toggleSerial',
