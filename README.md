@@ -168,7 +168,7 @@ CI runs on every push and pull request to `master`:
 
 ### Releases
 
-Pushing a `vX.Y.Z` tag on `master` runs `.github/workflows/release.yml`. Both deliverables share one version line, and the changelog decides which of them a release publishes: the version's entry in this README's version history must carry a `#### Docker` section, a `#### Windows EXE` section, or both, and at least one is required.
+Pushing a `vX.Y.Z` tag on `master` runs `.github/workflows/release.yml`. Before building anything, it requires a passing CI run for the tagged commit — an in-progress run is waited on, but a missing or failed one stops the release. Both deliverables share one version line, and the changelog decides which of them a release publishes: the version's entry in this README's version history must carry a `#### Docker` section, a `#### Windows EXE` section, or both, and at least one is required.
 - **Docker image** — smoke-tested, pushed to `ghcr.io/darthrater78/cert-generator` as `X.Y.Z`, `X.Y`, and — only when the release includes Docker and is the newest — `latest`, with a build provenance attestation
 - **Windows EXE** — built and self-tested on Windows, attached to the GitHub release with a SHA-256 checksum and a build provenance attestation
 
@@ -280,6 +280,20 @@ The database format is identical in both modes. Use **Backup** to create an encr
 ## Version history
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
+
+### v2.2.0 — 2026-09-16
+
+#### Docker
+- **Visual refresh** — gradient buttons and wordmarks, card/modal depth via shadows, focus-glow rings on inputs, a modal open/close animation, and colored accent borders on toasts and status badges, across the dashboard and the login/setup/MFA screens
+- Fixed the MFA screen's encryption-password field (shown when the database is locked): it had no CSS rule at all and rendered as an unstyled browser-default input
+
+#### Windows EXE
+- Same visual refresh as Docker — the desktop build bundles the same templates, so both deliverables ship identically
+
+#### Internal
+- The release workflow now requires a passing CI run for the tagged commit before building or publishing anything, waiting out an in-progress run rather than treating it as a failure — protects against tagging a commit CI hasn't checked yet
+- `.github/workflows/*.yml` are linted with `actionlint` in CI whenever they change (`scripts/lint-workflows.sh`)
+- Branch protection enabled on `master`
 
 ### v2.1.0 — 2026-09-14
 
