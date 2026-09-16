@@ -13,8 +13,7 @@ function closeMobileMenu() {
 }
 
 function setTheme(name) {
-  if (name === 'dark') document.documentElement.removeAttribute('data-theme');
-  else document.documentElement.setAttribute('data-theme', name);
+  document.documentElement.setAttribute('data-theme', name);
   try { localStorage.setItem('theme', name); } catch (e) { /* storage blocked */ }
   updateThemeSwitcherUI(name);
 }
@@ -1085,7 +1084,7 @@ async function deleteLegacyExports() {
 }
 
 async function initApp() {
-  updateThemeSwitcherUI(document.documentElement.dataset.theme || 'dark');
+  updateThemeSwitcherUI(document.documentElement.dataset.theme || 'oled');
   const ready = await checkEncryptionStatus();
   if (ready) {
     loadCAs();

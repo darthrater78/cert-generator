@@ -281,6 +281,15 @@ The database format is identical in both modes. Use **Backup** to create an encr
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
 
+### v2.3.1 — 2026-09-16
+
+#### Docker
+- OLED Black theme contrast fix — brighter surface/border tokens and a redesigned shadow/glow so panel edges, modal shadows, and focus rings stay visible against the pure-black background
+- Removed the indigo "Dark" theme option — only OLED Black and Flashbang remain, switchable from the sidebar swatch control, with OLED Black as the default
+
+#### Windows EXE
+- Same theme fixes as Docker — the desktop build bundles the same templates, so both deliverables ship identically
+
 ### v2.3.0 — 2026-09-16
 
 #### Docker

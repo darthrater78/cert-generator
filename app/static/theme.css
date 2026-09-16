@@ -1,15 +1,21 @@
-/* Theme overrides. Default (indigo dark) lives in each page's :root block;
-   these swap the surface/text tokens only, so --accent and every hardcoded
-   accent-tinted rgba() in the page styles stay correct on every theme. */
+/* Theme overrides. Shared tokens (--accent, --radius, --ease, ...) live in
+   each page's :root block; these swap the surface/text tokens only, so
+   --accent and every hardcoded accent-tinted rgba() in the page styles stay
+   correct on every theme. There are exactly two themes — OLED Black and
+   Flashbang; OLED is the default, applied by theme-init.js. */
 
 :root[data-theme="oled"] {
   --bg: #000000;
-  --surface: #0a0a0a;
-  --surface-hover: #161616;
-  --border: #1f1f1f;
+  --surface: #0d0d0d;
+  --surface-hover: #1c1c1c;
+  --border: #2c2c2c;
   --text: #f2f2f2;
-  --text-dim: #8a8a8a;
-  --shadow: 0 4px 24px rgba(0,0,0,0.7);
+  --text-dim: #999999;
+  /* bg and surface both sit near-black, so a dark drop shadow has nothing to
+     contrast against — pair it with a faint light rim to keep panel/toast
+     edges (and the swatch's active ring) readable. */
+  --shadow: 0 8px 30px rgba(0,0,0,0.85), 0 0 0 1px rgba(255,255,255,0.06);
+  --glow: 0 0 0 3px rgba(99,102,241,0.4);
 }
 
 :root[data-theme="flashbang"] {

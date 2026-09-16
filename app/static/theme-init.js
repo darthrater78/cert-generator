@@ -1,6 +1,7 @@
 (function () {
+  var theme = 'oled';
   try {
-    var theme = localStorage.getItem('theme');
-    if (theme && theme !== 'dark') document.documentElement.setAttribute('data-theme', theme);
+    theme = localStorage.getItem('theme') || 'oled';
   } catch (e) { /* storage blocked (private mode, etc.) — fall back to default theme */ }
+  document.documentElement.setAttribute('data-theme', theme);
 })();
