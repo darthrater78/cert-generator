@@ -281,6 +281,14 @@ The database format is identical in both modes. Use **Backup** to create an encr
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
 
+### v2.3.2 — 2026-09-16
+
+#### Docker
+- Fixed low-contrast algorithm/type badges (e.g. "RSA 4096", the CA type tag) — badge text used the same accent hue as its own translucent background tint, landing below WCAG AA contrast in both OLED Black and Flashbang. Badge text now uses a dedicated, theme-aware shade.
+
+#### Windows EXE
+- Same badge contrast fix as Docker — the desktop build bundles the same templates, so both deliverables ship identically
+
 ### v2.3.1 — 2026-09-16
 
 #### Docker
