@@ -153,11 +153,18 @@ python -m playwright install --with-deps chromium firefox webkit
 python -m pytest -m e2e --browser chromium --browser firefox --browser webkit
 ```
 
+Editing a file under `.github/workflows/`? Lint it the same way CI does:
+
+```bash
+bash scripts/lint-workflows.sh
+```
+
 CI runs on every push and pull request to `master`:
 - the unit tests on Linux (Python 3.10 and 3.14) and Windows
 - the browser tests in Chromium, Firefox, and WebKit
 - a Windows EXE build and its `--self-test` / `--self-test-gui` checks (the EXE is kept as a workflow artifact for 7 days)
 - a Docker image build with a container smoke test, including a clean shutdown on `docker stop`
+- `actionlint` against `.github/workflows/**` (only runs when those files change)
 
 ### Releases
 
