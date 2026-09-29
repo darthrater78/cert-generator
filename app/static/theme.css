@@ -1,39 +1,141 @@
-/* Theme overrides. Shared tokens (--accent, --radius, --ease, ...) live in
-   each page's :root block; these swap the surface/text tokens only, so
-   --accent and every hardcoded accent-tinted rgba() in the page styles stay
-   correct on every theme. There are exactly two themes — OLED Black and
-   Flashbang; OLED is the default, applied by theme-init.js. */
+/* Themes and shared fonts for every page.
 
+   Six themes swap the surface/text tokens: four dark (OLED, Graphite, Umber,
+   Ink) and two light (Slate, Flashbang). Slate is the default, applied by
+   theme-init.js. The accent (--accent*) is theme-independent and comes from
+   each page's :root block, or inline from theme-init.js for a custom accent,
+   so anything tinted with it must derive from var(--accent) (color-mix)
+   rather than a hardcoded rgba(). --accent-text is the per-theme shade of the
+   default brass accent that clears WCAG AA as text; theme-init.js derives it
+   for a custom accent. --rule is the strong line used for section rules. */
+
+@font-face {
+  font-family: 'Libre Caslon Display';
+  src: url('fonts/libre-caslon-display-400-latin.woff2') format('woff2');
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'Libre Caslon Text';
+  src: url('fonts/libre-caslon-text-400-latin.woff2') format('woff2');
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'Libre Caslon Text';
+  src: url('fonts/libre-caslon-text-400italic-latin.woff2') format('woff2');
+  font-weight: 400; font-style: italic; font-display: swap;
+}
+
+:root {
+  --font-display: 'Libre Caslon Display', 'Iowan Old Style', Georgia, serif;
+  --font-serif: 'Libre Caslon Text', 'Iowan Old Style', Georgia, serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, Consolas, monospace;
+  --font-ui: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+/* ---- dark ---- */
 :root[data-theme="oled"] {
+  color-scheme: dark;
   --bg: #000000;
   --surface: #0d0d0d;
   --surface-hover: #1c1c1c;
   --border: #2c2c2c;
+  --rule: #6b6b6b;
   --text: #f2f2f2;
   --text-dim: #999999;
-  /* bg and surface both sit near-black, so a dark drop shadow has nothing to
-     contrast against — pair it with a faint light rim to keep panel/toast
-     edges (and the swatch's active ring) readable. */
+  --success: #22c55e;
+  --danger: #ef4444;
+  --danger-hover: #f87171;
+  --warning: #f59e0b;
   --shadow: 0 8px 30px rgba(0,0,0,0.85), 0 0 0 1px rgba(255,255,255,0.06);
-  --glow: 0 0 0 3px rgba(99,102,241,0.4);
-  --accent-text: #818cf8;
+  --glow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
+  --accent-text: #d4a017;
+}
+:root[data-theme="graphite"] {
+  color-scheme: dark;
+  --bg: #1b1c1f;
+  --surface: #232428;
+  --surface-hover: #2c2d32;
+  --border: #3a3b41;
+  --rule: #7a7b83;
+  --text: #ececee;
+  --text-dim: #a2a3ab;
+  --success: #34d399;
+  --danger: #f87171;
+  --danger-hover: #fca5a5;
+  --warning: #fbbf24;
+  --shadow: 0 8px 30px rgba(0,0,0,0.45);
+  --glow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+  --accent-text: #d4a017;
+}
+:root[data-theme="umber"] {
+  color-scheme: dark;
+  --bg: #1c1915;
+  --surface: #24201b;
+  --surface-hover: #2e2922;
+  --border: #3d372e;
+  --rule: #857a69;
+  --text: #efe9df;
+  --text-dim: #aca395;
+  --success: #6ee7a0;
+  --danger: #f87171;
+  --danger-hover: #fca5a5;
+  --warning: #fbbf24;
+  --shadow: 0 8px 30px rgba(0,0,0,0.45);
+  --glow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+  --accent-text: #d4a017;
+}
+:root[data-theme="ink"] {
+  color-scheme: dark;
+  --bg: #121821;
+  --surface: #19202b;
+  --surface-hover: #212a37;
+  --border: #2f3a4a;
+  --rule: #6f7d91;
+  --text: #e8edf3;
+  --text-dim: #9aa6b6;
+  --success: #4ade80;
+  --danger: #f87171;
+  --danger-hover: #fca5a5;
+  --warning: #fbbf24;
+  --shadow: 0 8px 30px rgba(0,0,0,0.5);
+  --glow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+  --accent-text: #d4a017;
 }
 
+/* ---- light ---- */
+:root[data-theme="slate"] {
+  color-scheme: light;
+  --bg: #e9ebee;
+  --surface: #f4f5f7;
+  --surface-hover: #dfe2e6;
+  --border: #cdd1d7;
+  --rule: #6b7280;
+  --text: #14171c;
+  --text-dim: #535a66;
+  --success: #15803d;
+  --danger: #b91c1c;
+  --danger-hover: #dc2626;
+  --warning: #b45309;
+  --shadow: 0 6px 24px rgba(20,23,28,0.12);
+  --glow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+  /* brass is far too light for text on a light ground (≈2:1); this is the
+     darkened shade that clears AA on its 15% tint */
+  --accent-text: #785b0d;
+}
 :root[data-theme="flashbang"] {
+  color-scheme: light;
   --bg: #ffffff;
   --surface: #f6f6f9;
   --surface-hover: #ebebf2;
   --border: #dcdce3;
+  --rule: #6b6b76;
   --text: #0b0b0f;
   --text-dim: #5b5b66;
-  --success: #16a34a;
+  --success: #15803d;
   --danger: #dc2626;
   --danger-hover: #ef4444;
   --warning: #b45309;
   --shadow: 0 4px 24px rgba(15,15,25,0.1);
-  --glow: 0 0 0 3px rgba(99,102,241,0.2);
-  /* --accent itself (#6366f1) is the same hue as badge-algo/ca-type-badge's
-     rgba(99,102,241,0.15) tint, so text-on-badge contrast collapses on a
-     light background — darken it for those badges specifically. */
-  --accent-text: #4338ca;
+  --glow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+  --accent-text: #81610e;
 }

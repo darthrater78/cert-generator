@@ -7,680 +7,12 @@
 <link rel="icon" href="/static/icon.ico" type="image/x-icon">
 <script src="/static/theme-init.js?v={{ app_version }}"></script>
 <link rel="stylesheet" href="/static/theme.css?v={{ app_version }}">
-<style>
-:root {
-  --bg: #0f1117;
-  --surface: #1a1d27;
-  --surface-hover: #22263a;
-  --border: #2a2e3e;
-  --text: #e4e4e7;
-  --text-dim: #8b8fa3;
-  --accent: #6366f1;
-  --accent-2: #8b5cf6;
-  --accent-hover: #818cf8;
-  /* Text color for accent-tinted badges (rgba(99,102,241,0.15) backgrounds) —
-     --accent itself is too close in shade to its own translucent tint to
-     read reliably; this needs to be lighter in dark themes, darker in light
-     ones. Defaults to the dark-theme value; flashbang overrides in theme.css. */
-  --accent-text: #818cf8;
-  --success: #22c55e;
-  --danger: #ef4444;
-  --danger-hover: #f87171;
-  --warning: #f59e0b;
-  --radius: 8px;
-  --shadow: 0 4px 24px rgba(0,0,0,0.3);
-  --glow: 0 0 0 3px rgba(99,102,241,0.15);
-  --ease: cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body {
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  line-height: 1.5;
-  min-height: 100vh;
-}
-
-.app { display: flex; height: 100vh; }
-
-.sidebar {
-  width: 260px;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-}
-.sidebar-header {
-  padding: 20px;
-  border-bottom: 1px solid var(--border);
-}
-.sidebar-header-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.sidebar-header h1 {
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  background: linear-gradient(135deg, var(--text), var(--accent-hover), var(--text));
-  background-size: 200% auto;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  animation: title-shimmer 6s ease-in-out infinite;
-}
-@keyframes title-shimmer {
-  0%, 100% { background-position: 0% center; }
-  50% { background-position: 100% center; }
-}
-.sidebar-header .version {
-  font-size: 11px;
-  color: var(--text-dim);
-  margin-top: 2px;
-}
-.theme-switcher { display: flex; gap: 6px; margin-top: 2px; flex-shrink: 0; }
-.theme-swatch {
-  width: 18px; height: 18px;
-  border-radius: 50%;
-  border: 1px solid var(--border);
-  cursor: pointer;
-  padding: 0;
-  transition: box-shadow 0.15s var(--ease), filter 0.15s var(--ease);
-}
-.theme-swatch:hover { filter: brightness(1.2); }
-.theme-swatch.active { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent-hover); }
-.theme-swatch.theme-oled { background: #000000; }
-.theme-swatch.theme-flashbang { background: #ffffff; }
-.sidebar-section {
-  padding: 12px;
-  flex: 1;
-  overflow-y: auto;
-}
-.sidebar-section h3 {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-dim);
-  margin-bottom: 8px;
-  padding: 0 8px;
-}
-.ca-list { list-style: none; }
-.ca-item {
-  padding: 10px 12px;
-  border-radius: var(--radius);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  transition: background 0.15s var(--ease);
-}
-.ca-item:hover { background: var(--surface-hover); }
-.ca-item.active {
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  color: white;
-  box-shadow: 0 2px 12px rgba(99,102,241,0.35);
-}
-.ca-item .dot {
-  width: 8px; height: 8px;
-  border-radius: 50%;
-  background: var(--success);
-  flex-shrink: 0;
-}
-.ca-item .ca-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ca-item.intermediate { padding-left: 28px; font-size: 12px; }
-.ca-item.intermediate .dot { background: var(--accent); width: 6px; height: 6px; }
-.ca-type-badge {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 8px;
-  background: rgba(99,102,241,0.15);
-  color: var(--accent-text);
-  flex-shrink: 0;
-}
-
-.btn-new-ca {
-  margin: 12px;
-  padding: 10px;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  color: white;
-  border: none;
-  border-radius: var(--radius);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
-  box-shadow: 0 2px 10px rgba(99,102,241,0.3);
-  transition: transform 0.15s var(--ease), box-shadow 0.15s var(--ease), filter 0.15s var(--ease);
-}
-.btn-new-ca:hover { background: linear-gradient(135deg, var(--accent-hover), var(--accent-2)); box-shadow: 0 4px 16px rgba(99,102,241,0.4); }
-
-.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
-#caView { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-.main-header {
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-.main-header h2 {
-  font-size: 16px;
-  font-weight: 600;
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.main-header .header-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
-.main-content {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: auto;
-  padding: 24px;
-}
-
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  text-align: center;
-  color: var(--text-dim);
-}
-.empty-state .icon { font-size: 48px; margin-bottom: 16px; opacity: 0.4; }
-.empty-state p { font-size: 14px; max-width: 320px; }
-
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 20px;
-  margin-bottom: 16px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-}
-.card h3 {
-  font-size: 14px;
-  font-weight: 600;
-  margin-bottom: 16px;
-}
-
-.form-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-.form-row.full { grid-template-columns: 1fr; }
-.form-group { display: flex; flex-direction: column; gap: 4px; }
-.form-group label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-dim);
-}
-.form-group input, .form-group select, .form-group textarea {
-  padding: 8px 12px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-size: 13px;
-  font-family: inherit;
-  outline: none;
-  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
-}
-.form-group input:focus, .form-group select:focus, .form-group textarea:focus {
-  border-color: var(--accent);
-  box-shadow: var(--glow);
-}
-.form-group textarea { resize: vertical; min-height: 60px; }
-
-.lifetime-input { display: flex; gap: 8px; }
-.lifetime-input input { flex: 1; min-width: 0; }
-.lifetime-input select { flex-shrink: 0; width: 90px; }
-
-.btn {
-  padding: 8px 16px;
-  border: none;
-  border-radius: var(--radius);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
-  font-family: inherit;
-  transition: background 0.15s var(--ease), opacity 0.15s var(--ease), transform 0.15s var(--ease), box-shadow 0.15s var(--ease), filter 0.15s var(--ease);
-}
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-primary {
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  color: white;
-  box-shadow: 0 2px 10px rgba(99,102,241,0.3);
-}
-.btn-primary:hover:not(:disabled) { background: linear-gradient(135deg, var(--accent-hover), var(--accent-2)); box-shadow: 0 4px 16px rgba(99,102,241,0.4); }
-.btn-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); }
-.btn-danger:hover:not(:disabled) { background: var(--danger); color: white; }
-.btn-ghost {
-  background: transparent;
-  color: var(--text-dim);
-  border: 1px solid var(--border);
-}
-.btn-ghost:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
-.btn-sm { padding: 5px 10px; font-size: 12px; }
-
-.btn-group { display: flex; gap: 8px; margin-top: 12px; }
-
-#certTableContainer { overflow-x: auto; }
-.cert-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-  min-width: 600px;
-}
-.cert-table th {
-  text-align: left;
-  padding: 8px 12px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-dim);
-  border-bottom: 1px solid var(--border);
-  font-weight: 500;
-}
-.cert-table td {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-  transition: background 0.15s var(--ease);
-}
-.cert-table tr:hover td { background: var(--surface-hover); }
-
-.badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-size: 11px;
-  font-weight: 500;
-}
-.badge-active { background: rgba(34,197,94,0.15); color: var(--success); border: 1px solid rgba(34,197,94,0.3); }
-.badge-revoked { background: rgba(239,68,68,0.15); color: var(--danger); border: 1px solid rgba(239,68,68,0.3); }
-.badge-expired { background: rgba(245,158,11,0.15); color: var(--warning); border: 1px solid rgba(245,158,11,0.3); }
-.badge-algo { background: rgba(99,102,241,0.15); color: var(--accent-text); border: 1px solid rgba(99,102,241,0.3); }
-
-.ca-info-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 16px;
-  margin-bottom: 20px;
-}
-.info-item label {
-  display: block;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-dim);
-  margin-bottom: 2px;
-}
-.info-item span {
-  font-size: 14px;
-  font-weight: 500;
-  overflow-wrap: break-word;
-  word-break: break-all;
-}
-.serial-toggle {
-  cursor: pointer;
-  font-family: monospace;
-  font-size: 11px;
-}
-.serial-toggle:hover { color: var(--accent); }
-
-.export-section {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-.export-section select {
-  padding: 6px 10px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-size: 12px;
-  outline: none;
-}
-
-.modal-backdrop {
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,0.6);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 100;
-  animation: backdrop-in 0.15s ease;
-}
-.modal {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 24px;
-  width: 480px;
-  max-width: 90vw;
-  max-height: 90vh;
-  overflow-y: auto;
-  box-shadow: var(--shadow);
-  animation: modal-in 0.2s var(--ease);
-}
-@keyframes backdrop-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-@keyframes modal-in {
-  from { opacity: 0; transform: scale(0.96) translateY(8px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
-}
-.modal h3 { font-size: 16px; margin-bottom: 16px; }
-.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
-
-.hidden { display: none !important; }
-
-.toast-container {
-  position: fixed;
-  bottom: 20px;
-  right: 20px;
-  z-index: 200;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.toast {
-  padding: 12px 16px;
-  border-radius: var(--radius);
-  font-size: 13px;
-  box-shadow: var(--shadow);
-  animation: toast-in 0.3s ease;
-}
-.toast-success { background: #065f46; color: #d1fae5; border-left: 3px solid var(--success); }
-.toast-error { background: #7f1d1d; color: #fecaca; border-left: 3px solid var(--danger); }
-@keyframes toast-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.btn-help {
-  display: block;
-  margin: 0 12px 12px;
-  padding: 10px;
-  background: transparent;
-  color: var(--text-dim);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
-  font-family: inherit;
-  transition: background 0.15s, color 0.15s;
-  text-align: left;
-  text-decoration: none;
-}
-.btn-help:hover { background: var(--surface-hover); color: var(--text); }
-
-.guide-modal { width: 600px; }
-.guide-modal h3 { font-size: 18px; margin-bottom: 4px; }
-.guide-modal .guide-subtitle { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; }
-
-.guide-tabs { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
-.guide-tab {
-  padding: 6px 12px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-dim);
-  cursor: pointer;
-  font-size: 12px;
-  font-family: inherit;
-  transition: all 0.15s;
-}
-.guide-tab:hover { background: var(--surface-hover); color: var(--text); }
-.guide-tab.active { background: var(--accent); color: white; border-color: var(--accent); }
-
-.guide-content { font-size: 13px; line-height: 1.7; }
-.guide-content h4 { font-size: 14px; font-weight: 600; margin: 16px 0 8px; }
-.guide-content h4:first-child { margin-top: 0; }
-.guide-content p { margin-bottom: 8px; }
-.guide-content ol, .guide-content ul { margin: 0 0 12px 20px; }
-.guide-content li { margin-bottom: 4px; }
-.guide-content code {
-  background: var(--bg);
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-family: 'Cascadia Code', 'Consolas', monospace;
-}
-.guide-content .step-note {
-  background: rgba(99,102,241,0.1);
-  border-left: 3px solid var(--accent);
-  padding: 8px 12px;
-  border-radius: 0 var(--radius) var(--radius) 0;
-  margin: 8px 0 12px;
-  font-size: 12px;
-}
-.guide-content .step-warn {
-  background: rgba(245,158,11,0.1);
-  border-left: 3px solid var(--warning);
-  padding: 8px 12px;
-  border-radius: 0 var(--radius) var(--radius) 0;
-  margin: 8px 0 12px;
-  font-size: 12px;
-}
-
-.section-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  cursor: pointer;
-  border-radius: var(--radius);
-  user-select: none;
-}
-.section-header:hover { background: var(--surface-hover); }
-.section-header h3 { margin-bottom: 0; padding: 0; flex: 1; }
-.section-chevron {
-  font-size: 10px;
-  color: var(--text-dim);
-  transition: transform 0.15s;
-  flex-shrink: 0;
-}
-.section-chevron.open { transform: rotate(90deg); }
-.section-count {
-  font-size: 10px;
-  color: var(--text-dim);
-  background: rgba(139,143,163,0.12);
-  padding: 0 6px;
-  border-radius: 8px;
-  font-weight: 500;
-  line-height: 18px;
-}
-.sidebar-actions {
-  padding: 8px 12px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.sidebar-actions .btn-row { display: flex; gap: 6px; }
-.sidebar-actions .btn-row button { flex: 1; }
-
-.ssh-item {
-  padding: 10px 12px;
-  border-radius: var(--radius);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  transition: background 0.15s var(--ease);
-}
-.ssh-item:hover { background: var(--surface-hover); }
-.ssh-item.active {
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  color: white;
-  box-shadow: 0 2px 12px rgba(99,102,241,0.35);
-}
-.ssh-item .ssh-icon {
-  flex-shrink: 0;
-  color: var(--warning);
-}
-.ssh-item.active .ssh-icon { color: white; }
-.section-divider {
-  margin: 6px 12px;
-  border: none;
-  border-top: 1px solid var(--border);
-}
-.ssh-item .ssh-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-.pubkey-box {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px 12px;
-  font-family: 'Cascadia Code', 'Consolas', monospace;
-  font-size: 11px;
-  color: var(--text-dim);
-  line-height: 1.5;
-  word-break: break-all;
-  white-space: pre-wrap;
-  max-height: 80px;
-  overflow-y: auto;
-}
-.copy-row { display: flex; gap: 6px; margin-top: 8px; }
-
-.unlock-overlay {
-  position: fixed; inset: 0;
-  background: var(--bg);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 300;
-  flex-direction: column;
-}
-.unlock-box {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 32px;
-  width: 380px;
-  max-width: 90vw;
-  box-shadow: var(--shadow);
-  text-align: center;
-}
-.unlock-box h2 { font-size: 18px; margin-bottom: 4px; }
-.unlock-box .lock-icon { font-size: 36px; margin-bottom: 12px; opacity: 0.7; }
-.unlock-box .subtitle { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; }
-.unlock-box input {
-  width: 100%;
-  padding: 10px 14px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-size: 14px;
-  outline: none;
-  margin-bottom: 12px;
-  text-align: center;
-}
-.unlock-box input:focus { border-color: var(--accent); }
-.unlock-box .error-msg { color: var(--danger); font-size: 12px; margin-bottom: 8px; min-height: 16px; }
-
-.encryption-banner {
-  margin: 12px;
-  padding: 12px;
-  background: rgba(245,158,11,0.08);
-  border: 1px solid rgba(245,158,11,0.25);
-  border-radius: var(--radius);
-  font-size: 12px;
-  line-height: 1.5;
-}
-.encryption-banner h4 { font-size: 13px; font-weight: 600; margin-bottom: 4px; color: var(--warning); }
-.encryption-banner p { color: var(--text-dim); margin-bottom: 8px; }
-.encryption-banner .banner-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.encryption-banner .banner-dismiss {
-  display: flex; align-items: center; gap: 4px;
-  font-size: 11px; color: var(--text-dim); cursor: pointer; margin-left: auto;
-}
-.encryption-banner .banner-dismiss input { margin: 0; }
-
-.hamburger {
-  display: none;
-  position: fixed;
-  top: 12px;
-  left: 12px;
-  z-index: 110;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-size: 22px;
-  width: 40px;
-  height: 40px;
-  cursor: pointer;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-  padding: 0;
-}
-.sidebar-backdrop {
-  display: none;
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.5);
-  z-index: 99;
-}
-@media (max-width: 768px) {
-  .hamburger { display: flex; }
-  .sidebar {
-    position: fixed;
-    top: 0;
-    left: 0;
-    bottom: 0;
-    z-index: 100;
-    transform: translateX(-100%);
-    transition: transform 0.25s ease;
-    width: 280px;
-    max-width: 85vw;
-  }
-  .sidebar.open { transform: translateX(0); }
-  .sidebar.open + .sidebar-backdrop,
-  .sidebar-backdrop.open { display: block; }
-  .main { width: 100%; }
-  .main-header { padding: 12px 16px 12px 60px; }
-  .main-content { padding: 16px; }
-  .form-row { grid-template-columns: 1fr; }
-  .cert-table { min-width: 480px; font-size: 12px; }
-  .cert-table th, .cert-table td { padding: 8px 6px; }
-  .ca-info-grid { grid-template-columns: 1fr 1fr; }
-  .export-section { flex-direction: column; align-items: stretch; }
-  .export-section select,
-  .export-section input,
-  .export-section button { width: 100%; }
-  .header-actions { width: 100%; justify-content: flex-start; }
-  .header-actions .btn { font-size: 11px; padding: 5px 8px; }
-  .empty-state { padding: 24px 16px; }
-  .empty-state .icon { font-size: 36px; }
-  .guide-modal { width: 100%; }
-  .toast-container { bottom: 12px; right: 12px; left: 12px; }
-  .toast { font-size: 12px; }
-}
-.signout-link {
-  font-size: 12px;
-  color: var(--text-dim);
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-}
-.signout-link:hover { color: var(--danger); }
-</style>
+<link rel="stylesheet" href="/static/app.css?v={{ app_version }}">
 </head>
 <body data-server-mode="{{ 'true' if server_mode else 'false' }}">
 <div id="unlockOverlay" class="unlock-overlay hidden">
   <div class="unlock-box">
-    <div class="lock-icon">&#x1f512;</div>
+    <div class="lock-icon">Keystore sealed</div>
     <h2>Database Locked</h2>
     <p class="subtitle">Enter your master password to decrypt private keys</p>
     <input type="password" id="unlockPassword" placeholder="Master password" data-enter="doUnlock">
@@ -693,22 +25,54 @@ body {
   <button class="hamburger" id="hamburgerBtn" data-action="toggleMobileMenu" aria-label="Menu">&#9776;</button>
   <div class="sidebar" id="sidebar">
     <div class="sidebar-header">
-      <div class="sidebar-header-top">
-        <div>
-          <h1>Cert Generator</h1>
-          <div class="version">v{{ app_version }}</div>
-        </div>
-        <div class="theme-switcher" role="group" aria-label="Theme">
-          <button class="theme-swatch theme-oled" data-action="setTheme" data-arg="oled" title="OLED Black" aria-label="OLED Black theme"></button>
-          <button class="theme-swatch theme-flashbang" data-action="setTheme" data-arg="flashbang" title="Flashbang" aria-label="Flashbang White theme"></button>
+      <div class="eyebrow">Certificate Authority</div>
+      <h1>Cert Generator</h1>
+      <div class="version">v{{ app_version }}</div>
+      <div class="theme-row">
+        <button type="button" class="appearance-btn" id="accentBtn" data-action="toggleAccentMenu" aria-haspopup="true" aria-expanded="false" aria-controls="accentMenu">
+          <span class="lbl">Appearance</span><span class="val" id="appearanceLabel">Slate</span><span class="sw" aria-hidden="true"></span>
+        </button>
+        <div class="accent-menu" id="accentMenu" hidden>
+          <div class="accent-menu-title">Theme</div>
+          <div class="theme-list" role="group" aria-label="Theme">
+            <button type="button" class="theme-opt" data-action="setTheme" data-arg="slate" aria-pressed="false"><span class="theme-dot slate"></span>Slate</button>
+            <button type="button" class="theme-opt" data-action="setTheme" data-arg="flashbang" aria-pressed="false"><span class="theme-dot flashbang"></span>Flashbang</button>
+            <button type="button" class="theme-opt" data-action="setTheme" data-arg="graphite" aria-pressed="false"><span class="theme-dot graphite"></span>Graphite</button>
+            <button type="button" class="theme-opt" data-action="setTheme" data-arg="umber" aria-pressed="false"><span class="theme-dot umber"></span>Umber</button>
+            <button type="button" class="theme-opt" data-action="setTheme" data-arg="ink" aria-pressed="false"><span class="theme-dot ink"></span>Ink</button>
+            <button type="button" class="theme-opt" data-action="setTheme" data-arg="oled" aria-pressed="false"><span class="theme-dot oled"></span>OLED</button>
+          </div>
+          <div class="accent-menu-title">Accent colour</div>
+          <div class="accent-presets">
+            <button type="button" class="accent-preset" data-action="setAccent" data-arg="#d4a017" style="background:#d4a017" title="Brass (default)" aria-label="Brass (default)"></button>
+            <button type="button" class="accent-preset" data-action="setAccent" data-arg="#ea580c" style="background:#ea580c" title="Orange" aria-label="Orange"></button>
+            <button type="button" class="accent-preset" data-action="setAccent" data-arg="#dc2626" style="background:#dc2626" title="Red" aria-label="Red"></button>
+            <button type="button" class="accent-preset" data-action="setAccent" data-arg="#db2777" style="background:#db2777" title="Pink" aria-label="Pink"></button>
+            <button type="button" class="accent-preset" data-action="setAccent" data-arg="#c026d3" style="background:#c026d3" title="Fuchsia" aria-label="Fuchsia"></button>
+            <button type="button" class="accent-preset" data-action="setAccent" data-arg="#7c3aed" style="background:#7c3aed" title="Violet" aria-label="Violet"></button>
+            <button type="button" class="accent-preset" data-action="setAccent" data-arg="#6366f1" style="background:#6366f1" title="Indigo" aria-label="Indigo"></button>
+            <button type="button" class="accent-preset" data-action="setAccent" data-arg="#2563eb" style="background:#2563eb" title="Blue" aria-label="Blue"></button>
+            <button type="button" class="accent-preset" data-action="setAccent" data-arg="#0891b2" style="background:#0891b2" title="Teal" aria-label="Teal"></button>
+            <button type="button" class="accent-preset" data-action="setAccent" data-arg="#15803d" style="background:#15803d" title="Green" aria-label="Green"></button>
+            <button type="button" class="accent-preset" data-action="setAccent" data-arg="#65a30d" style="background:#65a30d" title="Lime" aria-label="Lime"></button>
+            <button type="button" class="accent-preset" data-action="setAccent" data-arg="#64748b" style="background:#64748b" title="Slate" aria-label="Slate"></button>
+          </div>
+          <div class="accent-custom">
+            <input type="color" id="accentInput" value="#d4a017" aria-label="Pick a custom accent colour" title="Pick a colour">
+            <label for="accentHex">Hex</label>
+            <input type="text" id="accentHex" value="#d4a017" maxlength="7" spellcheck="false" autocomplete="off" inputmode="text" aria-describedby="accentHexHint">
+          </div>
+          <div class="accent-hint" id="accentHexHint">Type a hex colour, like #d4a017</div>
+          <button type="button" class="accent-reset" data-action="setAccent" data-arg="">Reset accent to brass</button>
         </div>
       </div>
     </div>
     <div class="sidebar-section">
       <div class="section-header" data-action="toggleSection" data-arg="ca">
         <span class="section-chevron open" id="caChevron">&#9654;</span>
-        <h3>Certificate Authorities</h3>
+        <h3>Authorities</h3>
         <span class="section-count" id="caCount">0</span>
+        <button type="button" class="section-add" data-action="showCreateCA" title="Create a root certificate authority">+ New</button>
       </div>
       <ul class="ca-list" id="caList"></ul>
 
@@ -716,55 +80,31 @@ body {
 
       <div class="section-header" data-action="toggleSection" data-arg="ssh">
         <span class="section-chevron open" id="sshChevron">&#9654;</span>
-        <h3>SSH Keys</h3>
+        <h3>SSH keys</h3>
         <span class="section-count" id="sshCount">0</span>
+        <button type="button" class="section-add" data-action="showCreateSSHKey" title="Generate an SSH key pair">+ New</button>
       </div>
       <ul class="ca-list" id="sshList"></ul>
     </div>
-    <div id="legacyExportsBanner" class="encryption-banner hidden">
-      <h4>&#9888; Old Export Files on the Server</h4>
-      <p><span id="legacyExportsCount">0</span> files in <code id="legacyExportsDir"></code> were written by versions before 2.0.0 and may contain unencrypted private keys.</p>
-      <div class="banner-actions">
-        <button class="btn btn-danger btn-sm" data-action="deleteLegacyExports">Review &amp; Delete</button>
-      </div>
-    </div>
-    <div id="encryptionBanner" class="encryption-banner hidden">
-      <h4>&#x1f512; Protect Private Keys</h4>
-      <p>Your private keys are stored unencrypted. Set a master password to encrypt them at rest with AES-256-GCM. If someone copies your database file, they cannot read your keys without the password.</p>
-      <div class="banner-actions">
-        <button class="btn btn-primary btn-sm" data-action="showEncryptionSettings">Enable Encryption</button>
-        <label class="banner-dismiss">
-          <input type="checkbox" id="bannerDismissCheck"> Don't show again
-        </label>
-        <button class="btn btn-ghost btn-sm" data-action="dismissEncryptionBanner">Dismiss</button>
-      </div>
-    </div>
     <div class="sidebar-actions">
-      <div class="btn-row">
-        <button class="btn-new-ca" style="margin:0" data-action="showCreateSSHKey">+ SSH Key</button>
-        <button class="btn-new-ca" style="margin:0;background:transparent;border:1px solid var(--border);color:var(--text-dim)" data-action="showImportSSHKey">&#8615; Import SSH Key</button>
-      </div>
-      <div class="btn-row">
-        <button class="btn-new-ca" style="margin:0;background:transparent;border:1px solid var(--border);color:var(--text-dim)" data-action="showCreateCA">+ CA</button>
-      </div>
-      <div class="btn-row">
-        <button class="btn-help" style="margin:0;flex:1" data-action="showGuide">? CA Guide</button>
-        <button class="btn-help" style="margin:0;flex:1" data-action="showSSHGuide">? SSH Guide</button>
-      </div>
-      <div class="btn-row">
-        <button class="btn-help" style="margin:0;flex:1" data-action="showBackupModal">&#128230; Backup</button>
-        <button class="btn-help" style="margin:0;flex:1" data-action="showRestoreModal">&#128229; Restore</button>
-      </div>
-      <button class="btn-help" style="margin:0" id="btnEncryption" data-action="showEncryptionSettings">&#x1f512; Encryption Settings</button>
+      <div class="tools-title">Tools</div>
+      <button type="button" class="tool-link" data-action="showCreateCA">New certificate authority <em>root CA</em></button>
+      <button type="button" class="tool-link" data-action="showCreateSSHKey">New SSH key <em>generate</em></button>
+      <button type="button" class="tool-link" data-action="showImportSSHKey">Import SSH key <em>paste</em></button>
+      <button type="button" class="tool-link" data-action="showBackupModal">Backup <em>.certbak</em></button>
+      <button type="button" class="tool-link" data-action="showRestoreModal">Restore <em>.certbak</em></button>
+      <button type="button" class="tool-link" id="btnEncryption" data-action="showEncryptionSettings">Encryption <em>at rest</em></button>
       {% if server_mode %}
-      <button class="btn-help" style="margin:0" id="btnMFA" data-action="showMFASettings">&#x1f510; MFA Settings</button>
-      <button class="btn-help" style="margin:0" data-action="showAccountSettings">&#9881; Account Settings</button>
+      <button type="button" class="tool-link" id="btnMFA" data-action="showMFASettings">Two-factor sign-in <em>MFA</em></button>
+      <button type="button" class="tool-link" data-action="showAccountSettings">Account <em>password · devices</em></button>
       {% endif %}
-      <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator" data-action="openExternalLink">&#8599; GitHub Repo</a>
-      <a class="btn-help" style="margin:0" href="https://github.com/darthrater78/cert-generator/releases/tag/v{{ app_version }}" data-action="openExternalLink">&#8599; Release Notes</a>
+      <button type="button" class="tool-link" data-action="showGuide">Certificate guide <em>import help</em></button>
+      <button type="button" class="tool-link" data-action="showSSHGuide">SSH guide <em>usage</em></button>
+      <a class="tool-link" href="https://github.com/darthrater78/cert-generator" data-action="openExternalLink">GitHub repository <em>↗</em></a>
+      <a class="tool-link" href="https://github.com/darthrater78/cert-generator/releases/tag/v{{ app_version }}" data-action="openExternalLink">v{{ app_version }} release notes <em>↗</em></a>
       {% if server_mode %}
-      <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:12px;color:var(--text-dim)">Signed in as <strong style="color:var(--text)">{{ username }}</strong></span>
+      <div class="signed-in">
+        <span>Signed in as <strong>{{ username }}</strong></span>
         <form method="POST" action="/logout" style="margin:0">
           <button type="submit" class="signout-link">Sign out</button>
         </form>
@@ -775,29 +115,51 @@ body {
   <div class="sidebar-backdrop" id="sidebarBackdrop" data-action="toggleMobileMenu"></div>
 
   <div class="main">
+    <div class="notice-strip">
+      <div id="legacyExportsBanner" class="encryption-banner hidden">
+        <h4>Old exports</h4>
+        <p><span id="legacyExportsCount">0</span> files in <code id="legacyExportsDir"></code> were written by versions before 2.0.0 and may contain unencrypted private keys.</p>
+        <div class="banner-actions">
+          <button class="btn btn-danger btn-sm" data-action="deleteLegacyExports">Review &amp; delete</button>
+        </div>
+      </div>
+      <div id="encryptionBanner" class="encryption-banner hidden">
+        <h4>Unencrypted</h4>
+        <p>Private keys are stored unencrypted. Set a master password to encrypt them at rest with AES-256-GCM, so a copied database file can't be read without it.</p>
+        <div class="banner-actions">
+          <button class="btn btn-primary btn-sm" data-action="showEncryptionSettings">Enable encryption</button>
+          <label class="banner-dismiss"><input type="checkbox" id="bannerDismissCheck"> Don't show again</label>
+          <button class="btn btn-ghost btn-sm" data-action="dismissEncryptionBanner">Dismiss</button>
+        </div>
+      </div>
+    </div>
     <div id="welcomeView" class="main-content">
       <div class="empty-state">
-        <div class="icon">&#x1f512;</div>
-        <p>Create a Certificate Authority to start issuing certificates for your posture demos.</p>
-        <button class="btn btn-primary" style="margin-top: 16px" data-action="showCreateCA">Create CA</button>
+        <h3>No authorities yet</h3>
+        <p>Create a certificate authority to start issuing certificates for your posture demos.</p>
+        <button class="btn btn-primary" style="margin-top: 8px" data-action="showCreateCA">Create CA</button>
       </div>
     </div>
 
     <div id="caView" class="hidden">
       <div class="main-header">
-        <h2 id="caViewTitle"></h2>
+        <div class="titles">
+          <div class="eyebrow" id="caViewEyebrow"></div>
+          <h2 id="caViewTitle"></h2>
+          <div class="chain" id="caViewChain"></div>
+        </div>
         <div class="header-actions">
-          <button class="btn btn-ghost btn-sm" id="btnCreateIntermediate" data-action="showCreateIntermediate">+ Intermediate CA</button>
-          <button class="btn btn-ghost btn-sm" data-action="showIssueCert">+ Issue Certificate</button>
-          <button class="btn btn-danger btn-sm" data-action="deleteCurrentCA">Delete CA</button>
+          <button class="btn btn-ghost" id="btnCreateIntermediate" data-action="showCreateIntermediate">Intermediate CA</button>
+          <button class="btn btn-primary" data-action="showIssueCert">Issue certificate</button>
+          <button class="btn btn-danger" data-action="deleteCurrentCA">Delete</button>
         </div>
       </div>
       <div class="main-content">
         <div class="card">
-          <h3>CA Details</h3>
+          <h3>Particulars</h3>
           <div class="ca-info-grid" id="caInfo"></div>
           <div class="export-section">
-            <span style="font-size:12px;color:var(--text-dim)">Export CA:</span>
+            <span class="field-label">Export</span>
             <select id="caExportFormat" data-change="updateCaPasswordVisibility">
               <option value="pkcs12">PKCS12 (.pfx)</option>
               <option value="pem">PEM</option>
@@ -809,11 +171,10 @@ body {
               <option value="public">Certificate Only</option>
               <option value="private">Private Key Only</option>
             </select>
-            <input type="password" id="caExportPassword" value="changeit" title="Default password: changeit" placeholder="Default: changeit"
-              style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;width:160px;outline:none">
-            <span style="font-size:11px;color:var(--text-dim);margin-left:-4px" title="Default password is 'changeit'. Required for Windows certificate import.">(default: changeit)</span>
+            <input type="password" id="caExportPassword" value="changeit" title="Default password: changeit" placeholder="Default: changeit" aria-label="Export password">
+            <span class="note" title="Default password is 'changeit'. Required for Windows certificate import.">default: changeit</span>
             <button class="btn btn-ghost btn-sm" data-action="exportCA">Download</button>
-            <span style="border-left:1px solid var(--border);height:20px;margin:0 4px"></span>
+            <span class="sep" aria-hidden="true"></span>
             <select id="crlLifetime" title="How long the CRL stays valid. Endpoints treat revocation data as stale after this, so re-export and re-import before it expires.">
               <option value="7">CRL valid 7 days</option>
               <option value="30">CRL valid 30 days</option>
@@ -826,7 +187,7 @@ body {
         </div>
 
         <div class="card">
-          <h3>Issued Certificates</h3>
+          <h3>Issued certificates <small id="certCountNote"></small></h3>
           <div id="certTableContainer">
             <table class="cert-table">
               <thead>
@@ -843,7 +204,7 @@ body {
               <tbody id="certTableBody"></tbody>
             </table>
           </div>
-          <div id="noCerts" class="hidden" style="text-align:center;padding:24px;color:var(--text-dim);font-size:13px">
+          <div id="noCerts" class="hidden" style="text-align:center;padding:24px;color:var(--text-dim);font-style:italic">
             No certificates issued yet.
           </div>
         </div>
@@ -852,40 +213,42 @@ body {
 
     <div id="sshKeyView" class="hidden">
       <div class="main-header">
-        <h2 id="sshKeyViewTitle"></h2>
+        <div class="titles">
+          <div class="eyebrow" id="sshKeyViewEyebrow">SSH key</div>
+          <h2 id="sshKeyViewTitle"></h2>
+          <div class="chain" id="sshKeyViewChain"></div>
+        </div>
         <div class="header-actions">
-          <button class="btn btn-danger btn-sm" data-action="deleteSSHKey">Delete Key</button>
+          <button class="btn btn-danger" data-action="deleteSSHKey">Delete key</button>
         </div>
       </div>
       <div class="main-content">
         <div class="card">
-          <h3>Key Details</h3>
+          <h3>Particulars</h3>
           <div class="ca-info-grid" id="sshKeyInfo"></div>
         </div>
         <div class="card">
-          <h3>Public Key</h3>
+          <h3>Public key</h3>
           <div class="pubkey-box" id="sshPubKey"></div>
           <div class="copy-row">
             <button class="btn btn-ghost btn-sm" data-action="copyPublicKey">Copy Public Key</button>
           </div>
         </div>
         <div class="card">
-          <h3>Export / Download</h3>
+          <h3>Export</h3>
           <div class="export-section">
-            <select id="sshExportPart" style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;outline:none">
+            <select id="sshExportPart">
               <option value="private">Private Key</option>
               <option value="public">Public Key</option>
             </select>
-            <select id="sshExportFormat" style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;outline:none">
+            <select id="sshExportFormat">
               <option value="openssh">OpenSSH</option>
               <option value="pem">PEM (PKCS#8)</option>
             </select>
-            <input type="password" id="sshOriginalPassphrase" placeholder="Original passphrase"
-              style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;width:160px;outline:none;display:none">
-            <input type="password" id="sshExportPassphrase" placeholder="Export passphrase (optional)"
-              style="padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:12px;width:180px;outline:none">
+            <input type="password" id="sshOriginalPassphrase" placeholder="Original passphrase" aria-label="Original passphrase" style="display:none">
+            <input type="password" id="sshExportPassphrase" placeholder="Export passphrase (optional)" aria-label="Export passphrase">
             <button class="btn btn-ghost btn-sm" data-action="exportSSHKey">Download</button>
-            <span style="border-left:1px solid var(--border);height:20px;margin:0 4px"></span>
+            <span class="sep" aria-hidden="true"></span>
             <button class="btn btn-ghost btn-sm" data-action="copyPrivateKey" title="Copy private key PEM to clipboard for Bitwarden SSH import">Copy Private Key (Bitwarden)</button>
           </div>
         </div>
