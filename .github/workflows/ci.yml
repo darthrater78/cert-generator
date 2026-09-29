@@ -15,8 +15,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Docs-only changes (*.md, docs/**, LICENSE) skip the build and test jobs.
+  # Fail closed: if this job fails or can't tell, everything below runs.
+  changes:
+    name: detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Decide whether anything but docs changed
+        id: diff
+        env:
+          # pull_request: the PR's base; push: the previous tip; manual runs: none (run everything)
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: scripts/ci-changes.sh "$BASE" >> "$GITHUB_OUTPUT"
+
   test:
     name: test (${{ matrix.os }}, ${{ matrix.python-version }})
+    needs: changes
+    # A matrix job skipped at the job level reports as plain "test", never as
+    # the "test (os, version)" names branch protection requires — so this job
+    # always starts, and its steps skip on a docs-only change instead.
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -29,22 +55,32 @@ jobs:
           - { os: ubuntu-latest, python-version: "3.14" }
           - { os: windows-latest, python-version: "3.14" }
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Docs-only change — nothing to test
+        if: needs.changes.outputs.code == 'false'
+        run: echo "Only documentation changed; tests skipped."
+
+      - if: needs.changes.outputs.code != 'false'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - if: needs.changes.outputs.code != 'false'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
+        if: needs.changes.outputs.code != 'false'
         run: python -m pip install -r requirements-dev.txt
 
       - name: Run tests
+        if: needs.changes.outputs.code != 'false'
         run: python -m pytest
 
   browser:
     name: browser tests
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -81,6 +117,8 @@ jobs:
 
   windows-exe:
     name: windows exe
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -113,6 +151,8 @@ jobs:
           if-no-files-found: error
 
   docker-build:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
