@@ -39,9 +39,11 @@ Both modes have full feature parity — the same UI, database format, and capabi
 - **Structured logging** — request and operation logging with timestamps, configurable via `LOG_LEVEL` environment variable
 - **Themes and accent colour** — six themes (Slate by default, Flashbang, Graphite, Umber, Ink and OLED) and an accent colour picker (twelve presets, a colour picker or a typed hex value; brass by default), chosen from the Appearance menu and saved per browser; the sign-in pages follow the same choice
 
-<img width="2373" height="474" alt="image" src="https://github.com/user-attachments/assets/a2f5d634-46ea-4e9d-9e8e-f98c4480abe1" />
-<img width="574" height="517" alt="image" src="https://github.com/user-attachments/assets/e9dc86c0-e838-4b7b-ad1d-fd01772388a7" />
-<img width="1345" height="832" alt="image" src="https://github.com/user-attachments/assets/dff10eb2-da88-4eac-8b27-0647439b233d" />
+<img width="1440" alt="The dashboard on the Slate theme: an intermediate CA's particulars and its register of issued certificates" src="docs/screenshots/dashboard.png" />
+
+<img width="49%" alt="The sign-in page, set as an engraved certificate over a faint openssl readout" src="docs/screenshots/sign-in.png" /> <img width="49%" alt="The Issue Certificate dialog" src="docs/screenshots/issue-certificate.png" />
+
+<img width="49%" alt="An SSH key's particulars, public key and export options" src="docs/screenshots/ssh-key.png" /> <img width="49%" alt="The Umber theme with the Appearance menu open: six themes and the accent colour picker" src="docs/screenshots/themes.png" />
 
 
 ## Requirements
@@ -335,6 +337,7 @@ Each entry lists its changes per deliverable: a `#### Docker` section means the 
 - The release workflow builds the image once, smoke-tests and Trivy-scans that exact digest, and only then applies the version tags; CI adds a report-only Trivy scan and a dependency-review check on pull requests
 - `docker-compose.yml` pins the image to the release version instead of `latest`
 - The README's Docker section is now a copy-paste quickstart: create the data folder, save `compose.yaml`, set the session secret and start
+- README screenshots redone for the new design, rendered from sample data and kept in `docs/screenshots/`
 
 ### v2.3.2 — 2026-09-16
 
