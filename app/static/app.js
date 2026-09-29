@@ -13,15 +13,73 @@ function closeMobileMenu() {
 }
 
 function setTheme(name) {
-  document.documentElement.setAttribute('data-theme', name);
-  try { localStorage.setItem('theme', name); } catch (e) { /* storage blocked */ }
-  updateThemeSwitcherUI(name);
+  window.CertTheme.setTheme(name);
+  updateThemeSwitcherUI(document.documentElement.dataset.theme);
 }
 
 function updateThemeSwitcherUI(name) {
-  document.querySelectorAll('.theme-swatch').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.arg === name);
+  document.querySelectorAll('.theme-opt').forEach((btn) => {
+    const on = btn.dataset.arg === name;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', String(on));
+    if (on) document.getElementById('appearanceLabel').textContent = btn.textContent.trim();
   });
+}
+
+function setAccent(hex) {
+  window.CertTheme.setAccent(hex || null);
+  updateAccentUI();
+}
+
+function updateAccentUI({ keepHexField = false } = {}) {
+  const current = window.CertTheme.getAccent();
+  document.getElementById('accentInput').value = current;
+  if (!keepHexField) {
+    document.getElementById('accentHex').value = current;
+    setAccentHexValidity(true);
+  }
+  document.querySelectorAll('.accent-preset').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.arg === current);
+  });
+}
+
+// Accepts "#d4a017", "d4a017", "#fa0" or "fa0"; returns "#rrggbb" or null.
+function parseAccentHex(value) {
+  let hex = value.trim().toLowerCase();
+  if (!hex.startsWith('#')) hex = `#${hex}`;
+  if (/^#[0-9a-f]{3}$/.test(hex)) hex = `#${[...hex.slice(1)].map((c) => c + c).join('')}`;
+  return /^#[0-9a-f]{6}$/.test(hex) ? hex : null;
+}
+
+function setAccentHexValidity(valid) {
+  document.getElementById('accentHex').setAttribute('aria-invalid', String(!valid));
+  const hint = document.getElementById('accentHexHint');
+  hint.classList.toggle('invalid', !valid);
+  hint.textContent = valid ? 'Type a hex colour, like #d4a017' : 'Not a hex colour. Use six digits, like #d4a017';
+}
+
+// Live preview while typing: apply as soon as the field holds a valid colour,
+// without rewriting what the user is typing.
+function onAccentHexInput(event) {
+  const hex = parseAccentHex(event.target.value);
+  if (!hex) return;
+  window.CertTheme.setAccent(hex);
+  updateAccentUI({ keepHexField: true });
+  setAccentHexValidity(true);
+}
+
+// On Enter or leaving the field: normalise a valid value, flag an invalid one.
+function onAccentHexCommit(event) {
+  const hex = parseAccentHex(event.target.value);
+  if (hex) setAccent(hex);
+  else setAccentHexValidity(false);
+}
+
+function toggleAccentMenu(_arg, _el, open) {
+  const menu = document.getElementById('accentMenu');
+  const show = typeof open === 'boolean' ? open : menu.hidden;
+  menu.hidden = !show;
+  document.getElementById('accentBtn').setAttribute('aria-expanded', String(show));
 }
 
 const SERVER_MODE = document.body.dataset.serverMode === 'true';
@@ -37,6 +95,27 @@ const TEMPLATE_LABELS = {
   'code-signing': 'Code Signing',
   'email': 'Email (S/MIME)',
 };
+
+// Short labels for the index and the register; long names for the particulars.
+const ALGO_SHORT = {
+  'ecdsa-p256': 'P-256', 'ecdsa-p384': 'P-384', 'rsa-2048': 'RSA 2048', 'rsa-4096': 'RSA 4096', 'ed25519': 'Ed25519',
+};
+const ALGO_LONG = {
+  'ecdsa-p256': 'ECDSA P-256', 'ecdsa-p384': 'ECDSA P-384', 'rsa-2048': 'RSA 2048', 'rsa-4096': 'RSA 4096', 'ed25519': 'Ed25519',
+};
+const algoShort = (a) => ALGO_SHORT[a] || a;
+const algoLong = (a) => ALGO_LONG[a] || a;
+const EXPIRY_WARNING_DAYS = 30;
+
+// Certificate authorities by id, from the last list load (for "issued by").
+const caIndex = new Map();
+
+// "0x7cff2c0d6fb3…" → "7C:FF:2C:0D:6F:B3", the leading bytes of a serial.
+function shortSerial(serial) {
+  let hex = String(serial || '').replace(/^0x/i, '').toUpperCase();
+  if (hex.length % 2) hex = '0' + hex;
+  return (hex.match(/../g) || []).slice(0, 6).join(':');
+}
 const TEMPLATE_DESCS = {
   'web-server': 'Server Authentication',
   'computer': 'Client Authentication, Server Authentication',
@@ -81,6 +160,8 @@ async function loadCAs() {
   const list = document.getElementById('caList');
   list.innerHTML = '';
 
+  caIndex.clear();
+  cas.forEach(c => caIndex.set(c.id, c));
   const roots = cas.filter(c => !c.parent_ca_id);
   const childrenOf = (pid) => cas.filter(c => c.parent_ca_id === pid);
 
@@ -88,7 +169,7 @@ async function loadCAs() {
     const li = document.createElement('li');
     li.className = 'ca-item' + (ca.id === currentCAId ? ' active' : '');
     li.innerHTML = '<span class="dot"></span><span class="ca-name">' +
-      escapeHtml(ca.name) + '</span>';
+      escapeHtml(ca.name) + '</span><span class="ca-alg">' + escapeHtml(algoShort(ca.algorithm)) + '</span>';
     li.onclick = () => selectCA(ca.id);
     list.appendChild(li);
 
@@ -96,7 +177,7 @@ async function loadCAs() {
       const cli = document.createElement('li');
       cli.className = 'ca-item intermediate' + (child.id === currentCAId ? ' active' : '');
       cli.innerHTML = '<span class="dot"></span><span class="ca-name">' +
-        escapeHtml(child.name) + '</span>';
+        escapeHtml(child.name) + '</span><span class="ca-alg">' + escapeHtml(algoShort(child.algorithm)) + '</span>';
       cli.onclick = () => selectCA(child.id);
       list.appendChild(cli);
     });
@@ -122,6 +203,12 @@ async function selectCA(caId) {
   document.getElementById('caViewTitle').textContent = ca.name;
 
   const isRoot = ca.is_root;
+  document.getElementById('caViewEyebrow').textContent =
+    (isRoot ? 'Root authority' : 'Intermediate authority') + ' · No. ' + shortSerial(ca.serial);
+  const parent = caIndex.get(ca.parent_ca_id);
+  document.getElementById('caViewChain').textContent = isRoot
+    ? 'self-signed · for ' + ca.domain
+    : 'issued by ' + (parent ? parent.name : 'its parent CA') + ' · for ' + ca.domain;
   document.getElementById('btnCreateIntermediate').classList.toggle('hidden', !ca.can_issue_intermediate);
 
   const expired = new Date(ca.not_after) < new Date();
@@ -131,7 +218,7 @@ async function selectCA(caId) {
   document.getElementById('caInfo').innerHTML =
     infoItem('Type', typeBadge) +
     infoItem('Domain', escapeHtml(ca.domain)) +
-    infoItem('Algorithm', '<span class="badge badge-algo">' + escapeHtml(ca.algorithm) + '</span>') +
+    infoItem('Algorithm', '<span class="badge badge-algo">' + escapeHtml(algoLong(ca.algorithm)) + '</span>') +
     infoItem('Serial', serialToggle(ca.serial)) +
     infoItem('Created', formatDate(ca.not_before)) +
     infoItem('Expires', formatDate(ca.not_after)) +
@@ -152,6 +239,7 @@ async function loadCerts(caId) {
   const noCerts = document.getElementById('noCerts');
 
   if (certs.length === 0) {
+    document.getElementById('certCountNote').textContent = '';
     tbody.innerHTML = '';
     noCerts.classList.remove('hidden');
     document.getElementById('certTableContainer').querySelector('table').classList.add('hidden');
@@ -159,21 +247,25 @@ async function loadCerts(caId) {
   }
 
   noCerts.classList.add('hidden');
+  const revokedCount = certs.filter(c => c.revoked).length;
+  document.getElementById('certCountNote').textContent =
+    certs.length + (certs.length === 1 ? ' entry' : ' entries') + (revokedCount ? ' · ' + revokedCount + ' revoked' : '');
   document.getElementById('certTableContainer').querySelector('table').classList.remove('hidden');
 
   tbody.innerHTML = certs.map(c => {
-    const expired = new Date(c.not_after) < new Date();
+    const daysLeft = Math.ceil((new Date(c.not_after) - new Date()) / 86400000);
     let status = '';
     if (c.revoked) status = '<span class="badge badge-revoked">Revoked</span>';
-    else if (expired) status = '<span class="badge badge-expired">Expired</span>';
+    else if (daysLeft < 0) status = '<span class="badge badge-expired">Expired</span>';
+    else if (daysLeft <= EXPIRY_WARNING_DAYS) status = '<span class="badge badge-expired">Expires in ' + daysLeft + 'd</span>';
     else status = '<span class="badge badge-active">Active</span>';
 
     const tmplLabel = TEMPLATE_LABELS[c.template] || c.template || 'Web Server';
-    return '<tr>' +
+    return '<tr' + (c.revoked ? ' class="revoked"' : '') + '>' +
       '<td>' + escapeHtml(c.common_name) + '</td>' +
-      '<td><span class="badge badge-algo">' + escapeHtml(tmplLabel) + '</span></td>' +
-      '<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(c.san_domains) + '</td>' +
-      '<td><span class="badge badge-algo">' + escapeHtml(c.algorithm) + '</span></td>' +
+      '<td>' + escapeHtml(tmplLabel) + '</td>' +
+      '<td class="sans" title="' + escapeHtml(c.san_domains) + '">' + escapeHtml(c.san_domains) + '</td>' +
+      '<td>' + escapeHtml(algoShort(c.algorithm)) + '</td>' +
       '<td>' + formatDate(c.not_after) + '</td>' +
       '<td>' + status + '</td>' +
       '<td>' +
@@ -443,8 +535,8 @@ function updateCertPasswordVisibility() {
 document.getElementById('certExportFormat').addEventListener('change', updateCertPasswordVisibility);
 document.getElementById('certExportPart').addEventListener('change', updateCertPasswordVisibility);
 
-function infoItem(label, value) {
-  return '<div class="info-item"><label>' + label + '</label><span>' + value + '</span></div>';
+function infoItem(label, value, cls = '') {
+  return '<div class="info-item' + (cls ? ' ' + cls : '') + '"><label>' + label + '</label><span>' + value + '</span></div>';
 }
 
 function serialToggle(serial) {
@@ -518,8 +610,8 @@ async function loadSSHKeys() {
   keys.forEach(k => {
     const li = document.createElement('li');
     li.className = 'ssh-item' + (k.id === currentSSHKeyId ? ' active' : '');
-    const algoBadge = k.algorithm.toUpperCase().replace('-', ' ');
-    const importedBadge = k.imported ? '<span class="ca-type-badge" style="background:var(--accent);color:#fff;font-size:9px;padding:1px 5px">IMPORTED</span>' : '';
+    const algoBadge = algoShort(k.algorithm);
+    const importedBadge = k.imported ? '<span class="ca-type-badge imported">IMPORTED</span>' : '';
     li.innerHTML = '<svg class="ssh-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg><span class="ssh-name">' +
       escapeHtml(k.name) + '</span>' + importedBadge + '<span class="ca-type-badge">' + escapeHtml(algoBadge) + '</span>';
     li.onclick = () => selectSSHKey(k.id);
@@ -538,14 +630,17 @@ async function selectSSHKey(keyId) {
   document.getElementById('caView').classList.add('hidden');
   document.getElementById('sshKeyView').classList.remove('hidden');
   document.getElementById('sshKeyViewTitle').textContent = key.name;
+  document.getElementById('sshKeyViewEyebrow').textContent =
+    'SSH key · ' + algoLong(key.algorithm) + (key.imported ? ' · imported' : '');
+  document.getElementById('sshKeyViewChain').textContent = key.fingerprint;
 
   document.getElementById('sshKeyInfo').innerHTML =
-    infoItem('Algorithm', '<span class="badge badge-algo">' + escapeHtml(key.algorithm.toUpperCase().replace('-', ' ')) + '</span>') +
-    infoItem('Source', key.imported ? '<span class="badge" style="background:var(--accent);color:#fff">Imported</span>' : '<span class="badge badge-algo">Generated</span>') +
-    infoItem('Fingerprint', '<span style="font-family:monospace;font-size:11px">' + escapeHtml(key.fingerprint) + '</span>') +
-    infoItem('Comment', escapeHtml(key.comment || '(none)')) +
+    infoItem('Algorithm', '<span class="badge badge-algo">' + escapeHtml(algoLong(key.algorithm)) + '</span>') +
+    infoItem('Source', key.imported ? '<span class="badge badge-accent">Imported</span>' : '<span class="badge badge-algo">Generated here</span>') +
     infoItem('Passphrase', key.has_passphrase ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-expired">No</span>') +
-    infoItem('Created', formatDate(key.created_at));
+    infoItem('Created', formatDate(key.created_at)) +
+    infoItem('Fingerprint', escapeHtml(key.fingerprint), 'span-3') +
+    infoItem('Comment', escapeHtml(key.comment || '(none)'));
 
   document.getElementById('sshPubKey').textContent = key.public_key || '';
   document.getElementById('sshOriginalPassphrase').value = '';
@@ -1085,6 +1180,7 @@ async function deleteLegacyExports() {
 
 async function initApp() {
   updateThemeSwitcherUI(document.documentElement.dataset.theme || 'oled');
+  updateAccentUI();
   const ready = await checkEncryptionStatus();
   if (ready) {
     loadCAs();
@@ -1148,7 +1244,9 @@ const UI_ACTIONS = new Set([
   'showRestoreModal',
   'showSSHGuide',
   'showSSHGuideTab',
+  'setAccent',
   'setTheme',
+  'toggleAccentMenu',
   'toggleMobileMenu',
   'toggleSection',
   'toggleSerial',
@@ -1173,6 +1271,22 @@ document.addEventListener('click', (event) => {
 document.addEventListener('change', (event) => {
   const el = event.target.closest('[data-change]');
   if (el) runAction(el.dataset.change, el, event);
+});
+
+document.getElementById('accentInput').addEventListener('input', (event) => setAccent(event.target.value));
+document.getElementById('accentHex').addEventListener('input', onAccentHexInput);
+document.getElementById('accentHex').addEventListener('change', onAccentHexCommit);
+
+// Close the accent menu on a click outside it, or on Escape.
+document.addEventListener('click', (event) => {
+  if (!document.getElementById('accentMenu').hidden && !event.target.closest('.theme-row')) toggleAccentMenu(null, null, false);
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !document.getElementById('accentMenu').hidden) {
+    toggleAccentMenu(null, null, false);
+    document.getElementById('accentBtn').focus();
+  }
 });
 
 document.addEventListener('keydown', (event) => {

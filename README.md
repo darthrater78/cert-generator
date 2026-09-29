@@ -1,5 +1,7 @@
 # Cert Generator
 
+**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.4.0 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.4.0)**
+
 A tool for creating Certificate Authorities and issuing self-signed certificates for posture demos. Runs as a **Docker web app** or a **Windows desktop app** — both use the same interface and database format, and backups created in one mode can be restored in the other.
 
 ## Deployment options
@@ -35,10 +37,13 @@ Both modes have full feature parity — the same UI, database format, and capabi
 - **TOTP multi-factor authentication** — optional TOTP second factor using any authenticator app (Google Authenticator, Authy, 1Password, etc.); enable/disable from the MFA Settings panel, requires password + code to disable
 - **Trusted devices** — "Trust this device for 30 days" skips MFA on subsequent logins; trust tokens are SHA-256 hashed and stored server-side with auto-detected device labels (browser + OS); view and revoke individual devices from Account Settings or MFA Settings
 - **Structured logging** — request and operation logging with timestamps, configurable via `LOG_LEVEL` environment variable
+- **Themes and accent colour** — six themes (Slate by default, Flashbang, Graphite, Umber, Ink and OLED) and an accent colour picker (twelve presets, a colour picker or a typed hex value; brass by default), chosen from the Appearance menu and saved per browser; the sign-in pages follow the same choice
 
-<img width="2373" height="474" alt="image" src="https://github.com/user-attachments/assets/a2f5d634-46ea-4e9d-9e8e-f98c4480abe1" />
-<img width="574" height="517" alt="image" src="https://github.com/user-attachments/assets/e9dc86c0-e838-4b7b-ad1d-fd01772388a7" />
-<img width="1345" height="832" alt="image" src="https://github.com/user-attachments/assets/dff10eb2-da88-4eac-8b27-0647439b233d" />
+<img width="1440" alt="The dashboard on the Slate theme: an intermediate CA's particulars and its register of issued certificates" src="docs/screenshots/dashboard.png" />
+
+<img width="49%" alt="The sign-in page, set as an engraved certificate over a faint openssl readout" src="docs/screenshots/sign-in.png" /> <img width="49%" alt="The Issue Certificate dialog" src="docs/screenshots/issue-certificate.png" />
+
+<img width="49%" alt="An SSH key's particulars, public key and export options" src="docs/screenshots/ssh-key.png" /> <img width="49%" alt="The Umber theme with the Appearance menu open: six themes and the accent colour picker" src="docs/screenshots/themes.png" />
 
 
 ## Requirements
@@ -62,25 +67,58 @@ pip install ".[desktop]"
 
 ### Docker (recommended)
 
-```bash
-docker compose up -d
-```
-
-Open `http://localhost:5000` in your browser. On first launch you'll be prompted to create an admin account. All data is persisted in Docker volumes.
-
-To set a stable session secret (recommended — without this, everyone must sign in again after a container restart), put it in a `.env` file next to `docker-compose.yml` so it survives later `docker compose` commands:
+**1. Create the data folder and move into it** (the container runs as UID 1000):
 
 ```bash
-echo "SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')" >> .env
-docker compose up -d
+sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cert-generator && sudo chmod 700 /opt/docker/cert-generator && cd /opt/docker/cert-generator
 ```
+
+**2. Save this as `compose.yaml`** in that folder:
+
+```yaml
+services:
+  cert-generator:
+    image: ghcr.io/darthrater78/cert-generator:2.4.0
+    container_name: cert-generator
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "5000:5000"
+    volumes:
+      - /opt/docker/cert-generator:/data
+    environment:
+      - TZ=America/New_York
+      - PORT=5000
+      - SECRET_KEY=${SECRET_KEY:-}
+      # - COOKIE_SECURE=true
+      # - SETUP_TOKEN=${SETUP_TOKEN:-}
+
+# image: pinned to a release. To upgrade, change the tag and run: docker compose pull && docker compose up -d
+# no-new-privileges: the app never needs to gain privileges after it starts
+# ports: the web UI on port 5000. Behind a reverse proxy, use "127.0.0.1:5000:5000" (see below)
+# volumes: the database and exports live in /opt/docker/cert-generator on the host
+# TZ: timezone for log timestamps
+# PORT: the port the app listens on inside the container
+# SECRET_KEY: signs session cookies; set it in .env (step 3) so sign-ins survive a restart
+# COOKIE_SECURE: uncomment when the app is served over HTTPS
+# SETUP_TOKEN: uncomment to require a token on the first-run setup page
+```
+
+**3. Set a session secret and start it:**
+
+```bash
+echo "SECRET_KEY=$(python3 -c 'import secrets; print(secrets.token_hex(32))')" >> .env && docker compose up -d
+```
+
+Open `http://<host>:5000` in your browser. On first launch you'll be prompted to create an admin account. The repository's [`docker-compose.yml`](docker-compose.yml) is the same file with longer comments, including the one-time account-recovery variables.
 
 #### HTTPS and network exposure
 
 The server speaks plain HTTP. For anything beyond a trusted LAN, put it behind a reverse proxy that terminates TLS (Caddy, nginx, Traefik), then:
 
 - set `COOKIE_SECURE=true` so session and trusted-device cookies are only sent over HTTPS
-- publish the port on loopback only (`"127.0.0.1:5000:5000"` in `docker-compose.yml`) so the proxy is the only way in
+- publish the port on loopback only (`"127.0.0.1:5000:5000"` in `compose.yaml`) so the proxy is the only way in
 - set `SETUP_TOKEN` before first launch if the instance is reachable before you create the admin account
 
 Proxies that rewrite the `Host` header should forward the original as `X-Forwarded-Host`; the cross-site request check accepts either.
@@ -210,7 +248,7 @@ If you lose your password or MFA authenticator, use environment variables to res
 ```bash
 # Docker
 docker compose exec cert-generator env RESET_PASSWORD=admin:newpassword python -m app.serve &
-# Or add to docker-compose.yml environment section, restart, then remove it
+# Or add to compose.yaml environment section, restart, then remove it
 ```
 
 **Disable MFA for a locked-out user:**
@@ -218,7 +256,7 @@ docker compose exec cert-generator env RESET_PASSWORD=admin:newpassword python -
 ```bash
 # Docker
 docker compose exec cert-generator env RESET_MFA=admin python -m app.serve &
-# Or add to docker-compose.yml environment section, restart, then remove it
+# Or add to compose.yaml environment section, restart, then remove it
 ```
 
 **Without Docker:**
@@ -281,6 +319,25 @@ The database format is identical in both modes. Use **Backup** to create an encr
 ## Version history
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
+
+### v2.4.0 — 2026-09-29
+
+#### Docker
+- A full visual refresh. The dashboard is set like a registry of issued documents: serif headings, monospace for serials, dates and fingerprints, and ruled, framed sections instead of soft cards, gradients and glows. The sidebar is an index with **Authorities** and **SSH keys** as headed sections, each with a count and a **+ New** link, and intermediates drawn under their root. A selected CA's header shows its serial and what issued it; issued certificates read as a register, with status set as text, revoked entries struck through and anything expiring within 30 days flagged. Emoji are gone from the interface
+- Six themes: **Slate** (the new default, a soft light grey), **Flashbang** (white), and four darks — **Graphite**, **Umber**, **Ink** and **OLED** (pure black)
+- An **Appearance** menu under the title holds the theme list and the accent colour: twelve presets, a colour picker, an editable hex field (`#d4a017`, `d4a017` or `#fa0`) and a reset. The choice is saved per browser, applies on the sign-in pages too, and the accent's text and button-text shades are derived automatically so both stay above WCAG AA contrast on every theme
+- The default accent is now brass (`#d4a017`), the gold of a certificate seal, instead of indigo. Indigo is still one of the presets
+- Redesigned sign-in, first-run setup and MFA pages — the card is set like an engraved certificate (double rule, a fresh decorative serial on every visit, and a seal), over slowly shifting guilloché bands and a faint `openssl x509 -text` readout. The readout is fixed sample text, never data from your store. Animation stops when your system asks for reduced motion and idles while the tab is hidden
+- The unencrypted-keys and old-exports warnings now run across the top of the page instead of crowding the sidebar, and the sidebar scrolls as a whole on short screens so no list or the sign-out link is ever cut off
+
+#### Windows EXE
+- The same refresh, themes, Appearance menu and accent picker as Docker — the desktop build bundles the same templates (the redesigned sign-in pages are Docker-only; the desktop app has no login)
+
+#### Internal
+- The release workflow builds the image once, smoke-tests and Trivy-scans that exact digest, and only then applies the version tags; CI adds a report-only Trivy scan and a dependency-review check on pull requests
+- `docker-compose.yml` pins the image to the release version instead of `latest`
+- The README's Docker section is now a copy-paste quickstart: create the data folder, save `compose.yaml`, set the session secret and start
+- README screenshots redone for the new design, rendered from sample data and kept in `docs/screenshots/`
 
 ### v2.3.2 — 2026-09-16
 
