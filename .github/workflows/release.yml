@@ -130,12 +130,13 @@ jobs:
     needs: verify
     if: needs.verify.outputs.docker == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       contents: read
       packages: write
       id-token: write
       attestations: write
+      security-events: write
     outputs:
       digest: ${{ steps.build.outputs.digest }}
     steps:
@@ -144,17 +145,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-
-      - name: Build image for smoke test
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          load: true
-          tags: cert-generator:release-test
-
-      - name: Smoke test container
-        run: bash scripts/test-container.sh cert-generator:release-test
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -163,11 +154,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Registries need a lowercase name; the owner may not be.
+      - name: Image name
+        id: image
+        run: echo "name=${REGISTRY}/${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.image.outputs.name }}
           flavor: |
             latest=false
           tags: |
@@ -175,19 +171,73 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ needs.verify.outputs.is_newest }}
 
-      - name: Build and push
+      # One build, pushed by digest only: no version tag points at it until the
+      # smoke test and the scan below have both passed on this exact digest.
+      - name: Build and push by digest
         id: build
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Smoke test the pushed image
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: bash scripts/test-container.sh "${IMAGE}@${DIGEST}"
+
+      # Two runs over the same digest. This one never fails: it writes SARIF
+      # for the repo's Security tab.
+      - name: Scan image (SARIF report)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
+          version: v0.74.0
+          trivy-config: trivy.yaml
+          trivyignores: .trivyignore.yaml
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: '0'
+
+      - name: Upload scan to the Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-image
+
+      # This run is the gate: a fixable HIGH or CRITICAL stops the release
+      # here, before any version tag exists. A failed gate leaves only an
+      # untagged digest, which can't be pulled by version.
+      - name: Scan image (gate)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
+          version: v0.74.0
+          skip-setup-trivy: true
+          trivy-config: trivy.yaml
+          trivyignores: .trivyignore.yaml
+          format: table
+          exit-code: '1'
+
+      - name: Tag the tested and scanned image
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          args=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && args+=(-t "$tag")
+          done <<< "$TAGS"
+          docker buildx imagetools create "${args[@]}" "${IMAGE}@${DIGEST}"
 
       - name: Attest image provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 

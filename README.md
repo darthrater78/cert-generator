@@ -163,13 +163,14 @@ CI runs on every push and pull request to `master`:
 - the unit tests on Linux (Python 3.10 and 3.14) and Windows
 - the browser tests in Chromium, Firefox, and WebKit
 - a Windows EXE build and its `--self-test` / `--self-test-gui` checks (the EXE is kept as a workflow artifact for 7 days)
-- a Docker image build with a container smoke test, including a clean shutdown on `docker stop`
+- a Docker image build with a container smoke test, including a clean shutdown on `docker stop`, and a Trivy scan of the image (report only)
 - `actionlint` against `.github/workflows/**` (only runs when those files change)
+- dependency review on pull requests, which fails a PR that adds a dependency with a known high or critical advisory
 
 ### Releases
 
 Pushing a `vX.Y.Z` tag on `master` runs `.github/workflows/release.yml`. Before building anything, it requires a passing CI run for the tagged commit — an in-progress run is waited on, but a missing or failed one stops the release. Both deliverables share one version line, and the changelog decides which of them a release publishes: the version's entry in this README's version history must carry a `#### Docker` section, a `#### Windows EXE` section, or both, and at least one is required.
-- **Docker image** — smoke-tested, pushed to `ghcr.io/darthrater78/cert-generator` as `X.Y.Z`, `X.Y`, and — only when the release includes Docker and is the newest — `latest`, with a build provenance attestation
+- **Docker image** — built once and pushed by digest; that digest is smoke-tested and scanned with Trivy (a fixable high or critical vulnerability stops the release, and the scan is uploaded to the Security tab), and only then tagged in `ghcr.io/darthrater78/cert-generator` as `X.Y.Z`, `X.Y`, and — only when the release includes Docker and is the newest — `latest`, with a build provenance attestation
 - **Windows EXE** — built and self-tested on Windows, attached to the GitHub release with a SHA-256 checksum and a build provenance attestation
 
 Whichever deliverable the entry lists is built, and the release is created only once those succeed. A deliverable with no section is not rebuilt: it stays at the version it last shipped, and the notes say so ("Docker image unchanged (2.1.0)"). GitHub's **Latest** release follows the newest release that includes the EXE, so `/releases/latest/download/CertGenerator.exe` always resolves to the current build.

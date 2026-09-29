@@ -1,0 +1,11 @@
+severity:
+  - HIGH
+  - CRITICAL
+scan:
+  scanners:
+    - vuln
+pkg:
+  types:
+    - os          # the base image's packages; Python dependencies are covered by Dependabot and dependency review
+vulnerability:
+  ignore-unfixed: true   # nothing to bump to yet

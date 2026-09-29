@@ -1,0 +1,6 @@
+# One accepted finding per entry, each with a reason and an expiry so it
+# comes back for review, e.g.:
+#   - id: CVE-2026-12345
+#     statement: "libfoo is in the base image but never loaded; waived by <user> <date>"
+#     expired_at: 2026-12-31
+vulnerabilities: []
