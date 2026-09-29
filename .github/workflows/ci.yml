@@ -57,6 +57,9 @@ jobs:
           python-version: "3.14"
 
       - name: Install dependencies and browsers
+        env:
+          # --with-deps runs apt-get; a debconf prompt would otherwise hang to the timeout.
+          DEBIAN_FRONTEND: noninteractive
         run: |
           set -euo pipefail
           python -m pip install -r requirements-e2e.txt
@@ -118,10 +121,10 @@ jobs:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build image (no push)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           push: false
@@ -130,3 +133,15 @@ jobs:
 
       - name: Smoke test container
         run: bash scripts/test-container.sh cert-generator:ci
+
+      # Reports only: a CVE in the base image isn't this PR's doing, so it
+      # doesn't fail the check. The release workflow's scan is what blocks.
+      - name: Scan image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: cert-generator:ci
+          version: v0.74.0
+          trivy-config: trivy.yaml
+          trivyignores: .trivyignore.yaml
+          format: table
+          exit-code: '0'
