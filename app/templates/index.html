@@ -545,6 +545,10 @@
     <div class="eyebrow" id="certViewEyebrow"></div>
     <h3 id="certViewTitle">Certificate</h3>
     <div id="certViewBody"></div>
+    <label class="cert-crl-toggle">
+      <input type="checkbox" id="certViewShowCrl" data-change="toggleCertCrl"> Show the issuing CA's CRL
+    </label>
+    <div id="certViewCrl" class="hidden"></div>
     <div class="card">
       <h3>PEM</h3>
       <textarea id="certViewPem" class="cert-pem" readonly rows="8" spellcheck="false"></textarea>

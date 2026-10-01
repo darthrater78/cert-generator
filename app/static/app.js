@@ -475,10 +475,47 @@ async function viewCert(certId) {
       detailSection('Extensions', extensions) +
       detailSection('Fingerprints', fingerprints);
     document.getElementById('certViewPem').value = d.pem;
+    await renderCertCrl();
     showModal('viewCertModal');
   } catch (e) {
     toast(e.message, 'error');
   }
+}
+
+async function renderCertCrl() {
+  const box = document.getElementById('certViewCrl');
+  const show = document.getElementById('certViewShowCrl').checked;
+  box.classList.toggle('hidden', !show);
+  if (!show || !viewCertId) return;
+  box.innerHTML = '';
+  try {
+    const res = await api('/api/certs/' + viewCertId + '/crl');
+    const c = await res.json();
+    const [cls, label, note] = c.cert_revoked
+      ? ['badge-revoked', 'Revoked', 'Listed in this CA\'s CRL — re-export the CRL if you revoked it since the last export.']
+      : ['badge-active', 'Not revoked', 'This certificate is not on the CRL.'];
+    const revoked = c.revoked.length
+      ? c.revoked.map(r => '<div class="crl-entry' + (r.this ? ' crl-this' : '') + '">' + escapeHtml(r.serial) +
+          '<div class="dim">revoked ' + escapeHtml(formatDateTime(r.revoked_at)) + (r.this ? ' · this certificate' : '') +
+          '</div></div>').join('')
+      : '<span class="dim">None</span>';
+    box.innerHTML = detailSection('Revocation (CRL)', [
+      ['This certificate', '<span class="badge ' + cls + '">' + escapeHtml(label) + '</span>' +
+        (note ? '<div class="dim crl-note">' + escapeHtml(note) + '</div>' : '')],
+      ['Issuing CA', escapeHtml(c.ca_name)],
+      ['Distribution point', c.distribution_points.length
+        ? c.distribution_points.map(u => '<div>' + escapeHtml(u) + '</div>').join('')
+        : '<span class="dim">None in this certificate — clients won\'t check a CRL automatically</span>'],
+      ['Next update', crlStatusBadge(c.next_update)],
+      ['Revoked serials (' + c.revoked.length + ')', revoked],
+    ]);
+  } catch (e) {
+    box.innerHTML = '<p class="dim">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function toggleCertCrl() {
+  renderCertCrl();
 }
 
 async function copyCertPem() {
@@ -1334,6 +1371,7 @@ const UI_ACTIONS = new Set([
   'setAccent',
   'setTheme',
   'toggleAccentMenu',
+  'toggleCertCrl',
   'toggleMobileMenu',
   'toggleSection',
   'toggleSerial',

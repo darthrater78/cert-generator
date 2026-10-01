@@ -631,6 +631,13 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .cert-detail dt { font: italic 13px var(--font-serif); color: var(--text-dim); }
 .cert-detail dd { margin: 0; font: 12.5px var(--font-mono); overflow-wrap: anywhere; }
 .cert-detail .dim, .cert-viewer .dim { color: var(--text-dim); }
+.cert-crl-toggle {
+  display: flex; align-items: center; gap: 8px; margin: -4px 0 18px;
+  font: italic 13px var(--font-serif); color: var(--text-dim); cursor: pointer;
+}
+.cert-detail .crl-note { font: italic 12.5px var(--font-serif); margin-top: 3px; }
+.cert-detail .crl-entry + .crl-entry { margin-top: 6px; }
+.cert-detail .crl-this { color: var(--accent-text); }
 .cert-pem { width: 100%; font: 11.5px/1.45 var(--font-mono); resize: vertical; white-space: pre; }
 .cert-link {
   background: none; border: 0; padding: 0; cursor: pointer; text-align: left;

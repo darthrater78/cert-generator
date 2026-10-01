@@ -503,7 +503,7 @@ def describe_certificate(cert_pem: bytes) -> dict:
     der = cert.public_bytes(serialization.Encoding.DER)
     return {
         "version": cert.version.value + 1,
-        "serial": _colon_hex(cert.serial_number.to_bytes((cert.serial_number.bit_length() + 7) // 8 or 1, "big")),
+        "serial": format_serial(hex(cert.serial_number)),
         "subject": _describe_name(cert.subject),
         "issuer": _describe_name(cert.issuer),
         "self_signed": cert.subject == cert.issuer,
@@ -582,6 +582,22 @@ def crl_next_update(crl_der: bytes) -> str:
     """The CRL's nextUpdate as an ISO 8601 UTC timestamp."""
     crl = x509.load_der_x509_crl(crl_der)
     return crl.next_update_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def format_serial(serial_hex: str) -> str:
+    """"0x7cff…" → "7C:FF:…", the colon form the certificate viewer shows."""
+    value = int(serial_hex, 16)
+    return _colon_hex(value.to_bytes((value.bit_length() + 7) // 8 or 1, "big"))
+
+
+def crl_distribution_points(cert_pem: bytes) -> list[str]:
+    cert = x509.load_pem_x509_certificate(cert_pem)
+    try:
+        ext = cert.extensions.get_extension_for_class(x509.CRLDistributionPoints)
+    except x509.ExtensionNotFound:
+        return []
+    return [gn.value for dp in ext.value for gn in (dp.full_name or [])
+            if isinstance(gn, x509.UniformResourceIdentifier)]
 
 
 def _detect_algorithm(key) -> Algorithm:

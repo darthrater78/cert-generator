@@ -233,3 +233,23 @@ def test_certificate_viewer(signed_in: Page):
     page.click("[data-action=exportFromCertView]")
     expect(modal).to_be_hidden()
     expect(page.locator("#exportCertModal")).to_be_visible()
+
+
+def test_certificate_viewer_crl_section(signed_in: Page):
+    page = signed_in
+    _create_ca(page, "crlview.test")
+    page.click("[data-action=showIssueCert]")
+    page.fill("#certCN", "www.crlview.test")
+    page.click("[data-action=issueCert]")
+    _toast(page, "issued")
+    page.click("#certTableContainer [data-action=revokeCert]")
+    _toast(page, "revoked")
+
+    page.click("#certTableContainer .cert-link")
+    crl = page.locator("#certViewCrl")
+    expect(crl).to_be_hidden()
+    page.check("#certViewShowCrl")
+    expect(crl).to_contain_text("Revoked")
+    expect(crl).to_contain_text("this certificate")
+    page.uncheck("#certViewShowCrl")
+    expect(crl).to_be_hidden()

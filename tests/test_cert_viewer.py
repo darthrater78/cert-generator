@@ -7,6 +7,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
 
 
+
 def _issue(client, **fields) -> tuple[int, int]:
     ca_id = client.post("/api/ca", json={"domain": "viewer.test", "algorithm": "ecdsa-p256"}).get_json()["id"]
     resp = client.post(f"/api/ca/{ca_id}/certs", json={"algorithm": "ecdsa-p256", **fields})
@@ -73,3 +74,35 @@ def test_details_missing_cert_is_404(admin_client):
 
 def test_details_require_login(client):
     assert client.get("/api/certs/1/details").status_code in (302, 401)
+
+
+# ── CRL section ─────────────────────────────────────────────────────
+
+def _crl(client, cert_id):
+    resp = client.get(f"/api/certs/{cert_id}/crl")
+    assert resp.status_code == 200
+    return resp.get_json()
+
+
+def test_crl_section_lists_revoked_serials(admin_client):
+    ca_id, cert_id = _issue(admin_client, common_name="crl.viewer.test", include_crl_dp=True)
+    c = _crl(admin_client, cert_id)
+    assert c["cert_revoked"] is False and c["revoked"] == [] and c["next_update"] is None
+    assert c["distribution_points"][0].startswith("http://pki.viewer.test/crl/")
+
+    admin_client.post(f"/api/certs/{cert_id}/revoke")
+    admin_client.get(f"/api/ca/{ca_id}/crl")
+    c = _crl(admin_client, cert_id)
+    assert c["cert_revoked"] is True and c["next_update"]
+    assert len(c["revoked"]) == 1 and c["revoked"][0]["this"] is True
+    detail = admin_client.get(f"/api/certs/{cert_id}/details").get_json()
+    assert c["revoked"][0]["serial"] == detail["serial"]
+
+
+def test_crl_section_without_distribution_point(admin_client):
+    _, cert_id = _issue(admin_client, common_name="nodp.viewer.test")
+    assert _crl(admin_client, cert_id)["distribution_points"] == []
+
+
+def test_crl_status_missing_cert_is_404(admin_client):
+    assert admin_client.get("/api/certs/9999/crl").status_code == 404

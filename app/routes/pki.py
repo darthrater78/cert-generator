@@ -261,6 +261,29 @@ def get_cert_details(cert_id: int):
     return jsonify(details)
 
 
+@bp.get("/api/certs/<int:cert_id>/crl")
+def get_cert_crl_status(cert_id: int):
+    """Read-only view of the issuing CA's CRL contents as they relate to this certificate."""
+    cert = db.get_cert(cert_id)
+    if not cert:
+        return error("Certificate not found", 404)
+    ca = db.get_ca(cert["ca_id"])
+    if not ca:
+        return error("CA not found", 404)
+    revoked = [
+        {"serial": crypto_engine.format_serial(serial), "revoked_at": revoked_at, "this": serial == cert["serial"]}
+        for serial, revoked_at in db.list_revoked_serials(ca["id"])
+    ]
+    return jsonify({
+        "ca_id": ca["id"],
+        "ca_name": ca["name"],
+        "distribution_points": crypto_engine.crl_distribution_points(cert["cert_pem"]),
+        "next_update": ca.get("crl_next_update"),
+        "revoked": revoked,
+        "cert_revoked": bool(cert["revoked"]),
+    })
+
+
 @bp.post("/api/certs/<int:cert_id>/revoke")
 def revoke_cert(cert_id: int):
     if db.revoke_cert(cert_id):
