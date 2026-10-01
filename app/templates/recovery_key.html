@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cert Generator — New Recovery Key</title>
+<link rel="icon" href="/static/icon.ico" type="image/x-icon">
+<script src="/static/theme-init.js?v={{ app_version }}"></script>
+<link rel="stylesheet" href="/static/theme.css?v={{ app_version }}">
+<link rel="stylesheet" href="/static/auth.css?v={{ app_version }}">
+</head>
+<body>
+<canvas class="auth-guilloche" aria-hidden="true"></canvas>
+<div class="auth-readout" aria-hidden="true"><pre></pre><pre></pre></div>
+<main class="deed">
+  <div class="deed-eyebrow">Certificate Authority · Recovery</div>
+  <h1>New Recovery Key</h1>
+  <div class="subtitle">Your encryption password was reset and the database is unlocked</div>
+  <div class="deed-serial"><span data-serial></span>v{{ app_version }}</div>
+  <div class="recovery-key">{{ recovery_key }}</div>
+  <div class="hint" style="margin-top:0">The key you just used no longer works. Store this one somewhere safe, away from this server: it's the only way back in if you forget the new password, and it won't be shown again.</div>
+  <a class="button" href="/">I've stored it, continue</a>
+  <canvas class="deed-seal" width="176" height="176" aria-hidden="true"></canvas>
+</main>
+<script src="/static/auth-bg.js?v={{ app_version }}"></script>
+</body>
+</html>

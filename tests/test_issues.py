@@ -105,8 +105,8 @@ def test_app_script_is_served_and_referenced(admin_client):
 # ── #17 legacy exports ──────────────────────────────────────────────
 
 LEGACY_NAMES = [
-    "ca-example.test-certificate.pfx",
-    "ca-example.test-private_key.pem",
+    "ca-example.test_Root_CA-certificate.pfx",
+    "ca-example.test_Root_CA-private_key.pem",
     "host.test-certificate (1).pem",
     "host.test-fullchain.pem",
     "Root_CA.crl",

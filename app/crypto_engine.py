@@ -14,6 +14,7 @@ from cryptography.exceptions import InvalidTag, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import NameOID
@@ -914,6 +915,70 @@ def decrypt_column(data: bytes, key: bytes) -> bytes:
 
 def is_column_encrypted(data: bytes) -> bool:
     return isinstance(data, bytes) and data.startswith(_COLUMN_ENC_PREFIX)
+
+
+# ── Data key wrapping and the recovery key ─────────────────────────
+# The columns are encrypted with a random data key. That key is stored twice,
+# wrapped by a key derived from the master password and by one derived from
+# the recovery key, so either can unlock the database.
+
+_WRAP_PREFIX = b"DEK\x01"
+_WRAP_AAD = b"cert-generator data key"
+_RECOVERY_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"  # Crockford base32
+_RECOVERY_GROUPS = 5
+_RECOVERY_GROUP_LEN = 5
+_RECOVERY_LEN = _RECOVERY_GROUPS * _RECOVERY_GROUP_LEN  # 125 bits
+_RECOVERY_ALIASES = str.maketrans({"O": "0", "I": "1", "L": "1"})
+
+
+def new_data_key() -> bytes:
+    return secrets.token_bytes(32)
+
+
+def wrap_key(data_key: bytes, kek: bytes) -> bytes:
+    nonce = secrets.token_bytes(12)
+    return _WRAP_PREFIX + nonce + AESGCM(kek).encrypt(nonce, data_key, _WRAP_AAD)
+
+
+def unwrap_key(wrapped: bytes, kek: bytes) -> bytes | None:
+    """Return the data key, or None when ``kek`` is wrong or the blob is damaged."""
+    if not wrapped.startswith(_WRAP_PREFIX):
+        return None
+    nonce = wrapped[4:16]
+    try:
+        return AESGCM(kek).decrypt(nonce, wrapped[16:], _WRAP_AAD)
+    except InvalidTag:
+        return None
+
+
+def generate_recovery_key() -> str:
+    chars = "".join(secrets.choice(_RECOVERY_ALPHABET) for _ in range(_RECOVERY_LEN))
+    return "-".join(chars[i:i + _RECOVERY_GROUP_LEN] for i in range(0, _RECOVERY_LEN, _RECOVERY_GROUP_LEN))
+
+
+def normalize_recovery_key(text: str) -> str | None:
+    """Canonical form of a typed recovery key, or None if it can't be one.
+
+    Case, spaces and dashes are ignored, and the letters Crockford base32
+    leaves out for looking like digits (O, I, L) are read as those digits.
+    """
+    chars = "".join(text.split()).replace("-", "").upper().translate(_RECOVERY_ALIASES)
+    if len(chars) != _RECOVERY_LEN or any(c not in _RECOVERY_ALPHABET for c in chars):
+        return None
+    return chars
+
+
+def derive_recovery_kek(recovery_key: str, salt: bytes) -> bytes | None:
+    """Key-encryption key for a recovery key, or None if it isn't well formed.
+
+    The recovery key is 125 random bits, so a fast KDF is enough; scrypt's
+    cost only matters for human-chosen passwords.
+    """
+    canonical = normalize_recovery_key(recovery_key)
+    if canonical is None:
+        return None
+    hkdf = HKDF(algorithm=hashes.SHA256(), length=32, salt=salt, info=b"cert-generator recovery key")
+    return hkdf.derive(canonical.encode("ascii"))
 
 
 _BACKUP_MAGIC = b"CERTBAK"

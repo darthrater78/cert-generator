@@ -109,6 +109,8 @@ const EXPIRY_WARNING_DAYS = 30;
 
 // Certificate authorities by id, from the last list load (for "issued by").
 const caIndex = new Map();
+// Issued certificates of the open CA by id, from the last table render.
+const certIndex = new Map();
 
 // "0x7cff2c0d6fb3…" or "7C:FF:2C:…" → "7C:FF:2C:0D:6F:B3", the leading bytes of a serial.
 function shortSerial(serial) {
@@ -342,6 +344,9 @@ async function loadCerts(caId) {
     certs.length + (certs.length === 1 ? ' entry' : ' entries') + (revokedCount ? ' · ' + revokedCount + ' revoked' : '');
   document.getElementById('certTableContainer').querySelector('table').classList.remove('hidden');
 
+  closeImportHelp();
+  certIndex.clear();
+  certs.forEach(c => certIndex.set(c.id, c));
   tbody.innerHTML = certs.map(c => {
     const tmplLabel = TEMPLATE_LABELS[c.template] || c.template || 'Web Server';
     return '<tr' + (c.revoked ? ' class="revoked"' : '') + '>' +
@@ -355,6 +360,7 @@ async function loadCerts(caId) {
       '<td>' +
         '<button class="btn btn-ghost btn-sm" data-action="viewCert" data-arg="' + c.id + '\">View</button> ' +
         '<button class="btn btn-ghost btn-sm" data-action="showExportCert" data-arg="' + c.id + '\">Export</button> ' +
+        (!c.revoked ? '<button type="button" class="import-chip" data-action="toggleImportHelp" data-arg="' + c.id + '" aria-haspopup="dialog" aria-expanded="false">Endpoint import ▾</button> ' : '') +
         (!c.revoked ? '<button class="btn btn-ghost btn-sm" data-action="revokeCert" data-arg="' + c.id + '\">Revoke</button> ' : '') +
         '<button class="btn btn-danger btn-sm" data-action="deleteCert" data-arg="' + c.id + '\">Delete</button>' +
       '</td></tr>';
@@ -724,6 +730,7 @@ function updateCaPasswordVisibility() {
   const part = document.getElementById('caExportPart').value;
   const show = part === 'both' && fmt !== 'der' && fmt !== 'crt';
   document.getElementById('caExportPassword').style.display = show ? '' : 'none';
+  document.getElementById('caExportPasswordNote').style.display = show ? '' : 'none';
   if (!show) document.getElementById('caExportPassword').value = '';
   else if (!document.getElementById('caExportPassword').value) document.getElementById('caExportPassword').value = 'changeit';
 }
@@ -925,6 +932,315 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
+
+// ── Import help: per-OS commands for an issued certificate ─────────
+
+const MACHINE_TEMPLATES = new Set(['web-server', 'computer']);
+let importState = null;  // { certId, os, anchor, steps }
+let lastImportOs = null;  // the tab last used, kept for the next popover
+
+function defaultImportOs() {
+  const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+  if (/win/i.test(platform)) return 'windows';
+  if (/mac/i.test(platform)) return 'macos';
+  return 'linux';
+}
+
+// The name the server gives a download (web.safe_filename), so the commands match the files.
+function exportFileName(name) {
+  const cleaned = String(name).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/^[. ]+|[. ]+$/g, '');
+  return cleaned || 'export';
+}
+
+// Quote for PowerShell and POSIX shells, so an odd name can't break out of the string.
+// The server's pki._safe_name, used in CA export names.
+const safeName = (s) => String(s).replace(/[^a-zA-Z0-9_.-]/g, '_');
+
+const psQuote = (s) => "'" + String(s).replace(/'/g, "''") + "'";
+const shQuote = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
+const winPath = (file) => '(Join-Path $HOME ' + psQuote('Downloads\\' + file) + ')';
+const nixPath = (file) => '~/Downloads/' + shQuote(file);
+
+// The issuing CA first, the root last.
+function caChain(caId) {
+  const chain = [];
+  const seen = new Set();
+  let ca = caIndex.get(caId);
+  while (ca && !seen.has(ca.id)) {
+    seen.add(ca.id);
+    chain.push(ca);
+    ca = ca.parent_ca_id ? caIndex.get(ca.parent_ca_id) : null;
+  }
+  return chain;
+}
+
+function importWindows(cert, root, intermediates, files, withTrust) {
+  const machine = MACHINE_TEMPLATES.has(cert.template);
+  const store = machine ? 'LocalMachine' : 'CurrentUser';
+  if (!withTrust) intermediates = [];
+  const steps = withTrust ? [{ label: 'Trust the root CA (once per machine)',
+    code: 'Import-Certificate -FilePath ' + winPath(files.caDer(root)) + ' -CertStoreLocation Cert:\\LocalMachine\\Root' }] : [];
+  if (intermediates.length) {
+    steps.push({ label: 'Intermediate CA' + (intermediates.length > 1 ? 's' : ''),
+      code: intermediates.map(ca => 'Import-Certificate -FilePath ' + winPath(files.caDer(ca)) + ' -CertStoreLocation Cert:\\LocalMachine\\CA').join('\n') });
+  }
+  steps.push({ label: 'Certificate and key',
+    code: '$pw = Read-Host -AsSecureString ' + psQuote('PFX password') + '\n' +
+      'Import-PfxCertificate -FilePath ' + winPath(files.pfx) + ' -CertStoreLocation Cert:\\' + store + '\\My -Password $pw' });
+  if (cert.template === 'code-signing') {
+    steps.push({ label: 'On machines that run the signed code',
+      code: 'Import-Certificate -FilePath ' + winPath(files.der) + ' -CertStoreLocation Cert:\\LocalMachine\\TrustedPublisher' });
+  }
+  return {
+    where: (machine || withTrust || cert.template === 'code-signing' ? 'PowerShell as Administrator · ' : 'PowerShell · ') +
+      (withTrust ? 'root → Trusted Root Certification Authorities' +
+        (intermediates.length ? ', intermediate → Intermediate Certification Authorities' : '') + ', ' : '') +
+      'certificate → ' + (machine ? 'Local Computer' : 'Current User') + ' › Personal' +
+      (cert.template === 'code-signing' ? ', publisher → Trusted Publishers' : ''),
+    steps,
+    hint: 'Export ' + (withTrust ? 'each CA as DER (Certificate Only) and ' : '') + 'this certificate as PKCS12 (.pfx)' +
+      (cert.template === 'code-signing' ? ' and DER (Certificate Only)' : '') + ' first.',
+  };
+}
+
+function importMac(cert, root, intermediates, files, withTrust) {
+  const machine = MACHINE_TEMPLATES.has(cert.template);
+  const keychain = machine ? '/Library/Keychains/System.keychain' : '~/Library/Keychains/login.keychain-db';
+  if (!withTrust) intermediates = [];
+  const steps = withTrust ? [{ label: 'Trust the root CA (admin)',
+    code: 'sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ' + nixPath(files.caDer(root)) }] : [];
+  if (intermediates.length) {
+    steps.push({ label: 'Intermediate CA' + (intermediates.length > 1 ? 's' : ''),
+      code: intermediates.map(ca => 'sudo security add-certificates -k /Library/Keychains/System.keychain ' + nixPath(files.caDer(ca))).join('\n') });
+  }
+  steps.push({ label: 'Certificate and key (asks for the PFX password)',
+    code: (machine ? 'sudo ' : '') + 'security import ' + nixPath(files.pfx) + ' -k ' + keychain +
+      (cert.template === 'code-signing' ? ' -T /usr/bin/codesign' : '') });
+  return {
+    where: 'Terminal · ' + (withTrust ? 'CAs → System keychain, ' : '') + 'certificate → ' + (machine ? 'System keychain' : 'your login keychain'),
+    steps,
+    hint: 'Export ' + (withTrust ? 'each CA as DER (Certificate Only) and ' : '') + 'this certificate as PKCS12 (.pfx) first.',
+  };
+}
+
+function importLinux(cert, root, files, withTrust) {
+  const rootPem = nixPath(files.caPem(root));
+  const anchor = shQuote('cert-generator-' + safeName(root.name) + '.crt');
+  const steps = withTrust ? [
+    { label: 'Trust the root CA — Debian / Ubuntu',
+      code: 'sudo cp ' + rootPem + ' /usr/local/share/ca-certificates/' + anchor + ' && sudo update-ca-certificates' },
+    { label: 'Trust the root CA — RHEL / Fedora',
+      code: 'sudo cp ' + rootPem + ' /etc/pki/ca-trust/source/anchors/' + anchor + ' && sudo update-ca-trust' },
+  ] : [];
+  const rootHint = withTrust ? 'the root CA as PEM (Certificate Only), and ' : '';
+  let hint = withTrust ? 'Export the root CA as PEM (Certificate Only) first.' : 'Nothing to install for this certificate on Linux.';
+  if (MACHINE_TEMPLATES.has(cert.template)) {
+    const base = exportFileName(cert.common_name);
+    steps.push({ label: 'Certificate chain and key',
+      code: 'sudo install -m 644 ' + nixPath(files.fullchain) + ' /etc/ssl/certs/' + shQuote(base + '.pem') + '\n' +
+        'sudo install -m 600 ' + nixPath(files.key) + ' /etc/ssl/private/' + shQuote(base + '.key') });
+    hint = 'Export ' + rootHint + 'this certificate as Full Chain and as Private Key Only (PEM). Point nginx or Apache at these paths.';
+  } else if (cert.template === 'code-signing') {
+    hint = 'Export this certificate as PKCS12 (.pfx) for your signing tool, such as osslsigncode.';
+  } else {
+    steps.push({ label: 'Certificate and key — Chrome / Chromium',
+      code: 'pk12util -d sql:$HOME/.pki/nssdb -i ' + nixPath(files.pfx) });
+    hint = 'Export ' + rootHint + 'this certificate as PKCS12 (.pfx). Firefox: Settings › Certificates › Import.';
+  }
+  const where = [withTrust && 'root → the system CA bundle', MACHINE_TEMPLATES.has(cert.template) && 'certificate → /etc/ssl'].filter(Boolean);
+  return { where: 'Shell' + (where.length ? ' · ' + where.join(', ') : ''), steps, hint };
+}
+
+function importHelp(cert, os, withTrust) {
+  const chain = caChain(currentCAId);
+  if (!chain.length) return null;
+  const root = chain[chain.length - 1];
+  const intermediates = chain.slice(0, -1).reverse();  // top-down, the order Windows and macOS want them
+  const cn = exportFileName(cert.common_name);
+  const files = {
+    pfx: exportFileName(cert.common_name + '-certificate.pfx'),
+    der: exportFileName(cert.common_name + '-certificate.der'),
+    fullchain: exportFileName(cert.common_name + '-fullchain.pem'),
+    key: exportFileName(cert.common_name + '-private_key.pem'),
+    caDer: (ca) => exportFileName('ca-' + safeName(ca.name) + '-certificate.der'),
+    caPem: (ca) => exportFileName('ca-' + safeName(ca.name) + '-certificate.pem'),
+  };
+  const help = os === 'windows' ? importWindows(cert, root, intermediates, files, withTrust)
+    : os === 'macos' ? importMac(cert, root, intermediates, files, withTrust)
+    : importLinux(cert, root, files, withTrust);
+  help.title = 'Install ' + cn + ' (' + (TEMPLATE_LABELS[cert.template] || cert.template) + ')';
+  // The files the commands expect, and where they come from.
+  const caFormat = os === 'linux' ? 'pem' : 'der';
+  const caFiles = !withTrust ? [] : (os === 'linux' ? [root] : [root, ...intermediates]).map(ca => ({
+    caId: ca.id,
+    role: ca === root ? 'Root CA' : 'Intermediate CA',
+    name: ca.name,
+    file: caFormat === 'pem' ? files.caPem(ca) : files.caDer(ca),
+    how: 'Or select ' + ca.name + ' in the sidebar → Export: ' + caFormat.toUpperCase() + ', Certificate Only → Download.',
+  }));
+  const linuxServer = os === 'linux' && MACHINE_TEMPLATES.has(cert.template);
+  help.files = { cas: caFiles,
+    cert: { file: linuxServer ? files.fullchain + ' + ' + files.key : files.pfx,
+      how: linuxServer ? 'Export twice: Full Chain (cert + CA), then Private Key Only, both PEM.'
+        : 'Export as PKCS12 (.pfx), Certificate + Key' + (cert.template === 'code-signing' && os === 'windows' ? '; and once more as DER, Certificate Only.' : '.') } };
+  help.question = 'Has ' + root.name + (intermediates.length ? ' and its intermediate' + (intermediates.length > 1 ? 's' : '') : '') +
+    ' already been imported on this machine?';
+  return help;
+}
+
+function renderImportHelp() {
+  const cert = certIndex.get(importState.certId);
+  const answered = importState.trusted !== null;
+  const help = cert && importHelp(cert, importState.os, importState.trusted === false);
+  if (!help) { closeImportHelp(); return; }
+  document.getElementById('importPopTitle').textContent = help.title;
+  document.getElementById('importPopQuestion').textContent = help.question;
+  document.querySelectorAll('#importPopAsk button').forEach((b) => {
+    b.setAttribute('aria-pressed', String(answered && (b.dataset.arg === 'yes') === importState.trusted));
+  });
+  // Nothing to copy until the trust question is answered: the steps depend on it.
+  document.getElementById('importPopWhere').textContent = answered ? help.where : '';
+  document.getElementById('importPopHint').textContent = !answered ? 'Answer the question to see the steps.'
+    : help.steps.length ? 'Get the files above, then run the steps in order.' : help.hint;
+  document.getElementById('importPopCopy').disabled = !answered || !help.steps.length;
+  if (!answered) help.steps = [];
+  document.querySelectorAll('#importPop .os-tabs button').forEach((b) => {
+    b.setAttribute('aria-selected', String(b.dataset.arg === importState.os));
+  });
+  const stepsEl = document.getElementById('importPopSteps');
+  const filesEl = answered ? [importFilesBlock(help.files, cert)] : [];
+  stepsEl.replaceChildren(...filesEl, ...help.steps.flatMap((step, i) => {
+    const label = document.createElement('div');
+    label.className = 'step';
+    label.textContent = (i + 1) + ' · ' + step.label;
+    const pre = document.createElement('pre');
+    pre.textContent = step.code;
+    return [label, pre];
+  }));
+  importState.steps = help.steps;
+  positionImportHelp();
+}
+
+function importFileRow(title, file, how, button) {
+  const row = document.createElement('div');
+  row.className = 'import-file';
+  const text = document.createElement('div');
+  const strong = document.createElement('strong');
+  strong.textContent = title;
+  const name = document.createElement('code');
+  name.textContent = file;
+  const note = document.createElement('small');
+  note.textContent = how;
+  text.append(strong, ' → ', name, note);
+  row.append(text, button);
+  return row;
+}
+
+function importFilesBlock(files, cert) {
+  const block = document.createElement('div');
+  block.className = 'import-files';
+  const label = document.createElement('div');
+  label.className = 'step';
+  label.textContent = 'First · get the files (into Downloads)';
+  block.append(label);
+  for (const ca of files.cas) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-ghost btn-sm';
+    btn.dataset.action = 'downloadImportCA';
+    btn.dataset.arg = String(ca.caId);
+    btn.textContent = 'Download';
+    block.append(importFileRow(ca.role + ' · ' + ca.name, ca.file, ca.how, btn));
+  }
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn btn-ghost btn-sm';
+  btn.dataset.action = 'exportFromImport';
+  btn.dataset.arg = String(cert.id);
+  btn.textContent = 'Export…';
+  block.append(importFileRow('This certificate', files.cert.file, files.cert.how, btn));
+  return block;
+}
+
+async function downloadImportCA(caId) {
+  if (!importState) return;
+  const format = importState.os === 'linux' ? 'pem' : 'der';
+  await saveExport('/api/export/ca/' + caId, { format, part: 'public' });
+}
+
+function exportFromImport(certId) {
+  closeImportHelp();
+  showExportCert(certId);
+}
+
+function positionImportHelp() {
+  const pop = document.getElementById('importPop');
+  const r = importState.anchor.getBoundingClientRect();
+  const w = pop.offsetWidth;
+  const h = pop.offsetHeight;
+  const left = Math.min(Math.max(8, r.right - w), window.innerWidth - w - 8);
+  let top = r.bottom + 8;
+  if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 8);
+  pop.style.left = left + 'px';
+  pop.style.top = top + 'px';
+}
+
+function toggleImportHelp(certId, el) {
+  const wasOpen = importState && importState.certId === certId;
+  closeImportHelp();
+  if (wasOpen) return;
+  // The trust question is asked every time: the answer depends on the machine.
+  importState = { certId, os: lastImportOs || defaultImportOs(), anchor: el, trusted: null };
+  el.setAttribute('aria-expanded', 'true');
+  document.getElementById('importPop').classList.remove('hidden');
+  renderImportHelp();
+}
+
+function closeImportHelp() {
+  if (!importState) return;
+  importState.anchor.setAttribute('aria-expanded', 'false');
+  document.getElementById('importPop').classList.add('hidden');
+  lastImportOs = importState.os;
+  importState = null;
+}
+
+
+function setImportTrusted(answer) {
+  if (!importState) return;
+  importState.trusted = answer === 'yes';
+  renderImportHelp();
+}
+
+function setImportOs(os) {
+  if (!importState) return;
+  importState.os = os;
+  renderImportHelp();
+}
+
+async function copyImportCommands() {
+  if (!importState || !importState.steps.length) return;
+  const text = importState.steps.map(s => '# ' + s.label + '\n' + s.code).join('\n\n') + '\n';
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('Import commands copied');
+  } catch (e) {
+    toast('Copy failed, select the commands and copy them by hand', 'error');
+  }
+}
+
+document.addEventListener('click', (event) => {
+  // Only a real click outside closes it: a download clicks a hidden link programmatically.
+  if (event.isTrusted && importState && !event.target.closest('#importPop, .import-chip')) closeImportHelp();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && importState) {
+    const anchor = importState.anchor;
+    closeImportHelp();
+    anchor.focus();
+  }
+});
+window.addEventListener('resize', () => { if (importState) positionImportHelp(); });
+document.addEventListener('scroll', () => { if (importState) positionImportHelp(); }, true);
 
 function showGuideTab(tabId, btn) {
   document.querySelectorAll('.guide-content').forEach(el => el.classList.add('hidden'));
@@ -1228,6 +1544,7 @@ async function checkEncryptionStatus() {
     if (!status.enabled && !status.dismissed) {
       document.getElementById('encryptionBanner').classList.remove('hidden');
     }
+    document.getElementById('recoveryBanner').classList.toggle('hidden', !status.enabled || status.recovery_key);
 
     return true;
   } catch (e) {
@@ -1245,12 +1562,116 @@ async function doUnlock() {
       body: JSON.stringify({ password: pw }),
     });
     document.getElementById('unlockOverlay').classList.add('hidden');
+    document.getElementById('unlockPassword').value = '';
     loadCAs();
     loadSSHKeys();
+    checkEncryptionStatus();
   } catch (e) {
     document.getElementById('unlockError').textContent = e.message;
     document.getElementById('unlockPassword').value = '';
     document.getElementById('unlockPassword').focus();
+  }
+}
+
+function showUnlockRecovery(useRecovery) {
+  document.getElementById('unlockByPassword').classList.toggle('hidden', !!useRecovery);
+  document.getElementById('unlockByRecovery').classList.toggle('hidden', !useRecovery);
+  document.getElementById('unlockSubtitle').textContent = useRecovery
+    ? 'Enter your recovery key and choose a new master password'
+    : 'Enter your master password to decrypt private keys';
+  document.getElementById(useRecovery ? 'recoverKey' : 'unlockPassword').focus();
+}
+
+async function doRecover() {
+  const key = document.getElementById('recoverKey').value;
+  const pw = document.getElementById('recoverPassword').value;
+  const confirmPw = document.getElementById('recoverConfirm').value;
+  const errorEl = document.getElementById('recoverError');
+  if (!key.trim()) { errorEl.textContent = 'Enter your recovery key'; return; }
+  if (pw.length < 8) { errorEl.textContent = 'Password must be at least 8 characters'; return; }
+  if (pw !== confirmPw) { errorEl.textContent = 'Passwords do not match'; return; }
+  errorEl.textContent = '';
+  try {
+    const res = await api('/api/settings/encryption/recover', {
+      method: 'POST',
+      body: JSON.stringify({ recovery_key: key, password: pw, confirm: confirmPw }),
+    });
+    const data = await res.json();
+    ['recoverKey', 'recoverPassword', 'recoverConfirm'].forEach((id) => { document.getElementById(id).value = ''; });
+    showUnlockRecovery(0);
+    document.getElementById('unlockOverlay').classList.add('hidden');
+    loadCAs();
+    loadSSHKeys();
+    showRecoveryKey(data.recovery_key,
+      'Your master password was reset and the database is unlocked. The recovery key you used no longer works; this one replaces it.');
+  } catch (e) {
+    errorEl.textContent = e.message;
+  }
+}
+
+// ── Recovery key ────────────────────────────────────────────────────
+
+function showRecoveryKey(key, intro) {
+  document.getElementById('recoveryKeyValue').textContent = key;
+  document.getElementById('recoveryKeyIntro').textContent = intro;
+  document.getElementById('recoveryKeySaved').checked = false;
+  document.getElementById('recoveryKeyDone').disabled = true;
+  // The desktop window has no browser downloads; Copy covers it there.
+  document.getElementById('recoveryKeyDownload').classList.toggle('hidden', !SERVER_MODE);
+  document.getElementById('recoveryBanner').classList.add('hidden');
+  showModal('recoveryKeyModal');
+}
+
+function updateRecoveryKeyDone() {
+  document.getElementById('recoveryKeyDone').disabled = !document.getElementById('recoveryKeySaved').checked;
+}
+
+function closeRecoveryKey() {
+  document.getElementById('recoveryKeyValue').textContent = '';
+  hideModal('recoveryKeyModal');
+}
+
+async function copyRecoveryKey() {
+  try {
+    await navigator.clipboard.writeText(document.getElementById('recoveryKeyValue').textContent);
+    toast('Recovery key copied to clipboard');
+  } catch (e) {
+    toast('Copy failed, select the key and copy it by hand', 'error');
+  }
+}
+
+function downloadRecoveryKey() {
+  const key = document.getElementById('recoveryKeyValue').textContent;
+  const text = 'Cert Generator encryption recovery key\n\n' + key + '\n\n'
+    + 'Created ' + new Date().toISOString() + ' for ' + location.host + '.\n'
+    + 'Use it on the unlock screen if you forget the master password. Keep it away from the server.\n';
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'cert-generator-recovery-key.txt';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function createRecoveryKey() {
+  const passwordEl = document.getElementById('recoveryKeyPassword');
+  const replacing = !document.getElementById('recoveryKeyPasswordRow').classList.contains('hidden')
+    && !document.getElementById('encryptionModal').classList.contains('hidden');
+  if (replacing && !passwordEl.value) { toast('Enter your current password to replace the recovery key', 'error'); return; }
+  if (replacing && !confirm('Replace the recovery key? The current one stops working.')) return;
+  try {
+    const res = await api('/api/settings/encryption/recovery-key', {
+      method: 'POST',
+      body: JSON.stringify({ password: replacing ? passwordEl.value : '' }),
+    });
+    const data = await res.json();
+    passwordEl.value = '';
+    hideModal('encryptionModal');
+    showRecoveryKey(data.recovery_key, replacing
+      ? 'This replaces your previous recovery key, which no longer works.'
+      : 'If you forget your master password, this key unlocks the database and lets you set a new one.');
+  } catch (e) {
+    toast(e.message, 'error');
   }
 }
 
@@ -1265,6 +1686,12 @@ async function showEncryptionSettings() {
       document.getElementById('encChangeNew').value = '';
       document.getElementById('encChangeConfirm').value = '';
       document.getElementById('encDisablePassword').value = '';
+      document.getElementById('recoveryKeyPassword').value = '';
+      document.getElementById('recoveryKeyStatus').textContent = status.recovery_key
+        ? 'A recovery key is set. Replacing it needs your current password, and the old key stops working.'
+        : 'No recovery key yet. Without one, a forgotten password means your private keys are lost.';
+      document.getElementById('recoveryKeyPasswordRow').classList.toggle('hidden', !status.recovery_key);
+      document.getElementById('recoveryKeyButton').textContent = status.recovery_key ? 'Replace recovery key' : 'Create recovery key';
     } else {
       document.getElementById('encryptionOff').classList.remove('hidden');
       document.getElementById('encryptionOn').classList.add('hidden');
@@ -1284,13 +1711,16 @@ async function doEnableEncryption() {
   if (pw !== confirmPw) { toast('Passwords do not match', 'error'); return; }
   if (pw.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
   try {
-    await api('/api/settings/encryption/enable', {
+    const res = await api('/api/settings/encryption/enable', {
       method: 'POST',
       body: JSON.stringify({ password: pw, confirm: confirmPw }),
     });
+    const data = await res.json();
     hideModal('encryptionModal');
     document.getElementById('encryptionBanner').classList.add('hidden');
     toast('Encryption enabled — private keys are now encrypted at rest');
+    showRecoveryKey(data.recovery_key,
+      'Encryption is on. If you forget your master password, this key unlocks the database and lets you set a new one.');
   } catch (e) {
     toast(e.message, 'error');
   }
@@ -1306,6 +1736,7 @@ async function doDisableEncryption() {
       body: JSON.stringify({ password: pw }),
     });
     hideModal('encryptionModal');
+    document.getElementById('recoveryBanner').classList.add('hidden');
     toast('Encryption disabled — private keys are now stored in plaintext');
   } catch (e) {
     toast(e.message, 'error');
@@ -1496,6 +1927,13 @@ async function doToggleRequirePasswordAcct() {
   }
 }
 
+function toggleBannerMore(_arg, btn) {
+  const banner = btn.closest('.encryption-banner');
+  const expanded = banner.classList.toggle('expanded');
+  btn.textContent = expanded ? 'Less' : 'More';
+  btn.setAttribute('aria-expanded', String(expanded));
+}
+
 async function dismissEncryptionBanner() {
   const permanently = document.getElementById('bannerDismissCheck').checked;
   document.getElementById('encryptionBanner').classList.add('hidden');
@@ -1558,16 +1996,22 @@ const UI_ACTIONS = new Set([
   'deleteLegacyExports',
   'cancelMFASetup',
   'cancelReauth',
+  'closeRecoveryKey',
+  'copyImportCommands',
   'copyPrivateKey',
+  'copyRecoveryKey',
   'copyCertPem',
   'copyCrlPem',
   'copyPublicKey',
   'createBackup',
   'createCA',
   'createIntermediate',
+  'createRecoveryKey',
   'deleteCert',
   'deleteCurrentCA',
   'deleteSSHKey',
+  'downloadImportCA',
+  'downloadRecoveryKey',
   'dismissEncryptionBanner',
   'doChangePassword',
   'doDisableEncryption',
@@ -1576,6 +2020,7 @@ const UI_ACTIONS = new Set([
   'doMFAConfirm',
   'doMFADisable',
   'doMFASetup',
+  'doRecover',
   'doRevokeDevice',
   'doRevokeDevices',
   'doRevokeDevicesAcct',
@@ -1584,6 +2029,7 @@ const UI_ACTIONS = new Set([
   'exportCA',
   'exportCRL',
   'exportFromCertView',
+  'exportFromImport',
   'exportSSHKey',
   'generateSSHKey',
   'hideModal',
@@ -1608,16 +2054,22 @@ const UI_ACTIONS = new Set([
   'showRestoreModal',
   'showSSHGuide',
   'showSSHGuideTab',
+  'setImportOs',
+  'setImportTrusted',
+  'showUnlockRecovery',
   'submitReauth',
   'setAccent',
   'setTheme',
   'toggleAccentMenu',
   'toggleCertCrl',
+  'toggleBannerMore',
+  'toggleImportHelp',
   'toggleMobileMenu',
   'toggleSection',
   'toggleSerial',
   'updateCaPasswordVisibility',
   'updateCrlDpFields',
+  'updateRecoveryKeyDone',
   'viewCRL',
   'viewCert',
   'viewCertFromCrl',

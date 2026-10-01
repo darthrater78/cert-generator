@@ -48,8 +48,17 @@ def test_certificate_exports_download(signed_in: Page):
     page = signed_in
     _create_ca(page, "e2e.test")
 
+    # The default is the public certificate only, which is all an endpoint needs to trust the CA.
+    expect(page.locator("#caExportNote")).to_contain_text("Trusted Endpoint")
     name, data = _download(page, "[data-action=exportCA]")
-    assert name == "ca-e2e.test-certificate.pfx" and len(data) > 500
+    assert name == "ca-e2e.test_Root_CA-certificate.der" and 300 < len(data) < 2000
+
+    page.select_option("#caExportFormat", "pkcs12")
+    page.select_option("#caExportPart", "both")
+    expect(page.locator("#caExportNote")).to_contain_text("TLS Inspection / CA Move")
+    expect(page.locator("#caExportNote")).to_contain_text("Never install it on endpoints")
+    name, data = _download(page, "[data-action=exportCA]")
+    assert name == "ca-e2e.test_Root_CA-certificate.pfx" and len(data) > 500
 
     page.click("[data-action=showIssueCert]")
     page.fill("#certCN", "host.e2e.test")
@@ -161,32 +170,66 @@ def test_legacy_exports_banner_cleanup(signed_in: Page, live_server):
     assert not legacy.exists() and unrelated.exists()
 
 
-def test_locked_database_shows_unlock_overlay(signed_in: Page, live_server):
+def _restart(live_server):
+    """Simulate a restart: a fresh server process on the same database is locked."""
+    from .conftest import _start_server
+    live_server.process.terminate()
+    live_server.process.wait(timeout=10)
+    restarted = _start_server(live_server.db_dir.parent)
+    live_server.process = restarted.process
+    return restarted
+
+
+def _take_recovery_key(page: Page) -> str:
+    modal = page.locator("#recoveryKeyModal")
+    expect(modal).to_be_visible()
+    key = page.locator("#recoveryKeyValue").inner_text()
+    assert re.fullmatch(r"([0-9A-Z]{5}-){4}[0-9A-Z]{5}", key)
+    expect(page.locator("#recoveryKeyDone")).to_be_disabled()
+    page.check("#recoveryKeySaved")
+    page.click("#recoveryKeyDone")
+    expect(modal).to_be_hidden()
+    return key
+
+
+def test_locked_database_unlocks_by_password_or_recovery_key(signed_in: Page, live_server):
     page = signed_in
     page.click(".sidebar-actions [data-action=showEncryptionSettings]")
     page.fill("#encEnablePassword", "encryption-123")
     page.fill("#encEnableConfirm", "encryption-123")
     page.click("[data-action=doEnableEncryption]")
     _toast(page, "ncryption")
-    # Simulate a restart: a fresh server process on the same database is locked.
-    live_server.process.terminate()
-    live_server.process.wait(timeout=10)
-    from .conftest import _start_server
-    restarted = _start_server(live_server.db_dir.parent)
+    recovery_key = _take_recovery_key(page)
+
+    # Cookies are not port-specific and SECRET_KEY is unchanged, so the session survives a restart.
+    restarted = _restart(live_server)
+    page.goto(restarted.url + "/")
+    expect(page.locator("#unlockOverlay")).to_be_visible()
+    # Anything that would store a key is refused while locked.
+    locked = page.request.post(restarted.url + "/api/ca", data={"domain": "locked.test"})
+    assert locked.status == 423
+    page.fill("#unlockPassword", "encryption-123")
+    page.press("#unlockPassword", "Enter")
+    expect(page.locator("#unlockOverlay")).to_be_hidden()
+    expect(page.locator("#recoveryBanner")).to_be_hidden()
+
+    # Forgot the password: the recovery key resets it and is replaced.
+    restarted = _restart(live_server)
     try:
-        # Cookies are not port-specific and SECRET_KEY is unchanged, so the session survives the restart.
         page.goto(restarted.url + "/")
-        expect(page.locator("#unlockOverlay")).to_be_visible()
-        # Anything that would store a key is refused while locked.
-        locked = page.request.post(restarted.url + "/api/ca", data={"domain": "locked.test"})
-        assert locked.status == 423
-        page.fill("#unlockPassword", "encryption-123")
-        page.press("#unlockPassword", "Enter")
+        page.click("#unlockByPassword .unlock-switch")
+        page.fill("#recoverKey", recovery_key.lower())
+        page.fill("#recoverPassword", "new-encryption-456")
+        page.fill("#recoverConfirm", "new-encryption-456")
+        page.click("[data-action=doRecover]")
         expect(page.locator("#unlockOverlay")).to_be_hidden()
+        assert _take_recovery_key(page) != recovery_key
+        reused = page.request.post(restarted.url + "/api/settings/encryption/recover", data={
+            "recovery_key": recovery_key, "password": "another-pass-789", "confirm": "another-pass-789"})
+        assert reused.status == 400
     finally:
         restarted.process.terminate()
         restarted.process.wait(timeout=10)
-        live_server.process = restarted.process
 
 
 @pytest.mark.parametrize("viewport", [{"width": 390, "height": 844}])
@@ -342,3 +385,52 @@ def test_private_key_asks_to_confirm_after_trusted_device_sign_in(signed_in: Pag
     expect(page.locator("#reauthModal")).to_be_hidden()
     # the expected 403s and the failed attempt are logged by the browser as resource errors
     browser_errors[:] = [e for e in browser_errors if "status of 403" not in e and "status of 400" not in e]
+
+
+def test_import_help_lists_commands_per_os(signed_in: Page):
+    page = signed_in
+    _create_ca(page, "import.test")
+    page.click("[data-action=showIssueCert]")
+    page.fill("#certCN", "host.import.test")
+    page.click("[data-action=issueCert]")
+    _toast(page, "issued")
+
+    page.click("#certTableContainer .import-chip")
+    pop = page.locator("#importPop")
+    expect(pop).to_be_visible()
+    expect(page.locator("#importPopTitle")).to_have_text("Install host.import.test (Web Server)")
+
+    page.click("#importPop [data-arg=windows]")
+    steps = page.locator("#importPopSteps")
+    # Nothing to run until the trust question is answered.
+    expect(page.locator("#importPopQuestion")).to_have_text(
+        "Has import.test Root CA already been imported on this machine?")
+    expect(steps).to_be_empty()
+    expect(page.locator("#importPopCopy")).to_be_disabled()
+    page.click("#importPop [data-action=setImportTrusted][data-arg=yes]")
+    expect(steps).to_contain_text("Cert:\\LocalMachine\\My")
+    expect(steps).not_to_contain_text("Cert:\\LocalMachine\\Root")
+    expect(page.locator("#importPopCopy")).to_be_enabled()
+    page.click("#importPop [data-action=setImportTrusted][data-arg=no]")
+    expect(steps).to_contain_text("Cert:\\LocalMachine\\Root")
+    # The root CA's Download gives exactly the file the commands name.
+    expect(steps.locator(".import-file").first).to_contain_text("ca-import.test_Root_CA-certificate.der")
+    with page.expect_download() as info:
+        steps.locator("[data-action=downloadImportCA]").first.click()
+    assert info.value.suggested_filename == "ca-import.test_Root_CA-certificate.der"
+    expect(steps).to_contain_text("'Downloads\\ca-import.test_Root_CA-certificate.der'")
+    expect(steps).to_contain_text("Cert:\\LocalMachine\\My")
+    page.click("#importPop [data-arg=macos]")
+    expect(steps).to_contain_text("add-trusted-cert -d -r trustRoot")
+    page.click("#importPop [data-arg=linux]")
+    expect(steps).to_contain_text("update-ca-certificates")
+    expect(steps).to_contain_text("/etc/ssl/private/'host.import.test.key'")
+
+    page.keyboard.press("Escape")
+    expect(pop).to_be_hidden()
+    # the tab last used opens next time
+    page.click("#certTableContainer .import-chip")
+    expect(page.locator("#importPop [data-arg=linux]")).to_have_attribute("aria-selected", "true")
+    expect(steps).to_be_empty()  # asked again: the answer depends on the machine
+    page.click(".sidebar h1")
+    expect(pop).to_be_hidden()

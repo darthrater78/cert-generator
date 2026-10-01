@@ -106,3 +106,17 @@ def test_crl_section_without_distribution_point(admin_client):
 
 def test_crl_status_missing_cert_is_404(admin_client):
     assert admin_client.get("/api/certs/9999/crl").status_code == 404
+
+
+def test_ca_exports_of_a_shared_domain_get_distinct_names(admin_client):
+    # A root and its intermediate often share a domain; their downloads must not collide.
+    root = admin_client.post("/api/ca", json={"domain": "same.test", "algorithm": "ecdsa-p256"}).get_json()["id"]
+    inter = admin_client.post(f"/api/ca/{root}/intermediate", json={"domain": "same.test", "algorithm": "ecdsa-p256"})
+    assert inter.status_code == 201, inter.get_json()
+    names = []
+    for ca_id in (root, inter.get_json()["id"]):
+        resp = admin_client.post(f"/api/export/ca/{ca_id}", json={"format": "der", "part": "public"})
+        assert resp.status_code == 200
+        names.append(resp.headers["Content-Disposition"])
+    assert names[0] != names[1]
+    assert "ca-same.test_Root_CA-certificate.der" in names[0]

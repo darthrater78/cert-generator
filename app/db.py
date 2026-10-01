@@ -252,20 +252,49 @@ def _decrypt_row(row: dict[str, Any]) -> dict[str, Any]:
 
 _VERIFY_PLAINTEXT = b"cert-generator-verify-token"
 
+# Before 2.6.0 the column key was derived straight from the password and
+# checked with ``encryption_verify``. Since then the columns use a random data
+# key, stored wrapped by the password and by the recovery key.
+_KEY_SETTINGS = (
+    "encryption_salt", "encryption_verify", "encryption_wrapped_key",
+    "recovery_salt", "recovery_wrapped_key",
+)
+
+
+@contextmanager
+def _key_change() -> Iterator[sqlite3.Connection]:
+    """A connection holding SQLite's write lock from the start.
+
+    Every change to the key settings reads them and then rewrites them;
+    taking the lock before the read stops two requests (two unlocks
+    migrating the same pre-2.6.0 database, say) from interleaving.
+    """
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        yield conn
+
+
+def _key_for_password(conn: sqlite3.Connection, password: str) -> tuple[bytes | None, bool]:
+    """(column key, still on the pre-2.6.0 format); the key is None if ``password`` is wrong."""
+    salt = _get_setting(conn, "encryption_salt")
+    if salt is None:
+        return None, False
+    kek = crypto_engine.derive_master_key(password, salt)
+    wrapped = _get_setting(conn, "encryption_wrapped_key")
+    if wrapped is not None:
+        return crypto_engine.unwrap_key(wrapped, kek), False
+    verify_token = _get_setting(conn, "encryption_verify")
+    try:
+        valid = verify_token is not None and crypto_engine.decrypt_column(verify_token, kek) == _VERIFY_PLAINTEXT
+    except Exception:
+        valid = False
+    return (kek if valid else None), True
+
 
 def derive_key_if_valid(password: str) -> bytes | None:
-    """Return the master key for ``password`` without loading it, or None if wrong."""
-    salt = get_setting("encryption_salt")
-    verify_token = get_setting("encryption_verify")
-    if salt is None or verify_token is None:
-        return None
-    key = crypto_engine.derive_master_key(password, salt)
-    try:
-        if crypto_engine.decrypt_column(verify_token, key) != _VERIFY_PLAINTEXT:
-            return None
-    except Exception:
-        return None
-    return key
+    """Return the column key for ``password`` without loading it, or None if wrong."""
+    with _connect() as conn:
+        return _key_for_password(conn, password)[0]
 
 
 def _reencrypt_all(conn: sqlite3.Connection, old_key: bytes | None, new_key: bytes | None) -> None:
@@ -286,39 +315,77 @@ def _reencrypt_all(conn: sqlite3.Connection, old_key: bytes | None, new_key: byt
             conn.execute("UPDATE users SET totp_secret = ? WHERE id = ?", (new_value, row_id))
 
 
-def _store_key_settings(conn: sqlite3.Connection, salt: bytes | None, key: bytes | None) -> None:
-    verify = crypto_engine.encrypt_column(_VERIFY_PLAINTEXT, key) if key else None
+def _store_password_wrap(conn: sqlite3.Connection, password: str, data_key: bytes) -> None:
+    salt = secrets.token_bytes(32)
+    kek = crypto_engine.derive_master_key(password, salt)
     _set_setting(conn, "encryption_salt", salt)
-    _set_setting(conn, "encryption_verify", verify)
+    _set_setting(conn, "encryption_wrapped_key", crypto_engine.wrap_key(data_key, kek))
+    _set_setting(conn, "encryption_verify", None)
 
 
-def enable_encryption(password: str) -> None:
+def _store_recovery_wrap(conn: sqlite3.Connection, data_key: bytes) -> str:
+    """Wrap ``data_key`` under a new recovery key, replacing any old one, and return it."""
+    recovery_key = crypto_engine.generate_recovery_key()
+    salt = secrets.token_bytes(32)
+    kek = crypto_engine.derive_recovery_kek(recovery_key, salt)
+    if kek is None:
+        raise RuntimeError("Generated recovery key failed validation")
+    _set_setting(conn, "recovery_salt", salt)
+    _set_setting(conn, "recovery_wrapped_key", crypto_engine.wrap_key(data_key, kek))
+    return recovery_key
+
+
+def _open_with_password(conn: sqlite3.Connection, password: str) -> bytes | None:
+    """Column key for ``password``, moving a pre-2.6.0 database to a data key on the way."""
+    key, legacy = _key_for_password(conn, password)
+    if key is None or not legacy:
+        return key
+    data_key = crypto_engine.new_data_key()
+    _reencrypt_all(conn, key, data_key)
+    _store_password_wrap(conn, password, data_key)
+    return data_key
+
+
+def open_with_password(password: str) -> bytes | None:
+    """Like derive_key_if_valid, but upgrades a pre-2.6.0 database first."""
+    with _key_change() as conn:
+        return _open_with_password(conn, password)
+
+
+def has_recovery_key() -> bool:
+    return get_setting("recovery_wrapped_key") is not None
+
+
+def enable_encryption(password: str) -> str:
+    """Encrypt every sensitive column and return the recovery key, to be shown once."""
     if is_encryption_enabled():
         raise ValueError("Encryption is already enabled")
-    salt = secrets.token_bytes(32)
-    key = crypto_engine.derive_master_key(password, salt)
-    with _connect() as conn:
+    data_key = crypto_engine.new_data_key()
+    with _key_change() as conn:
         if _get_setting(conn, "encryption_salt") is not None:
             raise ValueError("Encryption is already enabled")
-        _reencrypt_all(conn, None, key)
-        _store_key_settings(conn, salt, key)
-    set_master_key(key)
+        _reencrypt_all(conn, None, data_key)
+        _store_password_wrap(conn, password, data_key)
+        recovery_key = _store_recovery_wrap(conn, data_key)
+    set_master_key(data_key)
+    return recovery_key
 
 
 def disable_encryption(password: str) -> None:
     if not is_encryption_enabled():
         raise ValueError("Encryption is not enabled")
-    key = derive_key_if_valid(password)
-    if key is None:
-        raise ValueError("Wrong password")
-    with _connect() as conn:
+    with _key_change() as conn:
+        key = _key_for_password(conn, password)[0]
+        if key is None:
+            raise ValueError("Wrong password")
         _reencrypt_all(conn, key, None)
-        _store_key_settings(conn, None, None)
+        for name in _KEY_SETTINGS:
+            _set_setting(conn, name, None)
     set_master_key(None)
 
 
 def unlock(password: str) -> bool:
-    key = derive_key_if_valid(password)
+    key = open_with_password(password)
     if key is None:
         return False
     set_master_key(key)
@@ -326,15 +393,68 @@ def unlock(password: str) -> bool:
 
 
 def change_password(old_password: str, new_password: str) -> None:
-    old_key = derive_key_if_valid(old_password)
-    if old_key is None:
-        raise ValueError("Wrong current password")
-    salt = secrets.token_bytes(32)
-    new_key = crypto_engine.derive_master_key(new_password, salt)
+    """Re-wrap the data key under ``new_password``; the recovery key stays valid."""
+    with _key_change() as conn:
+        key = _open_with_password(conn, old_password)
+        if key is None:
+            raise ValueError("Wrong current password")
+        _store_password_wrap(conn, new_password, key)
+    set_master_key(key)
+
+
+def create_recovery_key(password: str | None) -> str:
+    """Issue a new recovery key, revoking any earlier one, and return it.
+
+    Replacing an existing key needs the master password. The first one only
+    needs the database to be unlocked, so an upgraded database can get one
+    right after the unlock that upgraded it.
+    """
+    with _key_change() as conn:
+        if _get_setting(conn, "encryption_wrapped_key") is None:
+            raise ValueError("Encryption is not enabled")
+        if _get_setting(conn, "recovery_wrapped_key") is None:
+            key = _master_key
+            if key is None:
+                raise DatabaseLocked("Database is locked. Unlock it with your encryption password.")
+        else:
+            if not password:
+                raise ValueError("Password is required to replace the recovery key")
+            key = _key_for_password(conn, password)[0]
+            if key is None:
+                raise ValueError("Wrong password")
+        return _store_recovery_wrap(conn, key)
+
+
+def _key_for_recovery_key(conn: sqlite3.Connection, recovery_key: str) -> bytes | None:
+    salt = _get_setting(conn, "recovery_salt")
+    wrapped = _get_setting(conn, "recovery_wrapped_key")
+    if salt is None or wrapped is None:
+        return None
+    kek = crypto_engine.derive_recovery_kek(recovery_key, salt)
+    return crypto_engine.unwrap_key(wrapped, kek) if kek else None
+
+
+def key_for_recovery_key(recovery_key: str) -> bytes | None:
+    """Return the column key for ``recovery_key`` without loading it, or None if wrong."""
     with _connect() as conn:
-        _reencrypt_all(conn, old_key, new_key)
-        _store_key_settings(conn, salt, new_key)
-    set_master_key(new_key)
+        return _key_for_recovery_key(conn, recovery_key)
+
+
+def recover_with_key(recovery_key: str, new_password: str) -> str:
+    """Unlock with the recovery key, set ``new_password``, and return a new recovery key.
+
+    The used key is revoked: it has been typed out, so it may have been seen.
+    """
+    with _key_change() as conn:
+        if _get_setting(conn, "recovery_wrapped_key") is None:
+            raise ValueError("This database has no recovery key")
+        key = _key_for_recovery_key(conn, recovery_key)
+        if key is None:
+            raise ValueError("Wrong recovery key")
+        _store_password_wrap(conn, new_password, key)
+        new_recovery_key = _store_recovery_wrap(conn, key)
+    set_master_key(key)
+    return new_recovery_key
 
 
 # ── Certificate authorities and certificates ───────────────────────

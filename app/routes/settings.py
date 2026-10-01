@@ -6,12 +6,21 @@ import binascii
 import json
 import logging
 from collections.abc import Callable
+from typing import Any
 
 from flask import Blueprint, g, jsonify, session
 
 from .. import crypto_engine, db, legacy_exports, state
 from ..security import lockout_message
-from ..web import auth_limiter, deliver_export, error, json_body, recent_auth_required, str_field
+from ..web import (
+    auth_limiter,
+    deliver_export,
+    error,
+    json_body,
+    new_password_error,
+    recent_auth_required,
+    str_field,
+)
 
 log = logging.getLogger("cert-generator")
 
@@ -24,51 +33,50 @@ def _encryption_limit_key() -> str:
     return f"unlock:{g.user['id']}" if g.get("user") else "unlock:desktop"
 
 
-def _password_attempt(check: Callable[[], None]):
-    """Run a password-checking action under the shared attempt limiter."""
+def _password_attempt(check: Callable[[], dict[str, Any] | None]):
+    """Run a password- or recovery-key-checking action under the shared attempt limiter.
+
+    Whatever ``check`` returns is added to the success response.
+    """
     limit_key = _encryption_limit_key()
     wait = auth_limiter.retry_after(limit_key)
     if wait:
         return error(lockout_message(wait), 429)
     try:
-        check()
+        extra = check()
     except ValueError as e:
-        if "password" in str(e).lower():
+        if str(e).startswith("Wrong "):
             auth_limiter.failure(limit_key)
         return error(str(e))
     auth_limiter.success(limit_key)
-    return jsonify({"ok": True})
-
-
-def _new_password_error(password: str, confirm: str, empty_message: str) -> str | None:
-    if not password:
-        return empty_message
-    if password != confirm:
-        return "Passwords do not match"
-    if len(password) < 8:
-        return "Password must be at least 8 characters"
-    return None
+    return jsonify({"ok": True, **(extra or {})})
 
 
 @bp.get("/api/settings/encryption")
 def get_encryption_status():
     enabled = db.is_encryption_enabled()
     dismissed = db.get_setting("encryption_dismissed") is not None
-    return jsonify({"enabled": enabled, "unlocked": db.is_unlocked() or not enabled, "dismissed": dismissed})
+    return jsonify({
+        "enabled": enabled,
+        "unlocked": db.is_unlocked() or not enabled,
+        "dismissed": dismissed,
+        "recovery_key": enabled and db.has_recovery_key(),
+    })
 
 
 @bp.post("/api/settings/encryption/enable")
 def enable_encryption():
     data = json_body()
     password = str_field(data, "password").strip()
-    password_error = _new_password_error(password, str_field(data, "confirm").strip(), "Password is required")
+    password_error = new_password_error(password, str_field(data, "confirm").strip(), "Password is required")
     if password_error:
         return error(password_error)
     try:
-        db.enable_encryption(password)
+        recovery_key = db.enable_encryption(password)
     except ValueError as e:
         return error(str(e))
-    return jsonify({"ok": True})
+    log.info("Encryption enabled")
+    return jsonify({"ok": True, "recovery_key": recovery_key})
 
 
 @bp.post("/api/settings/encryption/disable")
@@ -99,10 +107,44 @@ def change_encryption_password():
     new_password = str_field(data, "new_password").strip()
     if not old_password:
         return error("Both passwords are required")
-    password_error = _new_password_error(new_password, str_field(data, "confirm").strip(), "Both passwords are required")
+    password_error = new_password_error(new_password, str_field(data, "confirm").strip(), "Both passwords are required")
     if password_error:
         return error(password_error.replace("Passwords do not match", "New passwords do not match"))
     return _password_attempt(lambda: db.change_password(old_password, new_password))
+
+
+@bp.post("/api/settings/encryption/recovery-key")
+@recent_auth_required
+def create_recovery_key():
+    """Issue a recovery key. Replacing an existing one needs the master password."""
+    password = str_field(json_body(), "password").strip() or None
+
+    def create() -> dict[str, Any]:
+        recovery_key = db.create_recovery_key(password)
+        log.info("Encryption recovery key issued")
+        return {"recovery_key": recovery_key}
+
+    return _password_attempt(create)
+
+
+@bp.post("/api/settings/encryption/recover")
+def recover_encryption():
+    """Unlock with the recovery key and set a new master password; a new recovery key replaces the used one."""
+    data = json_body()
+    recovery_key = str_field(data, "recovery_key").strip()
+    new_password = str_field(data, "password").strip()
+    if not recovery_key:
+        return error("Recovery key is required")
+    password_error = new_password_error(new_password, str_field(data, "confirm").strip(), "New password is required")
+    if password_error:
+        return error(password_error)
+
+    def recover() -> dict[str, Any]:
+        replacement = db.recover_with_key(recovery_key, new_password)
+        log.warning("Encryption password reset with the recovery key")
+        return {"recovery_key": replacement}
+
+    return _password_attempt(recover)
 
 
 @bp.post("/api/settings/encryption/dismiss")

@@ -14,10 +14,21 @@
   <div class="unlock-box">
     <div class="lock-icon">Keystore sealed</div>
     <h2>Database Locked</h2>
-    <p class="subtitle">Enter your master password to decrypt private keys</p>
-    <input type="password" id="unlockPassword" placeholder="Master password" data-enter="doUnlock">
-    <div class="error-msg" id="unlockError"></div>
-    <button class="btn btn-primary" style="width:100%" data-action="doUnlock">Unlock</button>
+    <p class="subtitle" id="unlockSubtitle">Enter your master password to decrypt private keys</p>
+    <div id="unlockByPassword">
+      <input type="password" id="unlockPassword" placeholder="Master password" data-enter="doUnlock">
+      <div class="error-msg" id="unlockError"></div>
+      <button class="btn btn-primary" style="width:100%" data-action="doUnlock">Unlock</button>
+      <button class="unlock-switch" data-action="showUnlockRecovery" data-arg="1">Forgot it? Use your recovery key</button>
+    </div>
+    <div id="unlockByRecovery" class="hidden">
+      <input type="text" id="recoverKey" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false" autocapitalize="characters">
+      <input type="password" id="recoverPassword" placeholder="New master password (min 8)" autocomplete="new-password">
+      <input type="password" id="recoverConfirm" placeholder="Confirm new password" autocomplete="new-password" data-enter="doRecover">
+      <div class="error-msg" id="recoverError"></div>
+      <button class="btn btn-primary" style="width:100%" data-action="doRecover">Reset password &amp; unlock</button>
+      <button class="unlock-switch" data-action="showUnlockRecovery" data-arg="0">Back to password</button>
+    </div>
   </div>
 </div>
 
@@ -87,17 +98,21 @@
       <ul class="ca-list" id="sshList"></ul>
     </div>
     <div class="sidebar-actions">
-      <div class="tools-title">Tools</div>
+      <h3 class="tools-title">Tools</h3>
+      <div class="tool-group">Create</div>
       <button type="button" class="tool-link" data-action="showCreateCA">New certificate authority <em>root CA</em></button>
       <button type="button" class="tool-link" data-action="showCreateSSHKey">New SSH key <em>generate</em></button>
       <button type="button" class="tool-link" data-action="showImportSSHKey">Import SSH key <em>paste</em></button>
+      <div class="tool-group">Data</div>
       <button type="button" class="tool-link" data-action="showBackupModal">Backup <em>.certbak</em></button>
       <button type="button" class="tool-link" data-action="showRestoreModal">Restore <em>.certbak</em></button>
+      <div class="tool-group">Security</div>
       <button type="button" class="tool-link" id="btnEncryption" data-action="showEncryptionSettings">Encryption <em>at rest</em></button>
       {% if server_mode %}
       <button type="button" class="tool-link" id="btnMFA" data-action="showMFASettings">Two-factor sign-in <em>MFA</em></button>
       <button type="button" class="tool-link" data-action="showAccountSettings">Account <em>password · devices</em></button>
       {% endif %}
+      <div class="tool-group">Help</div>
       <button type="button" class="tool-link" data-action="showGuide">Certificate guide <em>import help</em></button>
       <button type="button" class="tool-link" data-action="showSSHGuide">SSH guide <em>usage</em></button>
       <a class="tool-link" href="https://github.com/darthrater78/cert-generator" data-action="openExternalLink">GitHub repository <em>↗</em></a>
@@ -119,13 +134,23 @@
       <div id="legacyExportsBanner" class="encryption-banner hidden">
         <h4>Old exports</h4>
         <p><span id="legacyExportsCount">0</span> files in <code id="legacyExportsDir"></code> were written by versions before 2.0.0 and may contain unencrypted private keys.</p>
+        <button type="button" class="banner-more" data-action="toggleBannerMore" aria-expanded="false">More</button>
         <div class="banner-actions">
           <button class="btn btn-danger btn-sm" data-action="deleteLegacyExports">Review &amp; delete</button>
+        </div>
+      </div>
+      <div id="recoveryBanner" class="encryption-banner hidden">
+        <h4>No recovery key</h4>
+        <p>Database encryption is on, but there's no recovery key. Without one, a forgotten master password means your private keys are gone for good.</p>
+        <button type="button" class="banner-more" data-action="toggleBannerMore" aria-expanded="false">More</button>
+        <div class="banner-actions">
+          <button class="btn btn-primary btn-sm" data-action="createRecoveryKey">Create recovery key</button>
         </div>
       </div>
       <div id="encryptionBanner" class="encryption-banner hidden">
         <h4>Unencrypted</h4>
         <p>Private keys are stored unencrypted. Set a master password to encrypt them at rest with AES-256-GCM, so a copied database file can't be read without it.</p>
+        <button type="button" class="banner-more" data-action="toggleBannerMore" aria-expanded="false">More</button>
         <div class="banner-actions">
           <button class="btn btn-primary btn-sm" data-action="showEncryptionSettings">Enable encryption</button>
           <label class="banner-dismiss"><input type="checkbox" id="bannerDismissCheck"> Don't show again</label>
@@ -158,23 +183,36 @@
         <div class="card">
           <h3>Particulars</h3>
           <div class="ca-info-grid" id="caInfo"></div>
+          <h4 class="card-subhead">Export CA certificate</h4>
           <div class="export-section">
             <span class="field-label">Export</span>
             <select id="caExportFormat" data-change="updateCaPasswordVisibility">
               <option value="pkcs12">PKCS12 (.pfx)</option>
               <option value="pem">PEM</option>
-              <option value="der">DER</option>
+              <option value="der" selected>DER</option>
               <option value="crt">CRT (.crt)</option>
             </select>
             <select id="caExportPart" data-change="updateCaPasswordVisibility">
               <option value="both">Certificate + Key</option>
-              <option value="public">Certificate Only</option>
+              <option value="public" selected>Certificate Only</option>
               <option value="private">Private Key Only</option>
             </select>
             <input type="password" id="caExportPassword" value="changeit" title="Default password: changeit" placeholder="Default: changeit" aria-label="Export password">
-            <span class="note" title="Default password is 'changeit'. Required for Windows certificate import.">default: changeit</span>
+            <span class="note" id="caExportPasswordNote" title="Default password is 'changeit'. Required for Windows certificate import.">default: changeit</span>
             <button class="btn btn-ghost btn-sm" data-action="exportCA">Download</button>
-            <span class="sep" aria-hidden="true"></span>
+            <div class="ca-export-note" id="caExportNote">
+              <div class="ca-export-case ca-export-trust">
+                <span class="ca-export-label">Trusted Endpoint</span>
+                <span>Export <strong>Certificate Only</strong> (DER, or PEM for Linux) and import it as a trusted root. No private key is needed.</span>
+              </div>
+              <div class="ca-export-case ca-export-key">
+                <span class="ca-export-label">TLS Inspection / CA Move</span>
+                <span>Export <strong>Certificate + Key</strong> (PKCS12 .pfx) only for a device that issues certificates with this CA, such as a firewall or proxy doing TLS inspection, or to move the CA to another server. <strong>Never install it on endpoints:</strong> anyone holding the key can issue certificates every machine trusts.</span>
+              </div>
+            </div>
+          </div>
+          <h4 class="card-subhead">Revocation list (CRL)</h4>
+          <div class="export-section">
             <select id="crlLifetime" title="How long the CRL stays valid. Endpoints treat revocation data as stale after this, so re-export and re-import before it expires.">
               <option value="7">CRL valid 7 days</option>
               <option value="30">CRL valid 30 days</option>
@@ -184,6 +222,12 @@
             </select>
             <button class="btn btn-ghost btn-sm" data-action="viewCRL">View CRL</button>
             <button class="btn btn-ghost btn-sm" data-action="exportCRL" title="Generate and download a CRL file signed by this CA. Import into Windows cert stores to provide offline revocation status.">Export CRL</button>
+            <div class="ca-export-note">
+              <div class="ca-export-case">
+                <span class="ca-export-label">Placeholder CRL</span>
+                <span><strong>Export CRL</strong> is for the placeholder distribution point only: it downloads a CRL to import by hand{% if server_mode %}. It never changes the CRL this server publishes, which updates itself.{% else %} on each machine.{% endif %}</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -604,8 +648,8 @@
       <button class="guide-tab" data-action="showGuideTab" data-arg="guide-clientauth">Client Auth</button>
       <button class="guide-tab" data-action="showGuideTab" data-arg="guide-user">User</button>
       <button class="guide-tab" data-action="showGuideTab" data-arg="guide-codesigning">Code Signing</button>
-      <button class="guide-tab" data-action="showGuideTab" data-arg="guide-email">Email (S/MIME)</button>
-      <button class="guide-tab" data-action="showGuideTab" data-arg="guide-crl">CRL (Revocation)</button>
+      <button class="guide-tab" data-action="showGuideTab" data-arg="guide-email">S/MIME</button>
+      <button class="guide-tab" data-action="showGuideTab" data-arg="guide-crl">CRL</button>
     </div>
 
     <div class="guide-content" id="guide-general">
@@ -614,7 +658,8 @@
         <li><strong>Create a Root CA</strong> &mdash; click <code>+ New CA</code>, enter your domain, and choose an algorithm. For maximum Windows compatibility use <code>RSA 4096</code> or <code>ECDSA P-384</code>.</li>
         <li><strong>Issue a certificate</strong> &mdash; select the CA, click <code>+ Issue Certificate</code>, pick a template, and fill in the common name.</li>
         <li><strong>Export as PKCS12 (.pfx)</strong> &mdash; this is the default format. A PFX password is required for Windows import; it defaults to <code>changeit</code>.</li>
-        <li><strong>Trust the CA on your machine</strong> &mdash; export the CA certificate (Certificate Only, DER format) and import it into <code>Trusted Root Certification Authorities</code>. Without this step, certificates will appear untrusted.</li>
+        <li><strong>Trust the CA on your machine</strong> &mdash; on the CA page, <strong>Download</strong> the CA certificate (the default, DER &middot; Certificate Only) and import it into <code>Trusted Root Certification Authorities</code>. Without this step, certificates will appear untrusted.</li>
+        <li><strong>Or let the app walk you through it</strong> &mdash; <strong>Endpoint import &#9662;</strong> on any certificate gives the files to download and copy-paste commands for Windows, macOS and Linux.</li>
       </ol>
       <div class="step-note">All certificates are self-signed by your CA. They are only trusted on machines where you have installed the CA certificate as a trusted root.</div>
 
@@ -1108,7 +1153,7 @@
       <div class="step-note" style="margin-bottom:16px">
         <strong>What this protects:</strong> If someone copies your database file (<code>~/.cert-generator/certs.db</code>), they cannot read your private keys without the master password.<br><br>
         <strong>What this does NOT protect:</strong> While the app is running and unlocked, keys are decrypted in memory. This protects data at rest, not a running application.<br><br>
-        <strong>Warning:</strong> If you forget your password, your private keys are unrecoverable. Use the Backup feature to create an encrypted backup before enabling.
+        <strong>Recovery key:</strong> When you enable encryption you'll get a one-time recovery key. It's the only way back in if you forget the password, so store it somewhere safe, away from this machine. It's shown once.
       </div>
       <div class="form-row full">
         <div class="form-group">
@@ -1156,6 +1201,18 @@
         <button class="btn btn-primary btn-sm" data-action="doChangePassword">Change Password</button>
       </div>
 
+      <div class="card" style="margin-bottom:12px">
+        <h3 style="font-size:13px">Recovery Key</h3>
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px" id="recoveryKeyStatus"></p>
+        <div class="form-row full" id="recoveryKeyPasswordRow">
+          <div class="form-group">
+            <label>Current Password</label>
+            <input type="password" id="recoveryKeyPassword" placeholder="Needed to replace the existing key">
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm" id="recoveryKeyButton" data-action="createRecoveryKey">Create recovery key</button>
+      </div>
+
       <div class="card">
         <h3 style="font-size:13px">Disable Encryption</h3>
         <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Decrypts all private keys and removes the master password. Keys will be stored in plaintext.</p>
@@ -1171,6 +1228,47 @@
       <div class="modal-actions">
         <button class="btn btn-ghost" data-action="hideModal" data-arg="encryptionModal">Close</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<div id="importPop" class="import-pop hidden" role="dialog" aria-labelledby="importPopTitle">
+  <h5 id="importPopTitle"></h5>
+  <div class="os-tabs" role="tablist">
+    <button type="button" role="tab" data-action="setImportOs" data-arg="windows">Windows</button>
+    <button type="button" role="tab" data-action="setImportOs" data-arg="macos">macOS</button>
+    <button type="button" role="tab" data-action="setImportOs" data-arg="linux">Linux</button>
+  </div>
+  <div class="import-ask" id="importPopAsk">
+    <p id="importPopQuestion"></p>
+    <div class="import-ask-choices">
+      <button type="button" class="btn btn-ghost btn-sm" data-action="setImportTrusted" data-arg="no">No, include it</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-action="setImportTrusted" data-arg="yes">Yes, certificate only</button>
+    </div>
+  </div>
+  <div class="where" id="importPopWhere"></div>
+  <div id="importPopSteps"></div>
+  <div class="pop-actions">
+    <span class="hint" id="importPopHint"></span>
+    <button type="button" class="btn btn-primary btn-sm" id="importPopCopy" data-action="copyImportCommands">Copy commands</button>
+  </div>
+</div>
+
+<div id="recoveryKeyModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>Your Recovery Key</h3>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px" id="recoveryKeyIntro"></p>
+    <div class="recovery-key" id="recoveryKeyValue"></div>
+    <div class="step-note" style="margin-bottom:12px">
+      Store it somewhere safe, away from this machine: a password manager or a printed copy. It won't be shown again. Anyone with it and a copy of the database can read your private keys.
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn btn-ghost btn-sm" data-action="copyRecoveryKey">Copy</button>
+      <button class="btn btn-ghost btn-sm" id="recoveryKeyDownload" data-action="downloadRecoveryKey">Download .txt</button>
+    </div>
+    <label class="banner-dismiss"><input type="checkbox" id="recoveryKeySaved" data-change="updateRecoveryKeyDone"> I've stored my recovery key</label>
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="recoveryKeyDone" data-action="closeRecoveryKey" disabled>Done</button>
     </div>
   </div>
 </div>
