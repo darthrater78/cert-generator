@@ -17,6 +17,8 @@ from __future__ import annotations
 import re
 from urllib.parse import urlsplit
 
+from .errors import UserError
+
 HOST_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$")
 FILE_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}\.crl$")
 TASK_NAME = "Cert Generator CRL server"
@@ -66,7 +68,7 @@ def placeholder_parts(url: str) -> tuple[str, str]:
     name = parts.path.rsplit("/", 1)[-1]
     if parts.scheme != "http" or parts.port not in (None, 80) or not parts.path.startswith("/crl/") \
             or not HOST_RE.match(host) or not FILE_RE.match(name) or parts.path != f"/crl/{name}":
-        raise ValueError("This certificate's placeholder CRL address can't be served locally")
+        raise UserError("This certificate's placeholder CRL address can't be served locally")
     return host, name
 
 

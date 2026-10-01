@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from flask import Blueprint, Response, jsonify, request
 
 from .. import crl_publisher, crl_worker, crypto_engine, db, install_bundle, state
+from ..errors import UserError
 from ..security import RateLimiter
 from ..web import deliver_export, error, export_password_error, json_body, parse_int, reauth_rejection, str_field
 
@@ -623,8 +624,8 @@ def export_install_bundle(cert_id: int):
             placeholder_url=cert.get("crl_dp_url") if crl else None,
             password=str_field(data, "password") or None,
         )
-    except ValueError as e:
-        return error(str(e))
+    except UserError as e:
+        return error(e.user_message)
     log.info("Install bundle exported: cert=%d os=%s with_ca=%s", cert_id, os_name, bool(data.get("include_ca")))
     return deliver_export(bundle, filename)
 

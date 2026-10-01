@@ -65,6 +65,10 @@ export default {
 class CloudflareError(RuntimeError):
     """A Cloudflare API call failed; the message is safe to show (it never holds the token)."""
 
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.user_message = message
+
 
 @dataclass(frozen=True)
 class Credentials:

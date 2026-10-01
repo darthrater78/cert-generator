@@ -18,6 +18,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
 from . import crl_local_server, crypto_engine, windows_scripts
+from .errors import UserError
 
 OSES = ("windows", "macos", "linux")
 MACHINE_TEMPLATES = {"web-server", "computer"}
@@ -222,12 +223,12 @@ def build(*, cert_pem: bytes, key_pem: bytes, template: str, common_name: str,
     on Windows the bundle then also sets up a local CRL server answering it (crl_local_server)."""
     chain_for_pfx = chain_for_pfx if chain_for_pfx is not None else ca_chain
     if os_name not in OSES:
-        raise ValueError(f"Choose an OS: {', '.join(OSES)}")
+        raise UserError(f"Choose an OS: {', '.join(OSES)}")
     cn = _safe(common_name)
     stem = f"{cn}-install-{os_name}"
     linux_server = os_name == "linux" and template in MACHINE_TEMPLATES
     if not linux_server and not password:
-        raise ValueError("Choose a PFX password: the install script asks for it")
+        raise UserError("Choose a PFX password: the install script asks for it")
 
     der_fmt = os_name != "linux"
     cas: list[CaFile] = []

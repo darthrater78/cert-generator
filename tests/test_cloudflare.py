@@ -373,3 +373,19 @@ def test_tear_down_a_worker_already_deleted_in_cloudflare(connected, cf):
     cf.scripts.pop(script)
     assert connected.delete(f"/api/ca/{ca_id}/cloudflare").status_code == 200
     assert db.get_ca_worker(ca_id) is None
+
+
+def test_only_the_apps_own_messages_reach_the_client(connected, monkeypatch):
+    """A ValueError from a library is logged and answered generically, never shown as-is."""
+    ca_id = _create_ca(connected)
+    _deploy(connected, ca_id)
+
+    def broken(_ca_id):
+        raise ValueError("internal detail from a library")
+
+    monkeypatch.setattr(crl_worker, "teardown", broken)
+    resp = connected.delete(f"/api/ca/{ca_id}/cloudflare")
+    assert resp.status_code == 500 and "internal detail" not in resp.get_data(as_text=True)
+    other = _create_ca(connected, "other.test")
+    resp = connected.post(f"/api/ca/{other}/cloudflare/test")  # the app's own message still shows
+    assert resp.status_code == 404 and resp.get_json()["error"] == "This CA has no Worker"

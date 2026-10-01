@@ -7,6 +7,7 @@ from flask import Blueprint, jsonify, request
 
 from .. import cloudflare, crl_worker, crypto_engine, db, state
 from ..cloudflare import CloudflareError, Credentials
+from ..errors import UserError
 from ..web import error, json_body, login_required, recent_auth_required, str_field
 
 log = logging.getLogger("cert-generator")
@@ -25,7 +26,7 @@ def _server_mode_only():
 
 @bp.errorhandler(CloudflareError)
 def _cloudflare_error(exc: CloudflareError):
-    return error(str(exc), 502)
+    return error(exc.user_message, 502)
 
 
 # ── Account ─────────────────────────────────────────────────────────
@@ -96,8 +97,8 @@ def workers():
 def delete_worker(name: str):
     try:
         return jsonify({"ok": True, **crl_worker.delete_by_name(name)})
-    except ValueError as e:
-        return error(str(e), 404)
+    except UserError as e:
+        return error(e.user_message, 404)
 
 
 # ── A CA's Worker ───────────────────────────────────────────────────
@@ -132,8 +133,8 @@ def deploy(ca_id: int):
             return error(f"The hostname must be under {zone['name']}, e.g. crl.{zone['name']}")
     try:
         result = crl_worker.deploy(ca_id, hostname, zone_id)
-    except ValueError as e:
-        return error(str(e))
+    except UserError as e:
+        return error(e.user_message)
     return jsonify(result)
 
 
@@ -155,8 +156,8 @@ def push(ca_id: int):
 def test(ca_id: int):
     try:
         return jsonify(crl_worker.test(ca_id))
-    except ValueError as e:
-        return error(str(e), 404)
+    except UserError as e:
+        return error(e.user_message, 404)
 
 
 @bp.get("/api/ca/<int:ca_id>/cloudflare/crl/view")
@@ -168,8 +169,8 @@ def view_live_crl(ca_id: int):
         return error("CA not found", 404)
     try:
         crl_der, url = crl_worker.fetch_live(ca_id)
-    except ValueError as e:
-        return error(str(e), 404)
+    except UserError as e:
+        return error(e.user_message, 404)
     try:
         crl = crypto_engine.describe_crl(crl_der)
     except ValueError:
@@ -202,5 +203,5 @@ def view_live_crl(ca_id: int):
 def teardown(ca_id: int):
     try:
         return jsonify({"ok": True, **crl_worker.teardown(ca_id)})
-    except ValueError as e:
-        return error(str(e), 404)
+    except UserError as e:
+        return error(e.user_message, 404)

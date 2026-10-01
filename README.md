@@ -503,6 +503,7 @@ Each entry lists its changes per deliverable: a `#### Docker` section means the 
 #### Internal
 - The browser tests close the Quick Start that now opens on an empty database; a new test covers it. The pop-out guide drops its handle on the app window, with tests for the guide page's headers, path allowlist and the desktop app token
 - Tests run the Cloudflare flow against a fake Cloudflare API, and CI's Windows job parses the generated PowerShell scripts
+- The Cloudflare and install-bundle routes show only the app's own error messages; any other error is logged and answered generically
 
 ### v2.6.0 — 2026-10-01
 

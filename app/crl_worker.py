@@ -18,6 +18,7 @@ from cryptography import x509
 
 from . import cloudflare, crl_publisher, db, state
 from .cloudflare import CloudflareError, Credentials
+from .errors import UserError
 
 log = logging.getLogger("cert-generator")
 
@@ -52,15 +53,15 @@ def deploy(ca_id: int, hostname: str | None = None, zone_id: str | None = None) 
     """Create the CA's Worker, push its CRL and pick the address for certificates."""
     ca = db.get_ca_summary(ca_id)
     if ca is None:
-        raise ValueError("CA not found")
+        raise UserError("CA not found")
     if db.get_ca_worker(ca_id):
-        raise ValueError("This CA already has a Worker")
+        raise UserError("This CA already has a Worker")
     creds = credentials()
     db.require_unlocked()  # signing needs the CA key
     if hostname:
         hostname = hostname.strip().lower().rstrip(".")
         if not cloudflare.HOSTNAME_RE.match(hostname) or not zone_id:
-            raise ValueError("Choose a hostname in one of your Cloudflare zones")
+            raise UserError("Choose a hostname in one of your Cloudflare zones")
     else:
         subdomain = cloudflare.workers_subdomain(creds)
         if subdomain is None:
@@ -106,7 +107,7 @@ def teardown(ca_id: int) -> dict[str, Any]:
     """Delete the CA's Worker (and custom domain). Returns the certificates that named it."""
     worker = db.get_ca_worker(ca_id)
     if worker is None:
-        raise ValueError("This CA has no Worker")
+        raise UserError("This CA has no Worker")
     affected = db.certs_with_crl_dp(ca_id, worker["cf_dp_url"]) if worker["cf_dp_url"] else []
     creds = _worker_credentials(worker)
     if worker.get("cf_domain_id"):
@@ -148,7 +149,7 @@ def delete_by_name(name: str) -> dict[str, Any]:
     """Remove a Worker this app created: a CA's own goes through teardown(), so the CA
     forgets it; an unlinked one is deleted with its custom domains."""
     if not cloudflare.SCRIPT_NAME_RE.match(name):
-        raise ValueError("Not a Worker this app created")
+        raise UserError("Not a Worker this app created")
     creds = credentials()
     linked = next((w for w in db.list_ca_workers()
                    if w["cf_worker"] == name and w["cf_account_id"] == creds.account_id), None)
@@ -156,7 +157,7 @@ def delete_by_name(name: str) -> dict[str, Any]:
         return {"ca_id": linked["id"], **teardown(linked["id"])}
     found = next((w for w in cloudflare.list_app_workers(creds) if w["name"] == name), None)
     if found is None:
-        raise ValueError("No such Worker in the connected account")
+        raise UserError("No such Worker in the connected account")
     for domain in found["domains"]:
         cloudflare.detach_domain(creds, domain["id"])
     cloudflare.delete_worker(creds, name)
@@ -260,7 +261,7 @@ def _host_and_path(worker: dict[str, Any]) -> tuple[str, str]:
     host, path = worker.get("cf_hostname") or "", worker.get("cf_crl_path") or ""
     # Both were written by deploy(); check them again before the server fetches anything.
     if not cloudflare.HOSTNAME_RE.match(host) or not cloudflare.CRL_PATH_RE.match(path):
-        raise ValueError("The Worker's stored address is invalid")
+        raise UserError("The Worker's stored address is invalid")
     return host, path
 
 
@@ -271,7 +272,7 @@ def test(ca_id: int) -> dict[str, Any]:
     worker = db.get_ca_worker(ca_id)
     ca = db.get_ca_summary(ca_id)
     if worker is None or ca is None:
-        raise ValueError("This CA has no Worker")
+        raise UserError("This CA has no Worker")
     host, path = _host_and_path(worker)
     ca_cert_pem = db.get_ca_cert_chain(ca_id, max_depth=1)[0]
     results = {}
@@ -312,7 +313,7 @@ def fetch_live(ca_id: int) -> tuple[bytes, str]:
     """The CRL the Worker serves right now, for the viewer: (DER, the URL it came from)."""
     worker = db.get_ca_worker(ca_id)
     if worker is None:
-        raise ValueError("This CA has no Worker")
+        raise UserError("This CA has no Worker")
     host, path = _host_and_path(worker)
     for scheme in ("https", "http"):
         url = f"{scheme}://{host}{path}"
