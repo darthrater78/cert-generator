@@ -300,7 +300,7 @@ def test_pkcs12_export_requires_password(admin_client):
     cert_id = admin_client.post(f"/api/ca/{ca_id}/certs", json={"common_name": "host.example.test"}).get_json()["id"]
     resp = admin_client.post(f"/api/export/cert/{cert_id}", json={"format": "pkcs12"})
     assert resp.status_code == 400
-    resp = admin_client.post(f"/api/export/cert/{cert_id}", json={"format": "pkcs12", "password": "changeit"})
+    resp = admin_client.post(f"/api/export/cert/{cert_id}", json={"format": "pkcs12", "password": "Export-pass-1"})
     assert resp.status_code == 200
 
 

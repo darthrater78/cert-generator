@@ -67,6 +67,14 @@ def new_password_error(password: str, confirm: str, empty_message: str) -> str |
     return None
 
 
+def export_password_error(password: str | None) -> str | None:
+    """Why an export password can't be used, or None. The old pre-filled default is refused:
+    anyone who knows the app knows it, so a file "protected" with it isn't protected."""
+    if password is not None and password.strip().lower() == "changeit":
+        return "Choose your own password: the old default, changeit, is no longer accepted"
+    return None
+
+
 # ── Authentication and sessions ─────────────────────────────────────
 
 def login_required(view: Callable[..., Any]) -> Callable[..., Any]:

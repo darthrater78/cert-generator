@@ -75,6 +75,9 @@ def auto_login_from_trust_cookie() -> dict[str, Any] | None:
 
 # ── Desktop app token ───────────────────────────────────────────────
 
+_AUTH_NEXT = {"/guide/cert", "/guide/ssh"}
+
+
 @bp.get("/_auth")
 def app_token_cookie() -> Response:
     if not state.desktop_mode():
@@ -84,7 +87,8 @@ def app_token_cookie() -> Response:
         return Response("Forbidden", status=403)
     resp = current_app.make_response("")
     resp.status_code = 302
-    resp.headers["Location"] = "/"
+    # A pop-out guide window signs itself in too; only known pages, never an outside URL.
+    resp.headers["Location"] = request.args.get("next") if request.args.get("next") in _AUTH_NEXT else "/"
     resp.set_cookie("_app_token", state.app_token, httponly=True, samesite="Strict")
     return resp
 

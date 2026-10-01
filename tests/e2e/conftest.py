@@ -83,6 +83,17 @@ def browser_errors(page) -> list[str]:
     assert not real, "browser errors:\n" + "\n".join(real)
 
 
+@pytest.fixture(autouse=True)
+def _close_quick_start(request) -> None:
+    """With no CA yet the Quick Start guide opens by itself; close it whenever it is in
+    the way of a test's click. test_quick_start_opens_on_an_empty_database checks it."""
+    if "page" not in request.fixturenames or request.node.get_closest_marker("keep_quick_start"):
+        return
+    page = request.getfixturevalue("page")
+    page.add_locator_handler(page.locator("#guideModal .guide-modal"),
+                             lambda _: page.click("#guideModal button[data-arg=guideModal]"))
+
+
 @pytest.fixture
 def signed_in(page, live_server, browser_errors) -> Callable[[], None]:
     """Create the admin account through the setup page; the page is then signed in."""

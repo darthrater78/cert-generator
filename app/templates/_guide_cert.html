@@ -1,0 +1,305 @@
+<div class="guide-head">
+  <h3>Certificate Import Guide</h3>
+  <p class="guide-subtitle">How to create, export, and install certificates for each template.</p>
+  <div class="guide-tabs" id="guideTabs">
+    <button class="guide-tab active" data-action="showGuideTab" data-arg="guide-general">General</button>
+    <button class="guide-tab" data-action="showGuideTab" data-arg="guide-computer">Computer</button>
+    <button class="guide-tab" data-action="showGuideTab" data-arg="guide-webserver">Web Server</button>
+    <button class="guide-tab" data-action="showGuideTab" data-arg="guide-clientauth">Client Auth</button>
+    <button class="guide-tab" data-action="showGuideTab" data-arg="guide-user">User</button>
+    <button class="guide-tab" data-action="showGuideTab" data-arg="guide-codesigning">Code Signing</button>
+    <button class="guide-tab" data-action="showGuideTab" data-arg="guide-email">S/MIME</button>
+    <button class="guide-tab" data-action="showGuideTab" data-arg="guide-crl">CRL</button>
+  </div>
+</div>
+<div class="guide-body">
+  <div class="guide-content" id="guide-general">
+    <h4>Quick Start</h4>
+    <ol>
+      <li><strong>Create a Root CA</strong> &mdash; click <code>+ New CA</code>, enter your domain, and choose an algorithm. For maximum Windows compatibility use <code>RSA 4096</code> or <code>ECDSA P-384</code>.</li>
+      <li><strong>Issue a certificate</strong> &mdash; select the CA, click <code>+ Issue Certificate</code>, pick a template, and fill in the common name.</li>
+      <li><strong>Export as PKCS12 (.pfx)</strong> &mdash; this is the default format. Choose a PFX password: it protects the key and you need it to import the file. There is no default.</li>
+      <li><strong>Trust the CA on your machine</strong> &mdash; on the CA page, <strong>Download</strong> the CA certificate (the default, DER &middot; Certificate Only) and import it into <code>Trusted Root Certification Authorities</code>. Without this step, certificates will appear untrusted.</li>
+      <li><strong>Or let the app walk you through it</strong> &mdash; <strong>Export / install &#9662;</strong> on any certificate gives the files to download (or one .zip with install scripts) and copy-paste commands for Windows, macOS and Linux.</li>
+    </ol>
+    <div class="step-note">All certificates are self-signed by your CA. They are only trusted on machines where you have installed the CA certificate as a trusted root.</div>
+
+    <h4>Windows Certificate Store Tip</h4>
+    <p>When importing into a Windows certificate store, the import wizard only shows top-level store names like <strong>Personal</strong> &mdash; you will <em>not</em> see a <strong>Personal &rarr; Certificates</strong> subfolder during import. This is normal. Just select <strong>Personal</strong> and finish the import. The certificate will appear under <strong>Personal &rarr; Certificates</strong> once the import is complete &mdash; the <code>Certificates</code> subfolder is created automatically by the MMC snap-in to organize the store contents.</p>
+
+    <h4>Export Formats</h4>
+    <ul>
+      <li><strong>PKCS12 (.pfx)</strong> &mdash; bundles cert + private key + CA chain into one file. Required for importing into Windows certificate stores. Always password-protected.</li>
+      <li><strong>PEM</strong> &mdash; base64-encoded text format. Used by Apache, Nginx, Linux tools, and OpenSSL. Not directly importable into Windows cert stores.</li>
+      <li><strong>DER</strong> &mdash; binary certificate format (no private key). Use for importing public certificates.</li>
+      <li><strong>CRT (.crt)</strong> &mdash; same as DER but with the <code>.crt</code> extension that Windows recognizes natively. Double-click to open the certificate viewer or import wizard.</li>
+    </ul>
+
+    <h4>Installing the Root CA on Windows</h4>
+    <ol>
+      <li>Select your Root CA in the sidebar.</li>
+      <li>Export with format <code>DER</code>, include <code>Certificate Only</code>.</li>
+      <li>Open the exported <code>.der</code> file from your Downloads folder.</li>
+      <li>Click <strong>Install Certificate</strong> &rarr; <strong>Local Machine</strong> &rarr; <strong>Place all certificates in the following store</strong> &rarr; Browse &rarr; <strong>Trusted Root Certification Authorities</strong> &rarr; Finish.</li>
+    </ol>
+    <div class="step-warn">You must install the CA as a trusted root <em>before</em> importing any certificates it issued. Otherwise Windows will mark them as untrusted.</div>
+
+    <h4>Installing the Root CA on macOS</h4>
+    <ol>
+      <li>Export the CA as <code>DER</code>, <code>Certificate Only</code>.</li>
+      <li>Double-click the file to add it to Keychain Access.</li>
+      <li>In Keychain Access, find the CA, double-click it, expand <strong>Trust</strong>, and set to <strong>Always Trust</strong>.</li>
+    </ol>
+
+    <h4>Installing the Root CA on Linux</h4>
+    <ol>
+      <li>Export the CA as <code>PEM</code>, <code>Certificate Only</code>.</li>
+      <li>Copy to <code>/usr/local/share/ca-certificates/your-ca.crt</code></li>
+      <li>Run <code>sudo update-ca-certificates</code></li>
+    </ol>
+  </div>
+
+  <div class="guide-content hidden" id="guide-computer">
+    <h4>Computer Certificate</h4>
+    <p>Used for machine identity &mdash; allows a Windows computer to authenticate to the network and to services. Includes both Client Authentication and Server Authentication extended key usage.</p>
+
+    <h4>When to Use</h4>
+    <ul>
+      <li>802.1X network authentication (wired or wireless)</li>
+      <li>IPsec / VPN machine certificates</li>
+      <li>SCCM / Intune device identity</li>
+      <li>Machine-to-machine TLS (mutual auth)</li>
+    </ul>
+
+    <h4>Creating the Certificate</h4>
+    <ol>
+      <li>Select your CA, click <code>+ Issue Certificate</code>.</li>
+      <li>Template: <strong>Computer</strong>.</li>
+      <li>Common Name: the machine's FQDN, e.g. <code>WORKSTATION01.corp.example.com</code>.</li>
+      <li>SANs: add the FQDN and optionally the short hostname.</li>
+      <li>Algorithm: <code>RSA 4096</code> or <code>ECDSA P-384</code> for best Windows compatibility.</li>
+    </ol>
+
+    <h4>Importing into Windows (Personal Store)</h4>
+    <ol>
+      <li>Export as <code>PKCS12 (.pfx)</code>, include <code>Certificate + Key</code>, with a password you choose.</li>
+      <li>Open <code>certlm.msc</code> (Local Computer certificates) &mdash; press <code>Win+R</code>, type <code>certlm.msc</code>, press Enter.</li>
+      <li>Right-click <strong>Personal</strong> &rarr; <strong>All Tasks</strong> &rarr; <strong>Import</strong>.</li>
+      <li>Browse to the <code>.pfx</code> file, enter the password.</li>
+      <li>Choose <strong>Place all certificates in the following store</strong> &rarr; <strong>Personal</strong>.</li>
+      <li>Finish. The certificate will appear under <strong>Personal &rarr; Certificates</strong> (the subfolder is created automatically).</li>
+    </ol>
+    <div class="step-note">Use <code>certlm.msc</code> (Local Machine) for computer certificates, not <code>certmgr.msc</code> (Current User). Computer certificates must be in the Local Machine store to be used for machine authentication.</div>
+    <div class="step-warn">You must also install the issuing CA into <strong>Trusted Root Certification Authorities</strong> (see General tab) or the certificate will show as untrusted.</div>
+  </div>
+
+  <div class="guide-content hidden" id="guide-webserver">
+    <h4>Web Server Certificate</h4>
+    <p>Standard TLS/SSL certificate for HTTPS services. Includes Server Authentication extended key usage.</p>
+
+    <h4>When to Use</h4>
+    <ul>
+      <li>Internal web servers, APIs, dashboards</li>
+      <li>Development / staging HTTPS</li>
+      <li>Reverse proxies (Nginx, Apache, IIS)</li>
+    </ul>
+
+    <h4>Creating the Certificate</h4>
+    <ol>
+      <li>Template: <strong>Web Server</strong>.</li>
+      <li>Common Name: the server's FQDN, e.g. <code>app.example.com</code>.</li>
+      <li>SANs: add all hostnames and domains the server will respond to. Browsers require a SAN match.</li>
+    </ol>
+
+    <h4>Installing on IIS (Windows)</h4>
+    <ol>
+      <li>Export as <code>PKCS12 (.pfx)</code> with <code>Certificate + Key</code>.</li>
+      <li>Open IIS Manager &rarr; server node &rarr; <strong>Server Certificates</strong> &rarr; <strong>Import</strong>.</li>
+      <li>Browse to the <code>.pfx</code> file, enter the password, select store <strong>Personal</strong>.</li>
+      <li>Edit your site bindings &rarr; add HTTPS binding &rarr; select the imported certificate.</li>
+    </ol>
+
+    <h4>Installing on Nginx / Apache (Linux)</h4>
+    <ol>
+      <li>Export as <code>PEM</code>, <code>Certificate + Key</code>.</li>
+      <li>Split the file: the first PEM block is the certificate, the second is the private key.</li>
+      <li>Or export separately: <code>Certificate Only</code> (PEM) and <code>Private Key Only</code> (PEM).</li>
+      <li>Nginx: <code>ssl_certificate /path/to/cert.pem; ssl_certificate_key /path/to/key.pem;</code></li>
+      <li>Apache: <code>SSLCertificateFile</code> and <code>SSLCertificateKeyFile</code> directives.</li>
+    </ol>
+    <div class="step-note">For the full trust chain, export the certificate with <code>Full Chain (cert + CA)</code> and use that as the certificate file.</div>
+  </div>
+
+  <div class="guide-content hidden" id="guide-clientauth">
+    <h4>Client Authentication Certificate</h4>
+    <p>Used for user identity &mdash; authenticates a person or service account to a server. Includes Client Authentication extended key usage only.</p>
+
+    <h4>When to Use</h4>
+    <ul>
+      <li>Mutual TLS (mTLS) client identity</li>
+      <li>VPN user certificates</li>
+      <li>Smart card logon (with additional configuration)</li>
+      <li>API client authentication</li>
+    </ul>
+
+    <h4>Creating the Certificate</h4>
+    <ol>
+      <li>Template: <strong>Client Authentication</strong>.</li>
+      <li>Common Name: the user or service identity, e.g. <code>john.doe@example.com</code> or <code>svc-api-client</code>.</li>
+    </ol>
+
+    <h4>Importing into Windows (Current User)</h4>
+    <ol>
+      <li>Export as <code>PKCS12 (.pfx)</code> with <code>Certificate + Key</code>.</li>
+      <li>Double-click the <code>.pfx</code> file, or open <code>certmgr.msc</code> (Current User).</li>
+      <li>Import into the <strong>Personal</strong> store (you will only see <strong>Personal</strong>, not a Certificates subfolder &mdash; this is normal).</li>
+      <li>Enter the PFX password when prompted.</li>
+    </ol>
+    <div class="step-note">For user certificates, use <code>certmgr.msc</code> (Current User). For service accounts running as SYSTEM, use <code>certlm.msc</code> (Local Machine).</div>
+  </div>
+
+  <div class="guide-content hidden" id="guide-user">
+    <h4>User Certificate</h4>
+    <p>Used for user identity on Windows &mdash; authenticates a person for smart card logon, VPN, Wi-Fi (802.1X), and mTLS. Includes Client Authentication and Smart Card Logon extended key usage, with a Microsoft UPN in the Subject Alternative Name.</p>
+
+    <h4>When to Use</h4>
+    <ul>
+      <li>Smart card or virtual smart card logon</li>
+      <li>802.1X wireless/wired user authentication</li>
+      <li>VPN user certificates</li>
+      <li>mTLS client identity with Windows SSO</li>
+      <li>Conditional Access certificate-based authentication</li>
+    </ul>
+
+    <h4>Creating the Certificate</h4>
+    <ol>
+      <li>Template: <strong>User</strong>.</li>
+      <li>Common Name: the user's display name, e.g. <code>John Doe</code>.</li>
+      <li>Email Address: the user's email, e.g. <code>john.doe@example.com</code>.</li>
+      <li>User Principal Name (UPN): the Windows logon UPN, e.g. <code>john.doe@corp.example.com</code>. This is embedded as a Microsoft UPN OtherName in the SAN &mdash; required for Windows smart card logon.</li>
+      <li>Optionally check <strong>Include CRL Distribution Point</strong> to add offline revocation checking (see the CRL tab).</li>
+    </ol>
+
+    <h4>Importing into Windows (Current User)</h4>
+    <ol>
+      <li>Export as <code>PKCS12 (.pfx)</code> with <code>Certificate + Key</code>.</li>
+      <li>Double-click the <code>.pfx</code> file, or open <code>certmgr.msc</code> (Current User).</li>
+      <li>Import into the <strong>Personal</strong> store.</li>
+      <li>Enter the PFX password when prompted.</li>
+    </ol>
+    <div class="step-note">The UPN in the certificate must match the user's UPN in Active Directory or Entra ID for smart card logon to work.</div>
+    <div class="step-warn">You must also install the issuing CA into <strong>Trusted Root Certification Authorities</strong> and (if using CRL) import the CA's CRL file. See the General and CRL tabs.</div>
+  </div>
+
+  <div class="guide-content hidden" id="guide-codesigning">
+    <h4>Code Signing Certificate</h4>
+    <p>Used to digitally sign executables, scripts, and drivers. Includes Code Signing extended key usage.</p>
+
+    <h4>When to Use</h4>
+    <ul>
+      <li>Signing internal PowerShell scripts</li>
+      <li>Signing internal executables or DLLs</li>
+      <li>Testing Authenticode signature workflows</li>
+      <li>Driver signing (test mode)</li>
+    </ul>
+
+    <h4>Creating the Certificate</h4>
+    <ol>
+      <li>Template: <strong>Code Signing</strong>.</li>
+      <li>Common Name: your organization or team name, e.g. <code>Corp IT Code Signing</code>.</li>
+    </ol>
+
+    <h4>Importing and Using on Windows</h4>
+    <ol>
+      <li>Export as <code>PKCS12 (.pfx)</code> with <code>Certificate + Key</code>.</li>
+      <li>Open <code>certmgr.msc</code>, right-click <strong>Personal</strong> &rarr; <strong>All Tasks</strong> &rarr; <strong>Import</strong>. Select the <strong>Personal</strong> store when prompted.</li>
+      <li>Sign a PowerShell script: <code>Set-AuthenticodeSignature -FilePath script.ps1 -Certificate (Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert)</code></li>
+      <li>Sign an EXE with <code>signtool</code>: <code>signtool sign /fd SHA256 /f cert.pfx /p &lt;your PFX password&gt; app.exe</code></li>
+    </ol>
+    <div class="step-warn">Self-signed code signing certificates will trigger SmartScreen and trust warnings. To suppress these on managed machines, install the CA into <strong>Trusted Root Certification Authorities</strong> and the code signing cert into <strong>Trusted Publishers</strong>.</div>
+  </div>
+
+  <div class="guide-content hidden" id="guide-email">
+    <h4>Email (S/MIME) Certificate</h4>
+    <p>Used to sign and encrypt email messages. Includes Email Protection extended key usage, and embeds the email address in the Subject and SANs.</p>
+
+    <h4>When to Use</h4>
+    <ul>
+      <li>Signing outgoing email (proves sender identity)</li>
+      <li>Encrypting email contents (recipient needs your public cert)</li>
+      <li>Testing S/MIME workflows in Outlook, Thunderbird, etc.</li>
+    </ul>
+
+    <h4>Creating the Certificate</h4>
+    <ol>
+      <li>Template: <strong>Email (S/MIME)</strong>.</li>
+      <li>Common Name: the user's name, e.g. <code>John Doe</code>.</li>
+      <li>Email Address: the exact email to sign/encrypt for, e.g. <code>john.doe@example.com</code>.</li>
+    </ol>
+
+    <h4>Setting Up in Outlook (Windows)</h4>
+    <ol>
+      <li>Export as <code>PKCS12 (.pfx)</code> with <code>Certificate + Key</code>.</li>
+      <li>Double-click the <code>.pfx</code> file to import into <strong>Personal</strong> store (Current User).</li>
+      <li>In Outlook: <strong>File &rarr; Options &rarr; Trust Center &rarr; Trust Center Settings &rarr; Email Security</strong>.</li>
+      <li>Under <strong>Encrypted email</strong>, click <strong>Settings</strong> &rarr; <strong>Choose</strong> next to Signing/Encryption Certificate &rarr; select your certificate.</li>
+    </ol>
+
+    <h4>Setting Up in Thunderbird</h4>
+    <ol>
+      <li>Export as <code>PKCS12 (.pfx)</code> with <code>Certificate + Key</code>.</li>
+      <li>In Thunderbird: <strong>Account Settings &rarr; End-To-End Encryption &rarr; S/MIME</strong>.</li>
+      <li>Click <strong>Manage S/MIME Certificates &rarr; Your Certificates &rarr; Import</strong> &rarr; select the <code>.pfx</code> file.</li>
+      <li>Select the certificate for both signing and encryption.</li>
+    </ol>
+    <div class="step-note">Both sender and recipient need each other's public certificate to exchange encrypted email. Share the public certificate (DER export, Certificate Only) with your correspondents.</div>
+  </div>
+
+  <div class="guide-content hidden" id="guide-crl">
+    <h4>CRL (Certificate Revocation List)</h4>
+    <p>This tool generates <strong>CRL files signed by the CA</strong> that list the certificates you have revoked. Each certificate names where clients find its CRL, its <em>distribution point</em>, chosen when you issue it.</p>
+
+    <h4>Distribution Points</h4>
+    <ul>
+      <li><strong>This server</strong> (Docker version only) &mdash; <code>&lt;address&gt;/crl/&lt;CA id&gt;.crl</code>, an address your clients can reach. That path answers without signing in. This server signs that CRL itself: valid for 7 days, re-signed on every revocation, and renewed before it runs out.</li>
+      <li><strong>Cloudflare Worker</strong> (Docker version only) &mdash; the CA's own Worker serves the CRL on the internet, and the app pushes a new one on every revocation. Set it up under <strong>Tools › Cloudflare</strong> and on the CA page.</li>
+      <li><strong>Endpoint-hosted</strong> &mdash; <code>http://pki.&lt;domain&gt;/crl/&lt;CA&gt;.crl</code>, an address no server answers. Each machine gets the CRL itself, for endpoints that can reach neither this server nor Cloudflare. Use the certificate's install .zip (below), or import an exported CRL by hand.</li>
+    </ul>
+    {% if not server_mode %}<div class="step-note">This desktop app offers the <strong>endpoint-hosted</strong> distribution point only. For a CRL your clients fetch over the network, run the <strong>Docker</strong> version. It's a separate install with its own database: move your CAs across with <strong>Backup</strong> here and <strong>Restore</strong> there.</div>
+    {% endif %}<div class="step-note">Deleting a revoked certificate keeps its serial on the CRL until the certificate would have expired, so deleting never un-revokes it. Deleting a certificate that isn't revoked does not stop clients trusting it: revoke it first.</div>
+
+    <h4>Endpoint-hosted on Windows: the Install .zip</h4>
+    <p>On the certificate, open <strong>Export / install ▾ › Windows</strong>, answer the CA question, and choose <strong>Download .zip</strong>. Extract it and double-click <strong>install.cmd</strong>. It asks for administrator rights, shows each command as it runs, stops with an explanation if a step fails, and waits for Enter before closing. Besides the certificate, it:</p>
+    <ul>
+      <li>imports the CRL into <strong>Intermediate Certification Authorities</strong>, where Windows' own revocation check finds it without a network fetch;</li>
+      <li>makes the machine answer the CRL address itself, for programs that download it. It adds a hosts entry for <code>pki.&lt;domain&gt;</code>, keeps the CRL in an admin-only <code>C:\ProgramData\CertGenerator</code>, and starts a small listener at boot, as LOCAL SERVICE, that serves only that CRL.</li>
+    </ul>
+    <ul>
+      <li><strong>After a revocation</strong>, download a new .zip and run its <code>install.cmd</code>. Nothing updates the machine by itself.</li>
+      <li><strong>To back out</strong>, double-click <code>uninstall.cmd</code> in the same folder. It removes the certificate, the CRL, the hosts entry and the listener, and asks before removing CA certificates.</li>
+      <li><strong>"Running scripts is disabled on this system"</strong> appears only if you run the .ps1 files directly. Use the .cmd files, or <code>powershell -ExecutionPolicy Bypass -File .\install.ps1</code>. If Windows warns that the publisher can't be verified, choose <strong>Run</strong>. To avoid that warning, right-click the .zip before extracting, open <strong>Properties</strong> and tick <strong>Unblock</strong>.</li>
+      <li>Security tools may report the hosts-file change and the startup task. <code>README.txt</code> in the .zip lists every change and the manual undo.</li>
+    </ul>
+    <p>macOS and Linux bundles include the CRL file; the local listener is Windows-only for now.</p>
+
+    <h4>Importing a CRL by Hand (Windows)</h4>
+    <ol>
+      <li>On the CA page, choose a lifetime and click <strong>Export CRL</strong>.</li>
+      <li>Open <code>certlm.msc</code> (Local Machine) or <code>certmgr.msc</code> (Current User).</li>
+      <li>Navigate to <strong>Intermediate Certification Authorities</strong>.</li>
+      <li>Right-click &rarr; <strong>All Tasks</strong> &rarr; <strong>Import</strong>.</li>
+      <li>Browse to the <code>.crl</code> file, select it, and finish the import.</li>
+      <li>The CRL will appear under <strong>Certificate Revocation Lists</strong> within that store.</li>
+    </ol>
+    <div class="step-note">An exported CRL is valid for 10 years by default. After a revocation, export and import the updated CRL on each endpoint (or run a new install .zip). <strong>View CRL</strong> on the CA page shows what an export contains now.</div>
+
+    <h4>Important: No OCSP</h4>
+    <p>There is no OCSP responder, and the CRL is never signed per request. With <strong>this server</strong>, clients must be able to reach the address in the certificate; expose only <code>/crl/</code> through your reverse proxy (see the README). Endpoint-hosted CRLs suit posture and security demos, lab and test environments, and machines you control.</p>
+    <div class="step-warn">This is <strong>not</strong> equivalent to a production PKI. With this server or a Cloudflare Worker, a revocation reaches clients when their cached CRL expires (up to 7 days); endpoint-hosted, only after each machine gets the updated CRL.</div>
+
+    <h4>PowerShell Import (Alternative)</h4>
+    <p>You can also import the CRL via PowerShell:</p>
+    <p><code>certutil -addstore CA "path\to\ca-name.crl"</code></p>
+    <p>Run as Administrator for the Local Machine store.</p>
+  </div>
+</div>

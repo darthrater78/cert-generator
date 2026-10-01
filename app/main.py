@@ -10,10 +10,27 @@ from urllib.parse import urlparse
 
 ALLOWED_EXTERNAL_HOSTS = {"github.com"}
 
-WINDOW_OPTIONS = {"width": 1100, "height": 720, "min_size": (800, 500)}
+# Opens maximized: the layout needs more room than a fixed size gives on a scaled
+# (125-150%) display. width/height are the size it restores to.
+WINDOW_OPTIONS = {"width": 1100, "height": 720, "min_size": (800, 500), "maximized": True}
+
+
+GUIDE_WINDOW_OPTIONS = {"width": 960, "height": 760, "min_size": (480, 400)}
+GUIDE_TITLES = {"cert": "Certificate Import Guide", "ssh": "SSH Key Guide"}
 
 
 class Api:
+    def __init__(self, auth_url: str = "") -> None:
+        # The window's own sign-in link; a pop-out guide window reuses it to get its cookie.
+        self._auth_url = auth_url
+
+    def open_guide(self, kind: str) -> None:
+        if kind not in GUIDE_TITLES or not self._auth_url:
+            return
+        import webview
+
+        webview.create_window(GUIDE_TITLES[kind], f"{self._auth_url}&next=/guide/{kind}", **GUIDE_WINDOW_OPTIONS)
+
     def open_external(self, url: str) -> None:
         parsed = urlparse(url)
         if parsed.scheme != "https" or parsed.hostname not in ALLOWED_EXTERNAL_HOSTS:
@@ -53,8 +70,10 @@ def main() -> None:
     import webview
 
     server, url = start_desktop_server()
-    window = webview.create_window("Cert Generator", url, js_api=Api(), **WINDOW_OPTIONS)
+    window = webview.create_window("Cert Generator", url, js_api=Api(url), **WINDOW_OPTIONS)
     window.events.closing += server.shutdown
+    # Pop-out guides close with the main window: the server they read from is going away.
+    window.events.closing += lambda: [w.destroy() for w in list(webview.windows) if w is not window]
     webview.start()
     sys.exit(0)
 

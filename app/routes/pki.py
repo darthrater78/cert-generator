@@ -10,9 +10,10 @@ from urllib.parse import urlsplit
 
 from flask import Blueprint, Response, jsonify, request
 
-from .. import crl_publisher, crypto_engine, db, state
+from .. import crl_publisher, crl_worker, crypto_engine, db, install_bundle, state
+from ..errors import UserError
 from ..security import RateLimiter
-from ..web import deliver_export, error, json_body, parse_int, reauth_rejection, str_field
+from ..web import deliver_export, error, export_password_error, json_body, parse_int, reauth_rejection, str_field
 
 log = logging.getLogger("cert-generator")
 
@@ -24,7 +25,7 @@ VALID_CERT_PARTS = ("both", "public", "private", "chain")
 DOMAIN_RE = re.compile(r"^[\w.*-]{1,253}$")
 MAX_LIFETIME_DAYS = 36500
 DEFAULT_CRL_DAYS = 3650
-CRL_DP_MODES = ("none", "placeholder", "server")
+CRL_DP_MODES = ("none", "placeholder", "server", "cloudflare")
 # Clients cache a CRL until its next update, so real traffic is a trickle. Behind a
 # reverse proxy every client shares the proxy's address, hence the generous limit.
 CRL_RATE_LIMIT_PER_MINUTE = 300
@@ -147,7 +148,8 @@ def get_ca(ca_id: int):
     ca = db.get_ca(ca_id)
     if not ca:
         return error("CA not found", 404)
-    safe = {k: v for k, v in ca.items() if k not in ("cert_pem", "key_pem", "crl_der")}
+    safe = {k: v for k, v in ca.items() if k not in ("cert_pem", "key_pem", "crl_der") and not k.startswith("cf_")}
+    safe["cloudflare"] = None if state.desktop_mode() else crl_worker.status(ca_id)
     safe["crl_published"] = ca.get("crl_der") is not None
     safe["crl_served"] = _crl_served(ca)
     safe["crl_served_next_update"] = crypto_engine.crl_next_update(ca["crl_der"]) if safe["crl_served"] else None
@@ -157,8 +159,19 @@ def get_ca(ca_id: int):
     return jsonify(safe)
 
 
+def _descendant_ids(ca_id: int) -> list[int]:
+    ids, pending = [], [ca_id]
+    while pending:
+        current = pending.pop()
+        ids.append(current)
+        pending.extend(child["id"] for child in db.list_child_cas(current) if child["id"] not in ids)
+    return ids
+
+
 @bp.delete("/api/ca/<int:ca_id>")
 def delete_ca(ca_id: int):
+    if db.count_ca_workers(_descendant_ids(ca_id)):
+        return error("Tear down the Cloudflare CRL Worker of this CA (and of any intermediate under it) first", 409)
     if db.delete_ca(ca_id):
         log.info("CA deleted: id=%d", ca_id)
         return jsonify({"ok": True})
@@ -231,9 +244,9 @@ def _parse_issue_request(data: dict[str, Any]) -> tuple[IssueRequest | None, str
     crl_base_url = None
     if crl_dp_mode not in CRL_DP_MODES:
         return None, f"Invalid CRL distribution point. Choose from: {CRL_DP_MODES}"
+    if crl_dp_mode in ("server", "cloudflare") and state.desktop_mode():
+        return None, "The desktop app offers the endpoint-hosted distribution point only; the others need Docker"
     if crl_dp_mode == "server":
-        if state.desktop_mode():
-            return None, "The desktop app can't serve CRLs; use the placeholder distribution point"
         crl_base_url = parse_crl_base_url(str_field(data, "crl_base_url"))
         if crl_base_url is None:
             return None, "The CRL server address must be an http(s) URL such as http://pki.example.lan:5000"
@@ -261,6 +274,8 @@ def _crl_served(ca: dict[str, Any]) -> bool:
 
 
 def _crl_dp_url(ca: dict[str, Any], req: IssueRequest) -> str | None:
+    if req.crl_dp_mode == "cloudflare":
+        return ca.get("cf_dp_url") or None
     if req.crl_dp_mode == "server":
         return f"{req.crl_base_url}/crl/{ca['id']}.crl"
     if req.crl_dp_mode == "placeholder":
@@ -269,9 +284,12 @@ def _crl_dp_url(ca: dict[str, Any], req: IssueRequest) -> str | None:
 
 
 def crl_dp_kind(url: str | None, ca: dict[str, Any]) -> str:
-    """'none', 'placeholder' (nothing answers there), 'server' (this server's /crl/<id>.crl) or 'other'."""
+    """'none', 'placeholder' (nothing answers there), 'cloudflare' (the CA's Worker), 'server'
+    (this server's /crl/<id>.crl) or 'other'."""
     if not url:
         return "none"
+    if ca.get("cf_dp_url") and url == ca["cf_dp_url"]:
+        return "cloudflare"
     if url == _placeholder_crl_url(ca):
         return "placeholder"
     if urlsplit(url).path.endswith(f"/crl/{ca['id']}.crl"):
@@ -279,9 +297,17 @@ def crl_dp_kind(url: str | None, ca: dict[str, Any]) -> str:
     return "other"
 
 
-def _crl_dp_info(url: str | None, ca: dict[str, Any], published: bool) -> dict[str, Any]:
+def _worker_published(ca_id: int) -> bool:
+    """The CA's Worker serves its latest CRL (the last push succeeded)."""
+    worker = db.get_ca_worker(ca_id) or {}
+    return bool(worker.get("cf_pushed_sha256")) and not worker.get("cf_push_error")
+
+
+def _crl_dp_info(url: str | None, ca: dict[str, Any], served: bool, worker_published: bool) -> dict[str, Any]:
+    """``served``: this server serves the CA's CRL; ``worker_published``: its Worker does."""
     kind = crl_dp_kind(url, ca)
-    return {"kind": kind, "url": url or None, "published": kind == "server" and published}
+    published = (kind == "server" and served) or (kind == "cloudflare" and worker_published)
+    return {"kind": kind, "url": url or None, "published": published}
 
 
 @bp.post("/api/ca/<int:ca_id>/certs")
@@ -294,6 +320,8 @@ def issue_cert(ca_id: int):
         return error(err)
 
     crl_dp_url = _crl_dp_url(ca, req)
+    if req.crl_dp_mode == "cloudflare" and not crl_dp_url:
+        return error("This CA has no Cloudflare CRL Worker. Deploy one from the CA page first")
     cert_pem, key_pem, serial, not_before, not_after = crypto_engine.issue_certificate(
         ca_cert_pem=ca["cert_pem"], ca_key_pem=ca["key_pem"],
         common_name=req.common_name, san_domains=req.san_list, algorithm=req.algorithm,
@@ -308,18 +336,21 @@ def issue_cert(ca_id: int):
     if req.crl_dp_mode == "server":
         db.set_crl_public(ca_id)
         crl_publisher.publish(ca_id)
+    elif req.crl_dp_mode == "cloudflare" and not ca.get("cf_pushed_sha256"):
+        crl_publisher.publish(ca_id)  # first certificate for a restored Worker: make sure it has a CRL
     log.info("Certificate issued: %s (ca=%d, template=%s, algo=%s)", req.common_name, ca_id, req.template, req.algorithm)
     return jsonify({"id": cert_id, "common_name": req.common_name, "serial": serial}), 201
 
 
 @bp.get("/api/ca/<int:ca_id>/certs")
 def list_certs_for_ca(ca_id: int):
-    ca = next((c for c in db.list_cas() if c["id"] == ca_id), None)
+    ca = db.get_ca_summary(ca_id)
     certs = db.list_certs(ca_id)
     if ca:
-        published = db.get_published_crl(ca_id) is not None  # only for CAs that opted in
+        served = db.get_published_crl(ca_id) is not None  # only for CAs that opted in
+        worker_published = _worker_published(ca_id)
         for cert in certs:
-            cert["crl_dp"] = _crl_dp_info(cert.pop("crl_dp_url", None), ca, published)
+            cert["crl_dp"] = _crl_dp_info(cert.pop("crl_dp_url", None), ca, served, worker_published)
     return jsonify(certs)
 
 
@@ -346,7 +377,7 @@ def get_cert_details(cert_id: int):
     details.update({k: cert.get(k) for k in ("id", "ca_id", "common_name", "template", "revoked", "revoked_at")})
     ca = db.get_ca(cert["ca_id"])
     if ca:
-        details["crl_dp"] = _crl_dp_info(cert.get("crl_dp_url"), ca, _crl_served(ca))
+        details["crl_dp"] = _crl_dp_info(cert.get("crl_dp_url"), ca, _crl_served(ca), _worker_published(ca["id"]))
     return jsonify(details)
 
 
@@ -381,8 +412,10 @@ def get_cert_crl_status(cert_id: int):
 _REVOKE_NOTES = {
     "server": "This server now serves an updated CRL. Clients see the revocation when their cached "
               f"copy expires, within {crl_publisher.PUBLISHED_CRL_DAYS} days.",
-    "placeholder": "Its CRL distribution point is a placeholder, so clients only see the revocation "
-                   "once you import an updated CRL on each machine.",
+    "cloudflare": "The updated CRL was published to this CA's Cloudflare Worker. Clients see the revocation "
+                  f"when their cached copy expires, within {crl_publisher.PUBLISHED_CRL_DAYS} days.",
+    "placeholder": "Its CRL is endpoint-hosted, so a machine only sees the revocation once it gets the updated CRL: "
+                   "run a new install .zip from Export / install, or import the CRL by hand.",
     "none": "It has no CRL distribution point, so clients don't check it. Import an updated CRL on "
             "machines that should stop trusting it.",
     "other": "Its CRL distribution point is an address this app doesn't manage. Publish an updated CRL there.",
@@ -431,14 +464,22 @@ def revoke_cert(cert_id: int):
     ca = db.get_ca_summary(cert["ca_id"]) if cert else None
     if not cert or not ca or cert["revoked"]:
         return error("Certificate not found or already revoked", 404)
-    if ca.get("crl_public"):
-        db.require_unlocked()  # re-signing the served CRL needs the CA key: fail before revoking
+    if ca.get("crl_public") or ca.get("cf_worker"):
+        db.require_unlocked()  # re-signing the published CRL needs the CA key: fail before revoking
     db.revoke_cert(cert_id)
     log.info("Certificate revoked: id=%d", cert_id)
-    crl_publisher.publish(ca["id"])
+    crl_publisher.publish(ca["id"])  # also pushes to the CA's Worker, if it has one
     kind = crl_dp_kind(cert.get("crl_dp_url"), ca)
-    # served: nothing to do; otherwise the page offers the updated CRL for import
-    return jsonify({"ok": True, "crl_dp": kind, "note": _REVOKE_NOTES[kind], "download_crl": kind != "server"})
+    worker = db.get_ca_worker(ca["id"])
+    result: dict[str, Any] = {"ok": True, "crl_dp": kind, "note": _REVOKE_NOTES[kind],
+                              "download_crl": kind not in ("server", "cloudflare")}
+    if worker is not None:
+        result["cloudflare"] = {"pushed": not worker["cf_push_error"], "error": worker["cf_push_error"]}
+        if kind == "cloudflare" and worker["cf_push_error"]:
+            result["note"] = ("The certificate is revoked, but publishing the updated CRL to Cloudflare failed. "
+                              "The app retries every hour; use Push now on the CA page to retry sooner.")
+    # served or Worker: nothing to do; otherwise the page offers the updated CRL for import
+    return jsonify(result)
 
 
 @bp.delete("/api/certs/<int:cert_id>")
@@ -482,6 +523,9 @@ def export_ca(ca_id: int):
     fmt = str_field(data, "format", "pem")
     part = str_field(data, "part", "both")
     password = str_field(data, "password") or None
+    password_error = export_password_error(password)
+    if password_error:
+        return error(password_error)
     if fmt not in VALID_FORMATS:
         return error(f"Invalid format. Choose from: {VALID_FORMATS}")
     if part not in VALID_CA_PARTS:
@@ -513,6 +557,9 @@ def export_cert(cert_id: int):
     fmt = str_field(data, "format", "pem")
     part = str_field(data, "part", "both")
     password = str_field(data, "password") or None
+    password_error = export_password_error(password)
+    if password_error:
+        return error(password_error)
     include_chain = bool(data.get("include_chain", False))
     if fmt not in VALID_FORMATS:
         return error(f"Invalid format. Choose from: {VALID_FORMATS}")
@@ -541,6 +588,46 @@ def export_cert(cert_id: int):
     except ValueError as e:
         return error(str(e))
     return deliver_export(export_data, f"{cert['common_name']}-{filename}")
+
+
+@bp.post("/api/export/cert/<int:cert_id>/bundle")
+def export_install_bundle(cert_id: int):
+    """A .zip with the certificate (and key), optionally its CA chain, and an install script."""
+    cert = db.get_cert(cert_id)
+    if not cert:
+        return error("Certificate not found", 404)
+    data = json_body()
+    os_name = str_field(data, "os")
+    if os_name not in install_bundle.OSES:
+        return error(f"Invalid OS. Choose from: {install_bundle.OSES}")
+    rejection = reauth_rejection()  # the bundle carries the private key
+    if rejection is not None:
+        return rejection
+    chain = db.get_ca_named_chain(cert["ca_id"])
+    crl = None
+    issuer = db.get_ca(cert["ca_id"])
+    if issuer and crl_dp_kind(cert.get("crl_dp_url"), issuer) == "placeholder":
+        # Nothing answers at a placeholder address: ship the CRL, as Export CRL would.
+        crl_der = crypto_engine.generate_crl(
+            ca_cert_pem=issuer["cert_pem"], ca_key_pem=issuer["key_pem"],
+            revoked_serials=db.list_revoked_serials(issuer["id"]), crl_lifetime_days=DEFAULT_CRL_DAYS)
+        db.set_ca_crl_next_update(issuer["id"], crypto_engine.crl_next_update(crl_der))
+        crl = (issuer["name"], crl_der)
+    password_error = export_password_error(str_field(data, "password") or None)
+    if password_error:
+        return error(password_error)
+    try:
+        bundle, filename = install_bundle.build(
+            cert_pem=cert["cert_pem"], key_pem=cert["key_pem"], template=cert["template"],
+            common_name=cert["common_name"], os_name=os_name,
+            ca_chain=chain if data.get("include_ca") else [], chain_for_pfx=chain, crl=crl,
+            placeholder_url=cert.get("crl_dp_url") if crl else None,
+            password=str_field(data, "password") or None,
+        )
+    except UserError as e:
+        return error(e.user_message)
+    log.info("Install bundle exported: cert=%d os=%s with_ca=%s", cert_id, os_name, bool(data.get("include_ca")))
+    return deliver_export(bundle, filename)
 
 
 @bp.route("/crl/<int:ca_id>.crl", methods=["GET", "HEAD"], provide_automatic_options=False)

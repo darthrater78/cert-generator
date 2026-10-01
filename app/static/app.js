@@ -84,8 +84,8 @@ function toggleAccentMenu(_arg, _el, open) {
 
 const SERVER_MODE = document.body.dataset.serverMode === 'true';
 let currentCAId = null;
+let currentCA = null;  // the open CA as /api/ca/<id> returned it
 let currentSSHKeyId = null;
-let exportCertId = null;
 
 const TEMPLATE_LABELS = {
   'web-server': 'Web Server',
@@ -216,12 +216,29 @@ function showIssueCert() {
   document.getElementById('certCN').focus();
 }
 
-// The distribution point choice: this server (server mode only) or the offline placeholder.
-function updateCrlDpFields() {
+// The distribution point choice: this server, a Cloudflare Worker (server mode only), or
+// endpoint-hosted (internally "placeholder": an address no server answers; each machine gets the CRL).
+function updateCrlDpFields(_arg, el) {
   const include = document.getElementById('certIncludeCRL').checked;
   const select = document.getElementById('certCrlDp');
   select.querySelector('option[value="server"]').disabled = !SERVER_MODE;
   if (!SERVER_MODE) select.value = 'placeholder';
+  const worker = currentCA && currentCA.cloudflare && currentCA.cloudflare.deployed ? currentCA.cloudflare : null;
+  const cfOption = select.querySelector('option[value="cloudflare"]');
+  if (cfOption) {
+    cfOption.disabled = !worker;
+    cfOption.textContent = worker ? 'Cloudflare Worker (this CA)' : 'Cloudflare Worker (deploy one on the CA page)';
+    if (!worker && select.value === 'cloudflare') select.value = 'server';
+    // A CA with a Worker defaults to it, unless the user just picked something else.
+    if (worker && !(el && el.id === 'certCrlDp') && !include) select.value = 'cloudflare';
+  }
+  if (select.value === 'cloudflare') {
+    document.getElementById('crlDpRow').hidden = !include;
+    document.getElementById('crlBaseUrlGroup').hidden = true;
+    document.getElementById('crlDpHint').textContent = 'Clients fetch ' + worker.dp_url + ' from Cloudflare. ' +
+      'The app publishes a new CRL there on every revocation and renews it weekly.';
+    return;
+  }
   const server = select.value === 'server';
   const baseUrl = document.getElementById('certCrlBaseUrl');
   if (!baseUrl.value) baseUrl.value = window.location.origin;
@@ -232,8 +249,11 @@ function updateCrlDpFields() {
   document.getElementById('crlDpHint').textContent = server
     ? 'Clients fetch ' + baseUrl.value.replace(/\/+$/, '') + '/crl/' + currentCAId + '.crl without signing in. ' +
       'This server signs that CRL itself, republishes it on every revocation and renews it before it expires.'
-    : 'Points at http://pki.' + (ca ? ca.domain : '<domain>') + '/crl/… — nothing answers there; ' +
-      'import the exported CRL on each machine (see Import Guide).';
+    : 'Points at http://pki.' + (ca ? ca.domain : '<domain>') + '/crl/…, which no server answers. Each machine ' +
+      'gets the CRL from the certificate\'s install .zip (Export / install ▾); on Windows the .zip also answers that ' +
+      'address on the machine itself. For demos and testing only: each machine needs the new CRL after every revocation.' +
+      (SERVER_MODE ? '' : ' For a CRL clients fetch over the network, use the Docker version; ' +
+        'move your CAs there with Backup and Restore.');
 }
 
 async function loadCAs() {
@@ -266,7 +286,7 @@ async function loadCAs() {
   });
 
   document.getElementById('caCount').textContent = cas.length;
-  if (currentSSHKeyId) return;
+  if (currentSSHKeyId) return cas.length;
   if (currentCAId && !caIndex.has(currentCAId)) currentCAId = null;
   if (cas.length === 0) {
     document.getElementById('welcomeView').classList.remove('hidden');
@@ -276,6 +296,7 @@ async function loadCAs() {
     // first authority instead of leaving the "No authorities yet" screen up.
     selectCA((roots[0] || cas[0]).id);
   }
+  return cas.length;
 }
 
 async function selectCA(caId) {
@@ -284,6 +305,7 @@ async function selectCA(caId) {
   currentSSHKeyId = null;
   const res = await api('/api/ca/' + caId);
   const ca = await res.json();
+  currentCA = ca;
 
   document.getElementById('welcomeView').classList.add('hidden');
   document.getElementById('sshKeyView').classList.add('hidden');
@@ -320,6 +342,7 @@ async function selectCA(caId) {
       : '<span class="badge badge-active">Active</span>');
 
   updateCaPasswordVisibility();
+  renderCloudflarePanel(ca);
   loadCerts(caId);
   loadCAs();
 }
@@ -359,8 +382,8 @@ async function loadCerts(caId) {
       '<td>' + crlDpBadge(c.crl_dp) + '</td>' +
       '<td><div class="row-actions">' +
         '<button class="btn btn-ghost btn-sm" data-action="viewCert" data-arg="' + c.id + '\">View</button> ' +
-        '<button class="btn btn-ghost btn-sm" data-action="showExportCert" data-arg="' + c.id + '\">Export</button> ' +
-        (!c.revoked ? '<button type="button" class="import-chip" data-action="toggleImportHelp" data-arg="' + c.id + '" aria-haspopup="dialog" aria-expanded="false">Endpoint import ▾</button> ' : '') +
+        '<button type="button" class="import-chip" data-action="toggleImportHelp" data-arg="' + c.id + '" aria-haspopup="dialog" aria-expanded="false">' +
+          (c.revoked ? 'Export ▾' : 'Export / install ▾') + '</button> ' +
         (!c.revoked ? '<button class="btn btn-ghost btn-sm" data-action="revokeCert" data-arg="' + c.id + '\">Revoke</button> ' : '') +
         '<button class="btn btn-danger btn-sm" data-action="deleteCert" data-arg="' + c.id + '\">Delete</button>' +
       '</div></td></tr>';
@@ -493,14 +516,20 @@ async function issueCert() {
   }
 }
 
-function showExportCert(certId) {
-  exportCertId = certId;
+// Export lives in the Export / install panel, on its Export file tab.
+function resetCertExportForm() {
   document.getElementById('certExportFormat').value = 'pkcs12';
   document.getElementById('certExportPart').value = 'both';
-  document.getElementById('certExportPassword').value = 'changeit';
+  document.getElementById('certExportPassword').value = '';
   document.getElementById('certExportChain').checked = false;
   updateCertPasswordVisibility();
-  showModal('exportCertModal');
+}
+
+function showExportCert(certId) {
+  const chip = document.querySelector('#certTableContainer .import-chip[data-arg="' + certId + '"]');
+  if (!chip) return;
+  chip.scrollIntoView({ block: 'nearest' });
+  openImportHelp(certId, chip, 'export');
 }
 
 let viewCertId = null;
@@ -516,7 +545,8 @@ function certStatusBadge(notAfter, revoked) {
 // Where a certificate tells clients to check revocation, and whether anything answers there.
 const CRL_DP_LABELS = {
   none: ['badge-algo', 'None', 'No distribution point: clients can only learn of a revocation from a CRL you import yourself.'],
-  placeholder: ['badge-expired', 'Placeholder', 'Placeholder URL: nothing answers there. Import the exported CRL on each machine.'],
+  placeholder: ['badge-expired', 'Endpoint-hosted', 'Endpoint-hosted: no server answers this address. Each machine needs the CRL: ' +
+    'use the install .zip (Export / install ▾), which on Windows also answers the address locally, or import an exported CRL.'],
   server_live: ['badge-active', 'This server', 'Served by this server, which keeps the CRL current automatically.'],
   server_pending: ['badge-expired', 'Not published', 'Points at this server, but no CRL is published yet. It publishes once the database is unlocked.'],
   other: ['badge-algo', 'External', 'Points at an address this app does not manage.'],
@@ -684,18 +714,29 @@ function exportFromCertView() {
 }
 
 async function doExportCert() {
+  if (!importState) return;
   const fmt = document.getElementById('certExportFormat').value;
   const part = document.getElementById('certExportPart').value;
   const password = document.getElementById('certExportPassword').value;
   const includeChain = document.getElementById('certExportChain').checked;
-  await saveExport('/api/export/cert/' + exportCertId, { format: fmt, part, password: password || undefined, include_chain: includeChain });
-  hideModal('exportCertModal');
+  const pwError = exportPasswordProblem(password, fmt === 'pkcs12' && part === 'both');
+  if (pwError) { toast(pwError, 'error'); document.getElementById('certExportPassword').focus(); return; }
+  await saveExport('/api/export/cert/' + importState.certId, { format: fmt, part, password: password || undefined, include_chain: includeChain });
+}
+
+// No default passwords: a PFX needs one the user chose, and the old default is refused.
+function exportPasswordProblem(password, required) {
+  if (required && !password) return 'Choose a password: it protects the key, and you need it to import the file';
+  if (password && password.trim().toLowerCase() === 'changeit') return 'Choose your own password: the old default, changeit, is no longer accepted';
+  return null;
 }
 
 async function exportCA() {
   const fmt = document.getElementById('caExportFormat').value;
   const part = document.getElementById('caExportPart').value;
   const password = document.getElementById('caExportPassword').value;
+  const pwError = exportPasswordProblem(password, fmt === 'pkcs12' && part === 'both');
+  if (pwError) { toast(pwError, 'error'); document.getElementById('caExportPassword').focus(); return; }
   await saveExport('/api/export/ca/' + currentCAId, { format: fmt, part, password: password || undefined });
 }
 
@@ -732,7 +773,8 @@ function updateCaPasswordVisibility() {
   document.getElementById('caExportPassword').style.display = show ? '' : 'none';
   document.getElementById('caExportPasswordNote').style.display = show ? '' : 'none';
   if (!show) document.getElementById('caExportPassword').value = '';
-  else if (!document.getElementById('caExportPassword').value) document.getElementById('caExportPassword').value = 'changeit';
+  // PKCS12 needs a password; for PEM it's optional and encrypts the key.
+  document.getElementById('caExportPasswordNote').textContent = fmt === 'pkcs12' ? 'required' : 'optional: encrypts the key';
 }
 
 function filenameFromDisposition(header) {
@@ -774,7 +816,10 @@ async function saveExport(url, body) {
 }
 
 async function revokeCert(certId) {
-  if (!confirm('Revoke this certificate?')) return;
+  const worker = currentCA && currentCA.cloudflare && currentCA.cloudflare.deployed;
+  if (!confirm(worker
+    ? 'Revoke this certificate?\n\nThe updated CRL is then published to this CA\'s Cloudflare Worker.'
+    : 'Revoke this certificate?')) return;
   let result;
   try {
     result = await (await api('/api/certs/' + certId + '/revoke', { method: 'POST' })).json();
@@ -783,8 +828,11 @@ async function revokeCert(certId) {
     return;
   }
   selectCA(currentCAId);
-  // Served CRLs are republished by the server; anything else needs a CRL imported by hand.
-  if (!result.download_crl) {
+  // Served and Worker CRLs are republished by the app; anything else needs a CRL imported by hand.
+  if (result.cloudflare && !result.cloudflare.pushed) {
+    toast('Certificate revoked, but the Cloudflare push failed: ' + (result.cloudflare.error || 'unknown error'), 'error');
+    if (result.download_crl && confirm(result.note + '\n\nDownload the updated CRL now?')) await exportCRL();
+  } else if (!result.download_crl) {
     toast('Certificate revoked. ' + result.note);
   } else if (confirm('Certificate revoked. ' + result.note + '\n\nDownload the updated CRL now?')) {
     await exportCRL();
@@ -804,30 +852,45 @@ function servedCrlBadge(nextUpdate) {
 async function viewCRL(caId) {
   const id = typeof caId === 'number' ? caId : currentCAId;
   if (!id) return;
-  let c;
   try {
-    c = await (await api('/api/ca/' + id + '/crl/view')).json();
+    renderCrlView(await (await api('/api/ca/' + id + '/crl/view')).json());
   } catch (e) {
     toast(e.message, 'error');
-    return;
   }
+}
+
+async function viewLiveCloudflareCrl() {
+  try {
+    renderCrlView(await (await api('/api/ca/' + currentCAId + '/cloudflare/crl/view')).json());
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function renderCrlView(c) {
   const crl = c.crl;
-  document.getElementById('crlViewEyebrow').textContent = crl ? 'Published CRL' : 'Revocations (not published here)';
+  const live = c.source === 'cloudflare';
+  document.getElementById('crlViewEyebrow').textContent = live
+    ? 'Live CRL from Cloudflare' : crl ? 'Published CRL' : 'Revocations (not published here)';
   document.getElementById('crlViewTitle').textContent = c.ca_name;
   const general = crl ? [
     ['Issuer', escapeHtml(crl.issuer.map(a => a.value).join(', '))],
     ['This update', escapeHtml(formatDateTime(crl.last_update))],
     ['Next update', servedCrlBadge(crl.next_update)],
     ['Signature', escapeHtml(crl.signature_algorithm)],
-    ['Served at', '<span class="mono">' + escapeHtml(window.location.origin + c.published_path) + '</span>'],
+    ['Served at', live
+      ? '<a class="mono" href="' + escapeHtml(c.public_url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(c.public_url) + '</a>'
+        + ' <span class="dim">(downloads the raw .crl)</span>'
+      : '<span class="mono">' + escapeHtml(window.location.origin + c.published_path) + '</span>'],
   ] : [
     ['Published', '<span class="dim">No. None of this CA\'s certificates use this server as their distribution point, ' +
       'so clients get revocations from a CRL you export and import.</span>'],
     ['Last export', crlStatusBadge(c.exported_next_update)],
   ];
   if (c.out_of_date) {
-    general.push(['Status', '<span class="badge badge-expired">Out of date</span> ' +
-      '<span class="dim">Revocations since this CRL was signed publish once the database is unlocked.</span>']);
+    general.push(['Status', '<span class="badge badge-expired">Out of date</span> ' + (live
+      ? '<span class="dim">The Worker doesn\'t list every revocation yet. Push now on the CA page, or wait a minute if you just pushed.</span>'
+      : '<span class="dim">Revocations since this CRL was signed publish once the database is unlocked.</span>')]);
   }
   const entries = c.entries.length
     ? c.entries.map(e => '<div class="crl-entry"><span class="mono">' + escapeHtml(e.serial) + '</span>' +
@@ -893,7 +956,8 @@ function updateCertPasswordVisibility() {
   const showPw = part === 'both' && fmt !== 'der' && fmt !== 'crt';
   document.getElementById('pfxPasswordRow').style.display = showPw ? '' : 'none';
   if (!showPw) document.getElementById('certExportPassword').value = '';
-  else if (!document.getElementById('certExportPassword').value) document.getElementById('certExportPassword').value = 'changeit';
+  document.getElementById('certExportPasswordNote').textContent = fmt === 'pkcs12'
+    ? '(required: protects the key, needed to import it)' : '(optional: encrypts the key)';
   const showChain = (part === 'both' || part === 'chain') && fmt !== 'der' && fmt !== 'crt';
   document.getElementById('chainRow').style.display = showChain ? '' : 'none';
   if (!showChain) document.getElementById('certExportChain').checked = false;
@@ -976,6 +1040,7 @@ function caChain(caId) {
 
 function importWindows(cert, root, intermediates, files, withTrust) {
   const machine = MACHINE_TEMPLATES.has(cert.template);
+  const placeholder = Boolean(files.crl);
   const store = machine ? 'LocalMachine' : 'CurrentUser';
   if (!withTrust) intermediates = [];
   const steps = withTrust ? [{ label: 'Trust the root CA (once per machine)',
@@ -987,12 +1052,21 @@ function importWindows(cert, root, intermediates, files, withTrust) {
   steps.push({ label: 'Certificate and key',
     code: '$pw = Read-Host -AsSecureString ' + psQuote('PFX password') + '\n' +
       'Import-PfxCertificate -FilePath ' + winPath(files.pfx) + ' -CertStoreLocation Cert:\\' + store + '\\My -Password $pw' });
+  if (placeholder) {
+    steps.push({ label: 'Revocation list (endpoint-hosted CRL; the .zip also answers its address locally)',
+      code: 'certutil -addstore CA ' + winPath(files.crl) });
+  }
   if (cert.template === 'code-signing') {
     steps.push({ label: 'On machines that run the signed code',
       code: 'Import-Certificate -FilePath ' + winPath(files.der) + ' -CertStoreLocation Cert:\\LocalMachine\\TrustedPublisher' });
   }
+  const admin = machine || withTrust || placeholder || cert.template === 'code-signing';
   return {
-    where: (machine || withTrust || cert.template === 'code-signing' ? 'PowerShell as Administrator · ' : 'PowerShell · ') +
+    admin: admin
+      ? 'Run PowerShell as Administrator: Start, type PowerShell, right-click it, Run as administrator. ' +
+        'Without it, importing into the Local Machine stores fails with "Access is denied".'
+      : 'Run PowerShell normally, not as administrator: the certificate goes into your own user store.',
+    where: (admin ? 'PowerShell as Administrator · ' : 'PowerShell · ') +
       (withTrust ? 'root → Trusted Root Certification Authorities' +
         (intermediates.length ? ', intermediate → Intermediate Certification Authorities' : '') + ', ' : '') +
       'certificate → ' + (machine ? 'Local Computer' : 'Current User') + ' › Personal' +
@@ -1017,6 +1091,7 @@ function importMac(cert, root, intermediates, files, withTrust) {
     code: (machine ? 'sudo ' : '') + 'security import ' + nixPath(files.pfx) + ' -k ' + keychain +
       (cert.template === 'code-signing' ? ' -T /usr/bin/codesign' : '') });
   return {
+    admin: withTrust || machine ? 'The commands use sudo, so Terminal asks for your Mac password.' : '',
     where: 'Terminal · ' + (withTrust ? 'CAs → System keychain, ' : '') + 'certificate → ' + (machine ? 'System keychain' : 'your login keychain'),
     steps,
     hint: 'Export ' + (withTrust ? 'each CA as DER (Certificate Only) and ' : '') + 'this certificate as PKCS12 (.pfx) first.',
@@ -1048,7 +1123,8 @@ function importLinux(cert, root, files, withTrust) {
     hint = 'Export ' + rootHint + 'this certificate as PKCS12 (.pfx). Firefox: Settings › Certificates › Import.';
   }
   const where = [withTrust && 'root → the system CA bundle', MACHINE_TEMPLATES.has(cert.template) && 'certificate → /etc/ssl'].filter(Boolean);
-  return { where: 'Shell' + (where.length ? ' · ' + where.join(', ') : ''), steps, hint };
+  return { where: 'Shell' + (where.length ? ' · ' + where.join(', ') : ''), steps, hint,
+    admin: steps.some(s => s.code.includes('sudo ')) ? 'The commands use sudo, so the shell asks for your password.' : '' };
 }
 
 function importHelp(cert, os, withTrust) {
@@ -1064,6 +1140,8 @@ function importHelp(cert, os, withTrust) {
     key: exportFileName(cert.common_name + '-private_key.pem'),
     caDer: (ca) => exportFileName('ca-' + safeName(ca.name) + '-certificate.der'),
     caPem: (ca) => exportFileName('ca-' + safeName(ca.name) + '-certificate.pem'),
+    // What Export CRL names the issuing CA's CRL, for a certificate with a placeholder address.
+    crl: cert.crl_dp && cert.crl_dp.kind === 'placeholder' ? safeName(chain[0].name) + '.crl' : null,
   };
   const help = os === 'windows' ? importWindows(cert, root, intermediates, files, withTrust)
     : os === 'macos' ? importMac(cert, root, intermediates, files, withTrust)
@@ -1080,6 +1158,7 @@ function importHelp(cert, os, withTrust) {
   }));
   const linuxServer = os === 'linux' && MACHINE_TEMPLATES.has(cert.template);
   help.files = { cas: caFiles,
+    crl: files.crl ? { caId: chain[0].id, name: chain[0].name, file: files.crl, url: cert.crl_dp.url } : null,
     cert: { file: linuxServer ? files.fullchain + ' + ' + files.key : files.pfx,
       how: linuxServer ? 'Export twice: Full Chain (cert + CA), then Private Key Only, both PEM.'
         : 'Export as PKCS12 (.pfx), Certificate + Key' + (cert.template === 'code-signing' && os === 'windows' ? '; and once more as DER, Certificate Only.' : '.') } };
@@ -1090,6 +1169,24 @@ function importHelp(cert, os, withTrust) {
 
 function renderImportHelp() {
   const cert = certIndex.get(importState.certId);
+  const exporting = importState.os === 'export';
+  // A revoked certificate can still be exported, but there's nothing to install.
+  document.querySelectorAll('#importPop .os-tabs button').forEach((b) => {
+    b.hidden = Boolean(cert && cert.revoked) && b.dataset.arg !== 'export';
+    b.setAttribute('aria-selected', String(b.dataset.arg === importState.os));
+  });
+  document.getElementById('importPopExport').classList.toggle('hidden', !exporting);
+  ['importPopAsk', 'importPopWhere', 'importPopSteps'].forEach((id) => {
+    document.getElementById(id).classList.toggle('hidden', exporting);
+  });
+  if (exporting) {
+    document.getElementById('importPopTitle').textContent = 'Export ' + (cert ? exportFileName(cert.common_name) : '');
+    document.getElementById('importPopAdmin').classList.add('hidden');
+    document.getElementById('importPopHint').textContent = '';
+    importState.steps = [];
+    positionImportHelp();
+    return;
+  }
   const answered = importState.trusted !== null;
   const help = cert && importHelp(cert, importState.os, importState.trusted === false);
   if (!help) { closeImportHelp(); return; }
@@ -1101,24 +1198,106 @@ function renderImportHelp() {
   // Nothing to copy until the trust question is answered: the steps depend on it.
   document.getElementById('importPopWhere').textContent = answered ? help.where : '';
   document.getElementById('importPopHint').textContent = !answered ? 'Answer the question to see the steps.'
-    : help.steps.length ? 'Get the files above, then run the steps in order.' : help.hint;
-  document.getElementById('importPopCopy').disabled = !answered || !help.steps.length;
+    : help.steps.length ? '' : help.hint;
+  const adminEl = document.getElementById('importPopAdmin');
+  adminEl.textContent = answered ? help.admin || '' : '';
+  adminEl.classList.toggle('hidden', !answered || !help.admin);
+  adminEl.classList.toggle('import-admin-warn', importState.os === 'windows' && /as Administrator/.test(help.admin || ''));
   if (!answered) help.steps = [];
-  document.querySelectorAll('#importPop .os-tabs button').forEach((b) => {
-    b.setAttribute('aria-selected', String(b.dataset.arg === importState.os));
-  });
   const stepsEl = document.getElementById('importPopSteps');
-  const filesEl = answered ? [importFilesBlock(help.files, cert)] : [];
-  stepsEl.replaceChildren(...filesEl, ...help.steps.flatMap((step, i) => {
-    const label = document.createElement('div');
-    label.className = 'step';
-    label.textContent = (i + 1) + ' · ' + step.label;
-    const pre = document.createElement('pre');
-    pre.textContent = step.code;
-    return [label, pre];
-  }));
+  const blocks = answered ? [importBundleBlock(cert, help), importFilesBlock(help.files, cert)] : [];
+  if (help.steps.length) blocks.push(importCommandsBlock(help.steps));
+  stepsEl.replaceChildren(...blocks);
   importState.steps = help.steps;
   positionImportHelp();
+}
+
+// Every step in one block, each headed by a comment, with a Copy code button on it.
+function importCommandsText(steps) {
+  return steps.map((s, i) => '# ' + (i + 1) + '. ' + s.label + '\n' + s.code).join('\n\n') + '\n';
+}
+
+function importCommandsBlock(steps) {
+  const wrap = document.createElement('div');
+  const label = document.createElement('div');
+  label.className = 'step';
+  label.textContent = 'Then · run these commands, in order';
+  const box = document.createElement('div');
+  box.className = 'code-box';
+  const pre = document.createElement('pre');
+  pre.textContent = importCommandsText(steps);
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'btn btn-ghost btn-sm code-copy';
+  copy.id = 'importPopCopy';
+  copy.dataset.action = 'copyImportCommands';
+  copy.textContent = 'Copy code';
+  box.append(copy, pre);
+  wrap.append(label, box);
+  return wrap;
+}
+
+// Option: everything in one .zip with an install script that runs from the extracted folder.
+function importBundleBlock(cert, help) {
+  const block = document.createElement('div');
+  block.className = 'import-bundle';
+  const os = importState.os;
+  const withCa = importState.trusted === false;
+  const linuxServer = os === 'linux' && MACHINE_TEMPLATES.has(cert.template);
+  const label = document.createElement('div');
+  label.className = 'step';
+  label.textContent = 'Option · everything in one .zip';
+  const what = document.createElement('p');
+  const run = document.createElement('code');
+  run.textContent = os === 'windows' ? 'install.cmd' : 'sh install.sh';
+  const contents = (withCa ? 'The CA certificate' + (help.files.cas.length > 1 ? 's' : '') + ', this certificate' : 'This certificate') +
+    (linuxServer ? ' (full chain and key)' : ' (.pfx with its key)') + ' and a script to install ' + (withCa ? 'them' : 'it') + '. ';
+  what.append(...(os === 'windows'
+    ? [contents + 'Extract it and double-click ', run, '. It asks for administrator rights when it needs them, shows each ' +
+       'command, explains any failure and waits before closing; uninstall.cmd undoes it. Don\'t run the .ps1 files directly: ' +
+       'Windows blocks unsigned scripts ("running scripts is disabled"), which the .cmd files get around for that one run.']
+    : [contents + 'Extract it, then run ', run, ' from anywhere. It shows each command and stops with an explanation if one fails.']));
+  const row = document.createElement('div');
+  row.className = 'import-bundle-row';
+  if (!linuxServer) {
+    const pw = document.createElement('input');
+    pw.type = 'password';
+    pw.id = 'importBundlePassword';
+    pw.autocomplete = 'new-password';
+    pw.placeholder = 'PFX password';
+    pw.setAttribute('aria-label', 'PFX password for the bundle');
+    pw.title = 'Protects the .pfx in the zip; the install script asks for it.';
+    row.append(pw);
+  }
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn btn-primary btn-sm';
+  btn.dataset.action = 'downloadImportBundle';
+  btn.dataset.arg = String(cert.id);
+  btn.textContent = 'Download .zip';
+  row.append(btn);
+  block.append(label, what);
+  if (help.files.crl) {
+    const extra = document.createElement('p');
+    extra.textContent = os === 'windows'
+      ? 'Endpoint-hosted CRL, for demos and testing only: the zip also makes this machine answer ' + help.files.crl.url +
+        ' itself (a local CRL server), for programs that download the CRL. The commands below only import it. ' +
+        'After every revocation, run a new zip on each machine. Undo everything with uninstall.cmd; README.txt explains both.'
+      : 'Endpoint-hosted CRL, for demos and testing only: the zip includes the CRL. The local CRL server is Windows-only for now.';
+    block.append(extra);
+  }
+  block.append(row);
+  return block;
+}
+
+async function downloadImportBundle(certId) {
+  if (!importState) return;
+  const pw = document.getElementById('importBundlePassword');
+  const pwError = pw && exportPasswordProblem(pw.value, true);
+  if (pwError) { toast(pwError, 'error'); pw.focus(); return; }
+  await saveExport('/api/export/cert/' + certId + '/bundle', {
+    os: importState.os, include_ca: importState.trusted === false, password: pw ? pw.value : '',
+  });
 }
 
 function importFileRow(title, file, how, button) {
@@ -1141,7 +1320,7 @@ function importFilesBlock(files, cert) {
   block.className = 'import-files';
   const label = document.createElement('div');
   label.className = 'step';
-  label.textContent = 'First · get the files (into Downloads)';
+  label.textContent = 'Or · get the files one by one (into Downloads)';
   block.append(label);
   for (const ca of files.cas) {
     const btn = document.createElement('button');
@@ -1151,6 +1330,16 @@ function importFilesBlock(files, cert) {
     btn.dataset.arg = String(ca.caId);
     btn.textContent = 'Download';
     block.append(importFileRow(ca.role + ' · ' + ca.name, ca.file, ca.how, btn));
+  }
+  if (files.crl) {
+    const crlBtn = document.createElement('button');
+    crlBtn.type = 'button';
+    crlBtn.className = 'btn btn-ghost btn-sm';
+    crlBtn.dataset.action = 'downloadImportCRL';
+    crlBtn.dataset.arg = String(files.crl.caId);
+    crlBtn.textContent = 'Download';
+    block.append(importFileRow('Revocation list · ' + files.crl.name, files.crl.file,
+      'Nothing answers this certificate\'s CRL address (' + files.crl.url + '); import this copy instead.', crlBtn));
   }
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -1162,15 +1351,23 @@ function importFilesBlock(files, cert) {
   return block;
 }
 
+async function downloadImportCRL(caId) {
+  if (!importState) return;
+  try {
+    await handleExportResponse(await api('/api/ca/' + caId + '/crl'));
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
 async function downloadImportCA(caId) {
   if (!importState) return;
   const format = importState.os === 'linux' ? 'pem' : 'der';
   await saveExport('/api/export/ca/' + caId, { format, part: 'public' });
 }
 
-function exportFromImport(certId) {
-  closeImportHelp();
-  showExportCert(certId);
+function exportFromImport() {
+  setImportOs('export');
 }
 
 function positionImportHelp() {
@@ -1189,8 +1386,16 @@ function toggleImportHelp(certId, el) {
   const wasOpen = importState && importState.certId === certId;
   closeImportHelp();
   if (wasOpen) return;
+  openImportHelp(certId, el, null);
+}
+
+function openImportHelp(certId, el, tab) {
+  closeImportHelp();
+  const cert = certIndex.get(certId);
   // The trust question is asked every time: the answer depends on the machine.
-  importState = { certId, os: lastImportOs || defaultImportOs(), anchor: el, trusted: null };
+  const os = tab || (cert && cert.revoked ? 'export' : lastImportOs || defaultImportOs());
+  importState = { certId, os, anchor: el, trusted: null };
+  resetCertExportForm();
   el.setAttribute('aria-expanded', 'true');
   document.getElementById('importPop').classList.remove('hidden');
   renderImportHelp();
@@ -1200,7 +1405,7 @@ function closeImportHelp() {
   if (!importState) return;
   importState.anchor.setAttribute('aria-expanded', 'false');
   document.getElementById('importPop').classList.add('hidden');
-  lastImportOs = importState.os;
+  if (importState.os !== 'export') lastImportOs = importState.os;  // the next panel opens on this system
   importState = null;
 }
 
@@ -1219,7 +1424,7 @@ function setImportOs(os) {
 
 async function copyImportCommands() {
   if (!importState || !importState.steps.length) return;
-  const text = importState.steps.map(s => '# ' + s.label + '\n' + s.code).join('\n\n') + '\n';
+  const text = importCommandsText(importState.steps);
   try {
     await navigator.clipboard.writeText(text);
     toast('Import commands copied');
@@ -1252,6 +1457,31 @@ function showGuideTab(tabId, btn) {
 function showGuide() {
   showGuideTab('guide-general', document.querySelector('.guide-tab'));
   showModal('guideModal');
+}
+
+// The Quick Start guide opens by itself once when there are no authorities yet,
+// after any first-run dialog (sign-in prompt, recovery key) has been dealt with.
+let quickStartPending = false;
+
+function showQuickStartIfPending() {
+  if (!quickStartPending) return;
+  quickStartPending = false;
+  showGuide();
+}
+
+function popOutGuide(kind) {
+  const modal = kind === 'ssh' ? 'sshGuideModal' : 'guideModal';
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.open_guide) {
+    window.pywebview.api.open_guide(kind);
+  } else {
+    const win = window.open('/guide/' + kind, 'cert-generator-guide-' + kind, 'width=960,height=760');
+    if (!win) {
+      toast('Allow pop-ups for this site to open the guide in its own window', 'error');
+      return;
+    }
+    win.opener = null;  // the guide never needs a handle back to the app window
+  }
+  hideModal(modal);
 }
 
 function openExternalLink(_arg, el, event) {
@@ -1530,14 +1760,22 @@ function showSSHGuideTab(tabId, btn) {
   btn.classList.add('active');
 }
 
+let encryptionStatus = null;
+
 async function checkEncryptionStatus() {
   try {
     const res = await api('/api/settings/encryption');
     const status = await res.json();
+    encryptionStatus = status;
 
     if (status.enabled && !status.unlocked) {
+      const usernameEl = document.getElementById('unlockUsername');
+      usernameEl.classList.toggle('hidden', !status.username_required);
+      document.getElementById('unlockSubtitle').textContent = status.username_required
+        ? 'Sign in to decrypt your private keys'
+        : 'Enter your master password to decrypt private keys';
       document.getElementById('unlockOverlay').classList.remove('hidden');
-      document.getElementById('unlockPassword').focus();
+      (status.username_required ? usernameEl : document.getElementById('unlockPassword')).focus();
       return false;
     }
 
@@ -1553,19 +1791,24 @@ async function checkEncryptionStatus() {
 }
 
 async function doUnlock() {
+  const usernameEl = document.getElementById('unlockUsername');
+  const needsUsername = !usernameEl.classList.contains('hidden');
+  const username = usernameEl.value.trim();
   const pw = document.getElementById('unlockPassword').value;
+  if (needsUsername && !username) { document.getElementById('unlockError').textContent = 'Enter your username'; return; }
   if (!pw) { document.getElementById('unlockError').textContent = 'Enter your password'; return; }
   document.getElementById('unlockError').textContent = '';
   try {
     await api('/api/settings/encryption/unlock', {
       method: 'POST',
-      body: JSON.stringify({ password: pw }),
+      body: JSON.stringify({ username, password: pw }),
     });
     document.getElementById('unlockOverlay').classList.add('hidden');
     document.getElementById('unlockPassword').value = '';
-    loadCAs();
     loadSSHKeys();
     checkEncryptionStatus();
+    if (await loadCAs() === 0) quickStartPending = true;
+    showQuickStartIfPending();
   } catch (e) {
     document.getElementById('unlockError').textContent = e.message;
     document.getElementById('unlockPassword').value = '';
@@ -1574,12 +1817,13 @@ async function doUnlock() {
 }
 
 function showUnlockRecovery(useRecovery) {
+  const needsUsername = !document.getElementById('unlockUsername').classList.contains('hidden');
   document.getElementById('unlockByPassword').classList.toggle('hidden', !!useRecovery);
   document.getElementById('unlockByRecovery').classList.toggle('hidden', !useRecovery);
   document.getElementById('unlockSubtitle').textContent = useRecovery
     ? 'Enter your recovery key and choose a new master password'
-    : 'Enter your master password to decrypt private keys';
-  document.getElementById(useRecovery ? 'recoverKey' : 'unlockPassword').focus();
+    : needsUsername ? 'Sign in to decrypt your private keys' : 'Enter your master password to decrypt private keys';
+  document.getElementById(useRecovery ? 'recoverKey' : needsUsername ? 'unlockUsername' : 'unlockPassword').focus();
 }
 
 async function doRecover() {
@@ -1600,10 +1844,12 @@ async function doRecover() {
     ['recoverKey', 'recoverPassword', 'recoverConfirm'].forEach((id) => { document.getElementById(id).value = ''; });
     showUnlockRecovery(0);
     document.getElementById('unlockOverlay').classList.add('hidden');
-    loadCAs();
     loadSSHKeys();
+    if (await loadCAs() === 0) quickStartPending = true;
     showRecoveryKey(data.recovery_key,
-      'Your master password was reset and the database is unlocked. The recovery key you used no longer works; this one replaces it.');
+      'Your master password was reset and the database is unlocked. '
+      + (data.username ? 'Your username is ' + data.username + '. ' : '')
+      + 'The recovery key you used no longer works; this one replaces it.');
   } catch (e) {
     errorEl.textContent = e.message;
   }
@@ -1629,6 +1875,7 @@ function updateRecoveryKeyDone() {
 function closeRecoveryKey() {
   document.getElementById('recoveryKeyValue').textContent = '';
   hideModal('recoveryKeyModal');
+  showQuickStartIfPending();
 }
 
 async function copyRecoveryKey() {
@@ -1692,9 +1939,13 @@ async function showEncryptionSettings() {
         : 'No recovery key yet. Without one, a forgotten password means your private keys are lost.';
       document.getElementById('recoveryKeyPasswordRow').classList.toggle('hidden', !status.recovery_key);
       document.getElementById('recoveryKeyButton').textContent = status.recovery_key ? 'Replace recovery key' : 'Create recovery key';
+      document.getElementById('encUsernameNote').classList.toggle('hidden', !status.username);
+      document.getElementById('encUsernameValue').textContent = status.username || '';
     } else {
       document.getElementById('encryptionOff').classList.remove('hidden');
       document.getElementById('encryptionOn').classList.add('hidden');
+      const usernameEl = document.getElementById('encEnableUsername');
+      if (usernameEl) usernameEl.value = '';
       document.getElementById('encEnablePassword').value = '';
       document.getElementById('encEnableConfirm').value = '';
     }
@@ -1704,26 +1955,62 @@ async function showEncryptionSettings() {
   }
 }
 
-async function doEnableEncryption() {
-  const pw = document.getElementById('encEnablePassword').value;
-  const confirmPw = document.getElementById('encEnableConfirm').value;
-  if (!pw) { toast('Password is required', 'error'); return; }
-  if (pw !== confirmPw) { toast('Passwords do not match', 'error'); return; }
-  if (pw.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
+async function enableEncryption(username, pw, confirmPw) {
+  if (!pw) { toast('Password is required', 'error'); return false; }
+  if (pw !== confirmPw) { toast('Passwords do not match', 'error'); return false; }
+  if (pw.length < 8) { toast('Password must be at least 8 characters', 'error'); return false; }
   try {
     const res = await api('/api/settings/encryption/enable', {
       method: 'POST',
-      body: JSON.stringify({ password: pw, confirm: confirmPw }),
+      body: JSON.stringify({ username, password: pw, confirm: confirmPw }),
     });
     const data = await res.json();
-    hideModal('encryptionModal');
     document.getElementById('encryptionBanner').classList.add('hidden');
     toast('Encryption enabled — private keys are now encrypted at rest');
-    showRecoveryKey(data.recovery_key,
-      'Encryption is on. If you forget your master password, this key unlocks the database and lets you set a new one.');
+    showRecoveryKey(data.recovery_key, username
+      ? 'Sign-in is on: the app asks for ' + username + ' and your password at every start. '
+        + 'If you forget the password, this key resets it on the sign-in screen.'
+      : 'Encryption is on. If you forget your master password, this key unlocks the database and lets you set a new one.');
+    return true;
   } catch (e) {
     toast(e.message, 'error');
+    return false;
   }
+}
+
+async function doEnableEncryption() {
+  const usernameEl = document.getElementById('encEnableUsername');
+  const ok = await enableEncryption(usernameEl ? usernameEl.value.trim() : '',
+    document.getElementById('encEnablePassword').value, document.getElementById('encEnableConfirm').value);
+  if (ok) hideModal('encryptionModal');
+}
+
+// ── Desktop first run: offer a sign-in ──────────────────────────────
+
+function offerProtect() {
+  ['protectUsername', 'protectPassword', 'protectConfirm'].forEach((id) => { document.getElementById(id).value = ''; });
+  document.getElementById('protectDontAsk').checked = false;
+  showModal('protectModal');
+  document.getElementById('protectUsername').focus();
+}
+
+async function doProtect() {
+  const username = document.getElementById('protectUsername').value.trim();
+  if (!username) { toast('Choose a username', 'error'); return; }
+  const ok = await enableEncryption(username,
+    document.getElementById('protectPassword').value, document.getElementById('protectConfirm').value);
+  if (!ok) return;
+  ['protectPassword', 'protectConfirm'].forEach((id) => { document.getElementById(id).value = ''; });
+  hideModal('protectModal');
+}
+
+async function skipProtect() {
+  hideModal('protectModal');
+  if (document.getElementById('protectDontAsk').checked) {
+    document.getElementById('encryptionBanner').classList.add('hidden');
+    try { await api('/api/settings/encryption/dismiss', { method: 'POST' }); } catch (e) {}
+  }
+  showQuickStartIfPending();
 }
 
 async function doDisableEncryption() {
@@ -1977,23 +2264,406 @@ async function deleteLegacyExports() {
 }
 
 async function initApp() {
+  restoreCardStates();
   updateThemeSwitcherUI(document.documentElement.dataset.theme || 'oled');
   updateAccentUI();
   const ready = await checkEncryptionStatus();
   if (ready) {
-    loadCAs();
     loadSSHKeys();
+    if (await loadCAs() === 0) quickStartPending = true;
+    const status = encryptionStatus;
+    if (!SERVER_MODE && status && !status.enabled && !status.dismissed) offerProtect();
+    else showQuickStartIfPending();
   }
   checkLegacyExports();
 }
 
+
+// ── Cloudflare CRL Workers (server mode) ────────────────────────────
+let cloudflareConnection = null;  // /api/cloudflare, cached while the page is open
+
+async function loadCloudflareConnection(force) {
+  if (!SERVER_MODE) return null;
+  if (cloudflareConnection && !force) return cloudflareConnection;
+  try {
+    cloudflareConnection = await (await api('/api/cloudflare')).json();
+  } catch (e) {
+    cloudflareConnection = null;
+  }
+  return cloudflareConnection;
+}
+
+function cfButton(action, label, kind) {
+  return '<button class="btn btn-' + (kind || 'ghost') + ' btn-sm" data-action="' + action + '">' + label + '</button>';
+}
+
+// Cards with a fold-away title (.collapsible-card, data-card="<key>"; body id "<key>Panel").
+// Whether each is open is remembered in this browser only.
+function cardOpen(key) {
+  try { return localStorage.getItem('card:' + key) !== 'collapsed'; } catch (e) { return true; }
+}
+
+function applyCardState(key, open) {
+  const card = document.querySelector('.collapsible-card[data-card="' + key + '"]');
+  if (!card) return;
+  document.getElementById(key + 'Panel').hidden = !open;
+  card.classList.toggle('collapsed', !open);
+  card.querySelector('.section-chevron').classList.toggle('open', open);
+  card.querySelector('.card-toggle').setAttribute('aria-expanded', String(open));
+}
+
+function toggleCard(key) {
+  const open = document.getElementById(key + 'Panel').hidden;
+  try { localStorage.setItem('card:' + key, open ? 'open' : 'collapsed'); } catch (e) { /* not remembered */ }
+  applyCardState(key, open);
+}
+
+function restoreCardStates() {
+  document.querySelectorAll('.collapsible-card').forEach((card) => applyCardState(card.dataset.card, cardOpen(card.dataset.card)));
+}
+
+async function renderCloudflarePanel(ca) {
+  const panel = document.getElementById('cloudflarePanel');
+  if (!panel) return;
+  const w = ca.cloudflare || { deployed: false };
+  // Shown next to the title, so a folded card still says where things stand.
+  document.getElementById('cfCardSummary').textContent = !w.deployed ? 'not deployed'
+    : w.push_error ? 'last push failed' : w.exists === false ? 'missing in Cloudflare' : 'published';
+  const conn = await loadCloudflareConnection();
+  if (currentCAId !== ca.id) return;  // another CA opened meanwhile
+  if (!w.deployed) {
+    const connected = conn && conn.connected;
+    panel.innerHTML = '<p class="dim">Publish this CA\'s CRL from its own Cloudflare Worker, so clients anywhere can ' +
+      'check revocation without reaching this server.</p><div class="cf-actions">' +
+      (connected ? cfButton('showCloudflareDeploy', 'Deploy Worker', 'primary')
+                 : cfButton('showCloudflareSettings', 'Set up Cloudflare', 'primary')) + '</div>';
+    return;
+  }
+  const rows = [
+    ['Address in certificates', '<span class="mono">' + escapeHtml(w.dp_url) + '</span> ' +
+      '<button class="btn btn-ghost btn-sm" data-action="copyCloudflareUrl">Copy</button>'],
+    ['Worker', '<span class="mono">' + escapeHtml(w.worker) + '</span>' +
+      (w.custom_domain ? ' <span class="dim">on ' + escapeHtml(w.hostname) + '</span>' : '')],
+    ['Last push', w.push_error
+      ? '<span class="badge badge-expired">Failed</span> <span class="dim">' + escapeHtml(w.push_error) +
+        '. Retried every hour.</span>'
+      : '<span class="badge badge-active">Published</span> <span class="dim">' + escapeHtml(formatDateTime(w.pushed_at)) + '</span>'],
+    ['Certificates using it', String(w.certificates)],
+  ];
+  if (w.exists === false) {
+    rows.push(['In Cloudflare', '<span class="badge badge-expired">Not found</span> <span class="dim">The Worker was ' +
+      'deleted outside this app. Tear down to clear it here, then deploy a new one.</span>']);
+  }
+  if (!w.account_matches) {
+    rows.push(['Account', '<span class="badge badge-expired">Not connected</span> <span class="dim">This Worker is in a ' +
+      'different Cloudflare account than the one connected (or none is). Connect that account to manage it.</span>']);
+  }
+  panel.innerHTML = '<dl class="cert-detail">' + rows.map(([k, v]) => '<dt>' + k + '</dt><dd>' + v + '</dd>').join('') +
+    '</dl><div class="cf-actions">' + cfButton('testCloudflareWorker', 'Test', 'primary') +
+    cfButton('refreshCloudflarePanel', 'Refresh') +
+    cfButton('viewLiveCloudflareCrl', 'View live CRL') + cfButton('pushCloudflareWorker', 'Push now') +
+    cfButton('teardownCloudflareWorker', 'Tear down', 'danger') + '</div><div id="cfTestResult" class="cf-test"></div>';
+}
+
+async function copyCloudflareUrl() {
+  try {
+    await navigator.clipboard.writeText(currentCA.cloudflare.dp_url);
+    toast('Address copied');
+  } catch (e) {
+    toast('Copy failed', 'error');
+  }
+}
+
+async function showCloudflareSettings() {
+  const conn = await loadCloudflareConnection(true);
+  if (!conn) { toast('Couldn\'t read the Cloudflare settings', 'error'); return; }
+  document.getElementById('cfNeedsEncryption').classList.toggle('hidden', conn.encryption_enabled);
+  document.getElementById('cfConnected').classList.toggle('hidden', !conn.connected);
+  document.getElementById('cfConnect').classList.toggle('hidden', conn.connected);
+  document.getElementById('cfConnectBtn').disabled = !conn.encryption_enabled;
+  document.getElementById('cfCheckResult').textContent = '';
+  document.getElementById('cfToken').value = '';
+  if (conn.connected) {
+    document.getElementById('cfAccountShown').textContent = conn.account_id;
+    document.getElementById('cfWorkerCount').textContent = conn.workers === 1
+      ? '1 CA has a Worker.' : conn.workers + ' CAs have a Worker.';
+    loadCloudflareWorkers();
+  } else {
+    document.getElementById('cfAccountId').value = conn.account_id || '';
+  }
+  showModal('cloudflareModal');
+}
+
+function openEncryptionFromCloudflare() {
+  hideModal('cloudflareModal');
+  showEncryptionSettings();
+}
+
+async function connectCloudflare() {
+  const accountId = document.getElementById('cfAccountId').value.trim();
+  const tokenEl = document.getElementById('cfToken');
+  if (!accountId || !tokenEl.value.trim()) { toast('Enter the account ID and the API token', 'error'); return; }
+  const btn = document.getElementById('cfConnectBtn');
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  try {
+    const res = await api('/api/cloudflare/connect', {
+      method: 'POST',
+      body: JSON.stringify({ account_id: accountId, token: tokenEl.value.trim() }),
+    });
+    const found = await res.json();
+    tokenEl.value = '';
+    toast(found.workers_subdomain
+      ? 'Cloudflare connected. workers.dev addresses use ' + found.workers_subdomain + '.workers.dev'
+      : 'Cloudflare connected. This account has no workers.dev subdomain yet: use your own domain, or pick one in the Cloudflare dashboard');
+    hideModal('cloudflareModal');
+    await loadCloudflareConnection(true);
+    if (currentCA) renderCloudflarePanel(currentCA);
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Connect';
+  }
+}
+
+async function checkCloudflare() {
+  const out = document.getElementById('cfCheckResult');
+  out.textContent = 'Checking…';
+  try {
+    const found = await (await api('/api/cloudflare/check')).json();
+    out.textContent = 'The token works. workers.dev: ' + (found.workers_subdomain ? found.workers_subdomain + '.workers.dev' : 'none chosen yet') +
+      ' · domains it can read: ' + found.zones + (found.zones ? ' (only needed for a custom domain)' : '') + '.';
+  } catch (e) {
+    out.textContent = e.message;
+  }
+}
+
+async function disconnectCloudflare() {
+  if (!confirm('Disconnect Cloudflare? The stored API token is deleted. Delete the token in the Cloudflare dashboard too.')) return;
+  try {
+    await api('/api/cloudflare/disconnect', { method: 'POST' });
+    toast('Cloudflare disconnected');
+    hideModal('cloudflareModal');
+    await loadCloudflareConnection(true);
+    if (currentCA) renderCloudflarePanel(currentCA);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+let cfZones = [];
+
+async function showCloudflareDeploy() {
+  document.getElementById('cfDeployCaName').textContent = currentCA.name;
+  document.querySelector('input[name="cfDeployWhere"][value="workersdev"]').checked = true;
+  document.getElementById('cfWorkersDevHint').textContent = '(checking…)';
+  updateCfDeployFields();
+  showModal('cfDeployModal');
+  try {
+    const found = await (await api('/api/cloudflare/check')).json();
+    document.getElementById('cfWorkersDevHint').textContent = found.workers_subdomain
+      ? '(…' + found.workers_subdomain + '.workers.dev, free, nothing else to set up)'
+      : '(unavailable: choose a workers.dev subdomain in the Cloudflare dashboard first)';
+    cfZones = found.zones ? await (await api('/api/cloudflare/zones')).json() : [];
+  } catch (e) {
+    document.getElementById('cfWorkersDevHint').textContent = '';
+    toast(e.message, 'error');
+  }
+  const zone = document.getElementById('cfZone');
+  zone.innerHTML = cfZones.length
+    ? cfZones.map(z => '<option value="' + escapeHtml(z.id) + '">' + escapeHtml(z.name) + '</option>').join('')
+    : '<option value="">No domains visible to the token</option>';
+  updateCfDeployFields();
+}
+
+function updateCfDeployFields(_arg, el) {
+  const custom = document.querySelector('input[name="cfDeployWhere"]:checked').value === 'custom';
+  document.getElementById('cfCustomFields').classList.toggle('hidden', !custom);
+  const zone = cfZones.find(z => z.id === document.getElementById('cfZone').value);
+  const host = document.getElementById('cfHostname');
+  if (zone && (el && el.id === 'cfZone' || !host.value)) host.value = 'crl.' + zone.name;
+  document.getElementById('cfDeployBtn').disabled = custom && !zone;
+}
+
+async function deployCloudflareWorker() {
+  const custom = document.querySelector('input[name="cfDeployWhere"]:checked').value === 'custom';
+  const body = custom ? { zone_id: document.getElementById('cfZone').value, hostname: document.getElementById('cfHostname').value.trim() } : {};
+  const btn = document.getElementById('cfDeployBtn');
+  btn.disabled = true;
+  btn.textContent = 'Deploying…';
+  try {
+    await api('/api/ca/' + currentCAId + '/cloudflare/deploy', { method: 'POST', body: JSON.stringify(body) });
+    hideModal('cfDeployModal');
+    toast('Worker deployed. Testing it…');
+    await selectCA(currentCAId);
+    testCloudflareWorker();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Deploy';
+  }
+}
+
+async function testCloudflareWorker() {
+  const out = document.getElementById('cfTestResult');
+  if (!out) return;
+  out.textContent = 'Testing from this server…';
+  let r;
+  try {
+    r = await (await api('/api/ca/' + currentCAId + '/cloudflare/test', { method: 'POST' })).json();
+  } catch (e) {
+    out.textContent = e.message;
+    return;
+  }
+  // One Worker, reached two ways: say which address certificates carry.
+  const line = (res, label) => {
+    const role = res.url === r.dp_url ? 'used in certificates' : res.ok ? 'also works' : 'not usable';
+    return '<div class="cf-test-line"><span class="cf-test-label">' + label + ' · ' + role + '</span>' +
+      '<span class="badge ' + (res.ok ? 'badge-active">Works' : 'badge-expired">Fails') + '</span> ' +
+      '<span class="mono">' + escapeHtml(res.url) + '</span>' +
+      (res.problems.length ? '<div class="dim">' + escapeHtml(res.problems.join('; ')) + '</div>' : '') + '</div>';
+  };
+  out.innerHTML = '<p class="dim">The same Worker, fetched from this server over both address types:</p>' +
+    line(r.results.http, 'Plain HTTP') + line(r.results.https, 'HTTPS') +
+    '<p class="cf-recommend">' + (r.recommended
+      ? 'Recommended address: <span class="mono">' + escapeHtml(r.recommended) + '</span>. '
+      : '') + escapeHtml(r.note) + '</p>';
+  if (currentCA.cloudflare && r.dp_url !== currentCA.cloudflare.dp_url) {
+    currentCA.cloudflare.dp_url = r.dp_url;
+    const keep = out.innerHTML;
+    await renderCloudflarePanel(currentCA);
+    document.getElementById('cfTestResult').innerHTML = keep;
+  }
+}
+
+async function refreshCloudflarePanel() {
+  try {
+    const w = await (await api('/api/ca/' + currentCAId + '/cloudflare?refresh=1')).json();
+    currentCA.cloudflare = w;
+    await renderCloudflarePanel(currentCA);
+    toast(w.exists === false ? 'This CA\'s Worker is no longer in Cloudflare' : 'Worker status refreshed',
+      w.exists === false ? 'error' : 'success');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+// Every Worker this app created in the connected account (Tools › Cloudflare).
+async function loadCloudflareWorkers() {
+  const box = document.getElementById('cfWorkerList');
+  box.innerHTML = '<p class="dim">Loading from Cloudflare…</p>';
+  let inv;
+  try {
+    inv = await (await api('/api/cloudflare/workers')).json();
+  } catch (e) {
+    box.innerHTML = '<p class="dim">' + escapeHtml(e.message) + '</p>';
+    return;
+  }
+  const states = {
+    linked: '<span class="badge badge-active">In use</span>',
+    unlinked: '<span class="badge badge-expired">Unlinked</span>',
+    missing: '<span class="badge badge-expired">Missing in Cloudflare</span>',
+  };
+  const unlinked = inv.workers.filter(w => w.state === 'unlinked');
+  box.innerHTML = inv.workers.length
+    ? '<table class="cf-workers"><thead><tr><th>Worker</th><th>CA</th><th>State</th><th></th></tr></thead><tbody>' +
+      inv.workers.map(w => '<tr><td class="mono">' + escapeHtml(w.name) +
+        (w.hostnames.length ? '<div class="dim">' + escapeHtml(w.hostnames.join(', ')) + '</div>' : '') + '</td>' +
+        '<td>' + (w.ca_name ? escapeHtml(w.ca_name) : '<span class="dim">none here</span>') + '</td>' +
+        '<td>' + states[w.state] + '</td>' +
+        '<td><button class="btn btn-danger btn-sm" data-action="deleteCloudflareWorker" data-arg="' + escapeHtml(w.name) + '">' +
+        (w.state === 'missing' ? 'Forget' : 'Delete') + '</button></td></tr>').join('') +
+      '</tbody></table>' +
+      (unlinked.length ? '<p class="form-hint">Unlinked Workers aren\'t used by any CA here: left over from a deleted CA, ' +
+        'an interrupted setup, a restore, or another install of this app on the same account. Delete them only if no other ' +
+        'install uses them.</p>' : '')
+    : '<p class="dim">This app hasn\'t created any Workers in this account.</p>';
+  document.getElementById('cfDeleteUnlinked').classList.toggle('hidden', unlinked.length === 0);
+  document.getElementById('cfDeleteUnlinked').textContent = 'Delete ' + unlinked.length + ' unlinked';
+}
+
+async function deleteCloudflareWorker(name) {
+  const row = (await (await api('/api/cloudflare/workers')).json()).workers.find(w => w.name === name);
+  if (!row) { loadCloudflareWorkers(); return; }
+  const question = row.ca_name
+    ? 'Delete ' + name + '? It publishes the CRL of ' + row.ca_name + '. Certificates that name its address can no longer be checked for revocation.'
+    : row.state === 'missing'
+      ? 'Forget ' + name + '? It is already gone from Cloudflare; this clears it from ' + row.ca_name + '.'
+      : 'Delete ' + name + ' from Cloudflare? No CA here uses it; make sure no other install of this app does.';
+  if (!confirm(question)) return;
+  try {
+    await api('/api/cloudflare/workers/' + encodeURIComponent(name), { method: 'DELETE' });
+    toast('Deleted ' + name);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+  await loadCloudflareWorkers();
+  await loadCloudflareConnection(true);
+  if (currentCA) selectCA(currentCAId);
+}
+
+async function deleteUnlinkedCloudflareWorkers() {
+  const inv = await (await api('/api/cloudflare/workers')).json();
+  const names = inv.workers.filter(w => w.state === 'unlinked').map(w => w.name);
+  if (!names.length || !confirm('Delete ' + names.length + ' unlinked Workers from Cloudflare?\n\n' + names.join('\n') +
+    '\n\nNo CA here uses them; make sure no other install of this app does.')) return;
+  let failed = 0;
+  for (const name of names) {
+    try {
+      await api('/api/cloudflare/workers/' + encodeURIComponent(name), { method: 'DELETE' });
+    } catch (e) {
+      failed++;
+      toast(name + ': ' + e.message, 'error');
+    }
+  }
+  if (!failed) toast('Deleted ' + names.length + ' unlinked Workers');
+  loadCloudflareWorkers();
+}
+
+async function pushCloudflareWorker() {
+  try {
+    const w = await (await api('/api/ca/' + currentCAId + '/cloudflare/push', { method: 'POST' })).json();
+    if (w.push_error) toast('Push failed: ' + w.push_error, 'error');
+    else toast('CRL published to Cloudflare');
+    await selectCA(currentCAId);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function teardownCloudflareWorker() {
+  const w = currentCA.cloudflare;
+  const warning = w.certificates
+    ? w.certificates + (w.certificates === 1 ? ' certificate names' : ' certificates name') + ' this Worker\'s address. ' +
+      'Clients will no longer be able to check them for revocation, and a new Worker gets a different address.\n\n'
+    : '';
+  if (!confirm('Tear down this CA\'s Cloudflare Worker?\n\n' + warning + 'This deletes the Worker' +
+    (w.custom_domain ? ' and its custom domain' : '') + ' in Cloudflare.')) return;
+  try {
+    const r = await (await api('/api/ca/' + currentCAId + '/cloudflare', { method: 'DELETE' })).json();
+    toast('Worker removed' + (r.affected ? '; ' + r.affected + ' certificates lost their CRL address' : ''));
+    await loadCloudflareConnection(true);
+    await selectCA(currentCAId);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
 
 // ── Event delegation ────────────────────────────────────────────────
 // Markup declares handlers as data-action / data-change / data-enter instead of
 // inline on* attributes, so the Content-Security-Policy can forbid inline script.
 // Handlers receive (data-arg, element, event); numeric args become numbers.
 const UI_ACTIONS = new Set([
+  'deleteCloudflareWorker',
+  'downloadImportBundle',
+  'downloadImportCRL',
+  'toggleCard',
   'deleteLegacyExports',
+  'deleteUnlinkedCloudflareWorkers',
+  'loadCloudflareWorkers',
+  'refreshCloudflarePanel',
   'cancelMFASetup',
   'cancelReauth',
   'closeRecoveryKey',
@@ -2012,7 +2682,23 @@ const UI_ACTIONS = new Set([
   'deleteSSHKey',
   'downloadImportCA',
   'downloadRecoveryKey',
+  'checkCloudflare',
+  'connectCloudflare',
+  'copyCloudflareUrl',
+  'deployCloudflareWorker',
+  'disconnectCloudflare',
   'dismissEncryptionBanner',
+  'openEncryptionFromCloudflare',
+  'pushCloudflareWorker',
+  'showCloudflareDeploy',
+  'showCloudflareSettings',
+  'teardownCloudflareWorker',
+  'testCloudflareWorker',
+  'updateCfDeployFields',
+  'viewLiveCloudflareCrl',
+  'doProtect',
+  'popOutGuide',
+  'skipProtect',
   'doChangePassword',
   'doDisableEncryption',
   'doEnableEncryption',

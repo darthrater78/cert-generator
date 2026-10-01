@@ -12,7 +12,7 @@ from flask.sessions import SecureCookieSessionInterface
 from werkzeug.exceptions import HTTPException
 
 from . import __version__, db, state
-from .routes import account, auth, pki, settings, ssh
+from .routes import account, auth, cloudflare, pki, settings, ssh
 from .security import is_cross_site_request
 from .web import auth_limiter
 
@@ -62,7 +62,7 @@ class _SessionInterface(SecureCookieSessionInterface):
 
 app.session_interface = _SessionInterface()
 
-for blueprint in (auth.bp, account.bp, pki.bp, ssh.bp, settings.bp):
+for blueprint in (auth.bp, account.bp, pki.bp, ssh.bp, settings.bp, cloudflare.bp):
     app.register_blueprint(blueprint)
 
 with app.app_context():
@@ -180,6 +180,17 @@ def _auth_check() -> Response | None:
     if request.path.startswith("/api/"):
         return Response("Unauthorized", status=401, content_type="text/plain")
     return redirect("/login")
+
+
+_GUIDES = {"cert": "_guide_cert.html", "ssh": "_guide_ssh.html"}
+
+
+@app.get("/guide/<kind>")
+def guide(kind: str):
+    """A guide on its own page, for the pop-out window."""
+    if kind not in _GUIDES:
+        return Response("Not found", status=404, content_type="text/plain")
+    return render_template("guide.html", guide_template=_GUIDES[kind], server_mode=not state.desktop_mode())
 
 
 @app.get("/")

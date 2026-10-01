@@ -33,13 +33,18 @@ def _download(page: Page, click_selector: str) -> tuple[str, bytes]:
     return download.suggested_filename, Path(download.path()).read_bytes()
 
 
+@pytest.mark.keep_quick_start
 def test_csp_blocks_inline_script(signed_in: Page, live_server):
     response = signed_in.request.get(live_server.url + "/")
     assert "script-src 'self';" in response.headers["content-security-policy"]
-    # Sidebar and delegated handlers work under that policy.
-    signed_in.click("[data-action=showGuide]")
+    # Delegated handlers work under that policy: the auto-opened Quick Start, then the sidebar.
+    expect(signed_in.locator("#guideModal .guide-modal")).to_be_visible()
     signed_in.click("[data-action=showGuideTab][data-arg=guide-crl]")
     expect(signed_in.locator("#guide-crl")).to_be_visible()
+    signed_in.click("#guideModal [data-action=hideModal]")
+    expect(signed_in.locator("#guideModal")).to_be_hidden()
+    signed_in.click("[data-action=showGuide]")
+    expect(signed_in.locator("#guide-general")).to_be_visible()
     signed_in.click("#guideModal [data-action=hideModal]")
     expect(signed_in.locator("#guideModal")).to_be_hidden()
 
@@ -57,6 +62,14 @@ def test_certificate_exports_download(signed_in: Page):
     page.select_option("#caExportPart", "both")
     expect(page.locator("#caExportNote")).to_contain_text("TLS Inspection / CA Move")
     expect(page.locator("#caExportNote")).to_contain_text("Never install it on endpoints")
+    # No default password: the field starts empty, and the old default is refused.
+    expect(page.locator("#caExportPassword")).to_have_value("")
+    page.click("[data-action=exportCA]")
+    _toast(page, "Choose a password")
+    page.fill("#caExportPassword", "changeit")
+    page.click("[data-action=exportCA]")
+    _toast(page, "no longer accepted")
+    page.fill("#caExportPassword", "E2e-ca-pass")
     name, data = _download(page, "[data-action=exportCA]")
     assert name == "ca-e2e.test_Root_CA-certificate.pfx" and len(data) > 500
 
@@ -66,16 +79,20 @@ def test_certificate_exports_download(signed_in: Page):
     page.click("[data-action=issueCert]")
     _toast(page, "issued")
 
-    page.click("#certTableContainer [data-action=showExportCert]")
-    name, data = _download(page, "[data-action=doExportCert]")
+    # Export is a tab of the Export / install panel.
+    page.click("#certTableContainer .import-chip")
+    page.click("#importPop [data-arg=export]")
+    expect(page.locator("#certExportPassword")).to_have_value("")
+    page.fill("#certExportPassword", "E2e-cert-pass")
+    name, data = _download(page, "#importPop [data-action=doExportCert]")
     assert name == "host.e2e.test-certificate.pfx" and len(data) > 500
 
-    page.click("#certTableContainer [data-action=showExportCert]")
     page.select_option("#certExportFormat", "pem")
     page.select_option("#certExportPart", "chain")
-    name, data = _download(page, "[data-action=doExportCert]")
+    name, data = _download(page, "#importPop [data-action=doExportCert]")
     assert name == "host.e2e.test-fullchain.pem" and data.count(b"BEGIN CERTIFICATE") == 2
 
+    page.keyboard.press("Escape")
     # no distribution point on this server: revoking offers the updated CRL for import
     name, _ = _download(page, "#certTableContainer [data-action=revokeCert]")
     assert name.endswith(".crl")
@@ -277,7 +294,9 @@ def test_certificate_viewer(signed_in: Page):
 
     page.click("[data-action=exportFromCertView]")
     expect(modal).to_be_hidden()
-    expect(page.locator("#exportCertModal")).to_be_visible()
+    # the viewer's Export opens the certificate's Export / install panel on its Export file tab
+    expect(page.locator("#importPopExport")).to_be_visible()
+    expect(page.locator("#importPop [data-arg=export]")).to_have_attribute("aria-selected", "true")
 
 
 def test_certificate_viewer_crl_section(signed_in: Page):
@@ -406,13 +425,25 @@ def test_import_help_lists_commands_per_os(signed_in: Page):
     expect(page.locator("#importPopQuestion")).to_have_text(
         "Has import.test Root CA already been imported on this machine?")
     expect(steps).to_be_empty()
-    expect(page.locator("#importPopCopy")).to_be_disabled()
+    expect(page.locator("#importPopCopy")).to_have_count(0)
+    expect(page.locator("#importPopAdmin")).to_be_hidden()
     page.click("#importPop [data-action=setImportTrusted][data-arg=yes]")
     expect(steps).to_contain_text("Cert:\\LocalMachine\\My")
     expect(steps).not_to_contain_text("Cert:\\LocalMachine\\Root")
     expect(page.locator("#importPopCopy")).to_be_enabled()
+    # A web server certificate goes to the Local Machine store: PowerShell must run elevated.
+    expect(page.locator("#importPopAdmin")).to_contain_text("Run PowerShell as Administrator")
     page.click("#importPop [data-action=setImportTrusted][data-arg=no]")
     expect(steps).to_contain_text("Cert:\\LocalMachine\\Root")
+    # Root CA and certificate commands share one block, under one Copy code button.
+    block = steps.locator(".code-box pre")
+    expect(block).to_have_count(1)
+    expect(block).to_contain_text("Cert:\\LocalMachine\\Root")
+    expect(block).to_contain_text("Cert:\\LocalMachine\\My")
+    with page.expect_download() as info:
+        page.fill("#importBundlePassword", "E2e-bundle-pass")
+        steps.locator("[data-action=downloadImportBundle]").click()
+    assert info.value.suggested_filename == "host.import.test-install-windows.zip"
     # The root CA's Download gives exactly the file the commands name.
     expect(steps.locator(".import-file").first).to_contain_text("ca-import.test_Root_CA-certificate.der")
     with page.expect_download() as info:
@@ -434,3 +465,53 @@ def test_import_help_lists_commands_per_os(signed_in: Page):
     expect(steps).to_be_empty()  # asked again: the answer depends on the machine
     page.click(".sidebar h1")
     expect(pop).to_be_hidden()
+
+
+@pytest.mark.keep_quick_start
+def test_quick_start_opens_on_an_empty_database(signed_in, live_server):
+    page = signed_in
+    page.wait_for_selector("#guideModal .guide-modal", state="visible")
+    assert page.is_visible("#guide-general")
+    tabs = page.locator("#guideTabs")
+    assert tabs.evaluate("t => t.scrollWidth <= t.clientWidth")  # tabs wrap, never scroll sideways
+    page.click("#guideModal button[data-arg=guideModal]")
+    page.evaluate("""async () => { await api('/api/ca', {method: 'POST',
+        body: JSON.stringify({domain: 'qs.test', algorithm: 'ecdsa-p256'})}); }""")
+    page.reload()
+    page.wait_for_selector(".ca-item", state="attached")
+    page.wait_for_timeout(500)
+    assert not page.is_visible("#guideModal .guide-modal")
+
+
+def test_endpoint_hosted_certificate_install_panel(signed_in: Page):
+    page = signed_in
+    _create_ca(page, "eh.test")
+    page.evaluate("""async () => {
+      await api('/api/ca/' + currentCAId + '/certs', {method: 'POST', body: JSON.stringify(
+        {common_name: 'eh.host', algorithm: 'ecdsa-p256', template: 'user', crl_dp: 'placeholder'})});
+      const old = await (await api('/api/ca/' + currentCAId + '/certs', {method: 'POST', body: JSON.stringify(
+        {common_name: 'old.eh.host', algorithm: 'ecdsa-p256'})})).json();
+      await api('/api/certs/' + old.id + '/revoke', {method: 'POST'});
+      await selectCA(currentCAId); }""")
+    row = page.locator("#certTableContainer tr", has_text="eh.host").filter(has_not_text="old.eh.host")
+    expect(row).to_contain_text("Endpoint-hosted")
+    row.locator(".import-chip").click()
+    page.click("#importPop [data-arg=windows]")
+    page.click("#importPop [data-action=setImportTrusted][data-arg=yes]")
+    steps = page.locator("#importPopSteps")
+    # importing the CRL needs the Local Machine store, even for a user certificate
+    expect(page.locator("#importPopAdmin")).to_contain_text("Run PowerShell as Administrator")
+    expect(steps.locator(".code-box pre")).to_contain_text("certutil -addstore CA")
+    expect(steps).to_contain_text("for demos and testing only: the zip also makes this machine answer http://pki.eh.test/crl/")
+    with page.expect_download() as info:
+        steps.locator("[data-action=downloadImportCRL]").click()
+    assert info.value.suggested_filename == "eh.test_Root_CA.crl"
+    with page.expect_download() as info:
+        page.fill("#importBundlePassword", "E2e-bundle-pass")
+        steps.locator("[data-action=downloadImportBundle]").click()
+    assert info.value.suggested_filename == "eh.host-install-windows.zip"
+    page.keyboard.press("Escape")
+    # a revoked certificate can still be exported, but has nothing to install
+    page.locator("#certTableContainer tr", has_text="old.eh.host").locator(".import-chip").click()
+    expect(page.locator("#importPopExport")).to_be_visible()
+    expect(page.locator("#importPop [data-arg=windows]")).to_be_hidden()

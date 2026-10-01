@@ -1,6 +1,7 @@
-"""Keeps the CRL that /crl/<id>.crl serves current, for CAs whose certificates name this
-server as their distribution point. Clients cache a CRL until its next update, so the
-served one is short-lived and re-signed on every revocation and before it runs out."""
+"""Keeps a CA's published CRL current: the one /crl/<id>.crl serves, for CAs whose
+certificates name this server as their distribution point, and the one its Cloudflare
+Worker serves (crl_worker). Clients cache a CRL until its next update, so the published
+one is short-lived and re-signed on every revocation and before it runs out."""
 from __future__ import annotations
 
 import logging
@@ -17,9 +18,21 @@ RENEW_CHECK_SECONDS = 3600
 
 
 def publish(ca_id: int) -> str | None:
-    """Sign and serve a fresh CRL for a CA that opted in; its next update, or None for any
-    other CA. Raises db.DatabaseLocked while an encrypted database is locked."""
-    if not db.is_crl_public(ca_id):
+    """Sign a fresh CRL for a CA whose CRL the app publishes, and push it to the CA's
+    Cloudflare Worker if it has one; the CRL's next update, or None for any other CA.
+    Raises db.DatabaseLocked while an encrypted database is locked. A failed push doesn't
+    raise: it is recorded on the CA and retried by the next renewal pass."""
+    next_update = sign(ca_id)
+    if next_update is not None:
+        from . import crl_worker  # imported here: crl_worker imports this module
+
+        crl_worker.push(ca_id)
+    return next_update
+
+
+def sign(ca_id: int) -> str | None:
+    """Sign and store a fresh CRL for a CA whose CRL the app publishes (see publish)."""
+    if not db.is_crl_maintained(ca_id):
         return None
     db.require_unlocked()
     ca = db.get_ca(ca_id)
@@ -45,11 +58,17 @@ def _due(crl_der: bytes | None, now: datetime) -> bool:
 
 
 def renew_due(now: datetime | None = None) -> list[int]:
-    """Re-sign every served CRL that is missing or within RENEW_WHEN_LEFT of its next update."""
+    """Re-sign every published CRL that is missing or within RENEW_WHEN_LEFT of its next
+    update, and retry Cloudflare pushes that failed."""
+    from . import crl_worker
+
     now = now or datetime.now(timezone.utc)
     renewed = []
     for ca_id, crl_der in db.list_public_crls():
         if not _due(crl_der, now):
+            worker = db.get_ca_worker(ca_id)
+            if worker and worker["cf_push_error"]:
+                crl_worker.push(ca_id)
             continue
         try:
             publish(ca_id)

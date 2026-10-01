@@ -113,7 +113,20 @@ _MIGRATIONS = (
     ("certificate_authorities", "crl_der", "BLOB"),
     ("certificate_authorities", "crl_public", "INTEGER NOT NULL DEFAULT 0"),
     ("certificates", "crl_dp_url", "TEXT"),  # '' = none; NULL = not yet read from cert_pem
+    # The CA's Cloudflare CRL Worker (server mode); see app/cloudflare.py
+    ("certificate_authorities", "cf_worker", "TEXT"),        # script name; NULL = no Worker
+    ("certificate_authorities", "cf_account_id", "TEXT"),    # account the Worker lives in
+    ("certificate_authorities", "cf_crl_path", "TEXT"),      # e.g. /my-root-ca.crl
+    ("certificate_authorities", "cf_hostname", "TEXT"),      # custom domain or <script>.<sub>.workers.dev
+    ("certificate_authorities", "cf_domain_id", "TEXT"),     # custom domain id, to detach it
+    ("certificate_authorities", "cf_dp_url", "TEXT"),        # address recommended for certificates
+    ("certificate_authorities", "cf_pushed_sha256", "TEXT"), # the CRL the Worker serves
+    ("certificate_authorities", "cf_pushed_at", "TEXT"),
+    ("certificate_authorities", "cf_push_error", "TEXT"),    # last failed push; NULL = up to date
 )
+
+CF_COLUMNS = ("cf_worker", "cf_account_id", "cf_crl_path", "cf_hostname", "cf_domain_id", "cf_dp_url",
+              "cf_pushed_sha256", "cf_pushed_at", "cf_push_error")
 
 _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_trusted_devices_token ON trusted_devices(token_hash)",
@@ -257,7 +270,7 @@ _VERIFY_PLAINTEXT = b"cert-generator-verify-token"
 # key, stored wrapped by the password and by the recovery key.
 _KEY_SETTINGS = (
     "encryption_salt", "encryption_verify", "encryption_wrapped_key",
-    "recovery_salt", "recovery_wrapped_key",
+    "recovery_salt", "recovery_wrapped_key", "login_username",
 )
 
 
@@ -356,8 +369,18 @@ def has_recovery_key() -> bool:
     return get_setting("recovery_wrapped_key") is not None
 
 
-def enable_encryption(password: str) -> str:
-    """Encrypt every sensitive column and return the recovery key, to be shown once."""
+def get_login_username() -> str | None:
+    """The desktop sign-in name set alongside the master password, if any."""
+    value = get_setting("login_username")
+    return value.decode("utf-8") if value else None
+
+
+def enable_encryption(password: str, username: str | None = None) -> str:
+    """Encrypt every sensitive column and return the recovery key, to be shown once.
+
+    ``username`` (desktop app) turns the startup unlock into a sign-in: the name is
+    asked for with the master password. It is not secret and is stored as is.
+    """
     if is_encryption_enabled():
         raise ValueError("Encryption is already enabled")
     data_key = crypto_engine.new_data_key()
@@ -367,6 +390,8 @@ def enable_encryption(password: str) -> str:
         _reencrypt_all(conn, None, data_key)
         _store_password_wrap(conn, password, data_key)
         recovery_key = _store_recovery_wrap(conn, data_key)
+        if username:
+            _set_setting(conn, "login_username", username.encode("utf-8"))
     set_master_key(data_key)
     return recovery_key
 
@@ -374,6 +399,8 @@ def enable_encryption(password: str) -> str:
 def disable_encryption(password: str) -> None:
     if not is_encryption_enabled():
         raise ValueError("Encryption is not enabled")
+    if has_cloudflare_token():
+        raise ValueError("Disconnect Cloudflare first: its API token is only ever stored encrypted")
     with _key_change() as conn:
         key = _key_for_password(conn, password)[0]
         if key is None:
@@ -385,8 +412,16 @@ def disable_encryption(password: str) -> None:
 
 
 def unlock(password: str) -> bool:
+    return unlock_if(password, True)
+
+
+def unlock_if(password: str, allowed: bool) -> bool:
+    """Unlock with ``password`` only when ``allowed`` (a sign-in name matched).
+
+    The password is checked either way, so a wrong name takes as long as a wrong password.
+    """
     key = open_with_password(password)
-    if key is None:
+    if key is None or not allowed:
         return False
     set_master_key(key)
     return True
@@ -504,7 +539,8 @@ def get_ca_summary(ca_id: int) -> dict[str, Any] | None:
     """id, name, domain and CRL state, without the key: readable while locked."""
     with _connect() as conn:
         row = conn.execute(
-            "SELECT id, name, domain, crl_public, crl_next_update FROM certificate_authorities WHERE id = ?", (ca_id,),
+            "SELECT id, name, domain, crl_public, crl_next_update, cf_worker, cf_dp_url, cf_hostname, cf_crl_path "
+            "FROM certificate_authorities WHERE id = ?", (ca_id,),
         ).fetchone()
         return dict(row) if row else None
 
@@ -541,11 +577,118 @@ def is_crl_public(ca_id: int) -> bool:
         return bool(row and row["crl_public"])
 
 
-def list_public_crls() -> list[tuple[int, bytes | None]]:
-    """(CA id, served CRL or None) for every CA that opted in to /crl/<id>.crl."""
+def is_crl_maintained(ca_id: int) -> bool:
+    """The app keeps a signed CRL current for this CA: served here, by a Cloudflare Worker, or both."""
     with _connect() as conn:
-        rows = conn.execute("SELECT id, crl_der FROM certificate_authorities WHERE crl_public = 1").fetchall()
+        row = conn.execute("SELECT crl_public, cf_worker FROM certificate_authorities WHERE id = ?",
+                           (ca_id,)).fetchone()
+        return bool(row and (row["crl_public"] or row["cf_worker"]))
+
+
+def list_public_crls() -> list[tuple[int, bytes | None]]:
+    """(CA id, current CRL or None) for every CA whose CRL the app keeps current."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, crl_der FROM certificate_authorities WHERE crl_public = 1 OR cf_worker IS NOT NULL"
+        ).fetchall()
         return [(r["id"], r["crl_der"]) for r in rows]
+
+
+def get_signed_crl(ca_id: int) -> bytes | None:
+    """The CRL last signed for a maintained CA (what a Worker push sends)."""
+    with _connect() as conn:
+        row = conn.execute("SELECT crl_der FROM certificate_authorities WHERE id = ?", (ca_id,)).fetchone()
+        return row["crl_der"] if row else None
+
+
+# ── Cloudflare ──────────────────────────────────────────────────────
+
+def get_ca_worker(ca_id: int) -> dict[str, Any] | None:
+    """The CA's Worker fields, or None when it has no Worker."""
+    with _connect() as conn:
+        row = conn.execute(
+            f"SELECT {', '.join(CF_COLUMNS)} FROM certificate_authorities WHERE id = ?", (ca_id,)  # nosec B608
+        ).fetchone()
+    return dict(row) if row and row["cf_worker"] else None
+
+
+def update_ca_worker(ca_id: int, **fields: str | None) -> None:
+    """Set some of the CA's cf_* columns (names checked against CF_COLUMNS)."""
+    if not fields or not set(fields) <= set(CF_COLUMNS):
+        raise ValueError("Unknown Cloudflare field")
+    assignments = ", ".join(f"{name} = ?" for name in fields)
+    with _connect() as conn:
+        conn.execute(f"UPDATE certificate_authorities SET {assignments} WHERE id = ?",  # nosec B608
+                     (*fields.values(), ca_id))
+
+
+def clear_ca_worker(ca_id: int) -> None:
+    update_ca_worker(ca_id, **dict.fromkeys(CF_COLUMNS))
+
+
+def list_ca_workers() -> list[dict[str, Any]]:
+    """Every CA with a Worker: id, name and its cf_* columns."""
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT id, name, {', '.join(CF_COLUMNS)} FROM certificate_authorities "  # nosec B608
+            "WHERE cf_worker IS NOT NULL ORDER BY id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def count_ca_workers(ca_ids: list[int] | None = None) -> int:
+    with _connect() as conn:
+        if ca_ids is None:
+            return conn.execute("SELECT COUNT(*) FROM certificate_authorities WHERE cf_worker IS NOT NULL").fetchone()[0]
+        marks = ",".join("?" * len(ca_ids))
+        return conn.execute(f"SELECT COUNT(*) FROM certificate_authorities "  # nosec B608
+                            f"WHERE cf_worker IS NOT NULL AND id IN ({marks})", ca_ids).fetchone()[0]
+
+
+def certs_with_crl_dp(ca_id: int, url: str) -> list[dict[str, Any]]:
+    """Certificates of ``ca_id`` whose distribution point is ``url``."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, common_name, revoked FROM certificates WHERE ca_id = ? AND crl_dp_url = ? ORDER BY id",
+            (ca_id, url),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def cloudflare_account_id() -> str | None:
+    value = get_setting("cloudflare_account_id")
+    return value.decode() if value else None
+
+
+def has_cloudflare_token() -> bool:
+    return get_setting("cloudflare_token") is not None
+
+
+def set_cloudflare_credentials(account_id: str, token: str) -> None:
+    """Store the API token encrypted with the database key. Needs encryption on and unlocked:
+    the token can rewrite every CRL Worker, so it is never kept in plaintext."""
+    if not is_encryption_enabled():
+        raise ValueError("Turn on database encryption first: the Cloudflare token is stored encrypted")
+    require_unlocked()
+    sealed = crypto_engine.encrypt_column(token.encode("utf-8"), _master_key)  # type: ignore[arg-type]
+    with _connect() as conn:
+        _set_setting(conn, "cloudflare_account_id", account_id.encode())
+        _set_setting(conn, "cloudflare_token", sealed)
+
+
+def get_cloudflare_credentials() -> tuple[str, str] | None:
+    """(account id, token), or None when not connected. Raises DatabaseLocked while locked."""
+    account_id, sealed = cloudflare_account_id(), get_setting("cloudflare_token")
+    if not account_id or sealed is None:
+        return None
+    require_unlocked()
+    return account_id, _maybe_decrypt(sealed).decode("utf-8")
+
+
+def clear_cloudflare_credentials() -> None:
+    with _connect() as conn:
+        _set_setting(conn, "cloudflare_account_id", None)
+        _set_setting(conn, "cloudflare_token", None)
 
 
 def get_published_crl(ca_id: int) -> bytes | None:
@@ -556,6 +699,24 @@ def get_published_crl(ca_id: int) -> bytes | None:
             "SELECT crl_der FROM certificate_authorities WHERE id = ? AND crl_public = 1", (ca_id,),
         ).fetchone()
         return row["crl_der"] if row else None
+
+
+def get_ca_named_chain(ca_id: int, max_depth: int = 16) -> list[tuple[str, bytes]]:
+    """(name, certificate PEM) from ``ca_id`` up to its root, nearest first. No keys."""
+    chain: list[tuple[str, bytes]] = []
+    seen: set[int] = set()
+    current: int | None = ca_id
+    with _connect() as conn:
+        while current is not None and current not in seen and len(chain) < max_depth:
+            seen.add(current)
+            row = conn.execute(
+                "SELECT name, cert_pem, parent_ca_id FROM certificate_authorities WHERE id = ?", (current,)
+            ).fetchone()
+            if row is None:
+                break
+            chain.append((row["name"], row["cert_pem"]))
+            current = row["parent_ca_id"]
+    return chain
 
 
 def get_ca_cert_chain(ca_id: int, max_depth: int = 16) -> list[bytes]:
@@ -818,13 +979,21 @@ def _restore_cas(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
         conn.execute(
             """INSERT INTO certificate_authorities
                (id, parent_ca_id, name, domain, algorithm, not_before, not_after, serial, cert_pem, key_pem, created_at,
-                crl_next_update, crl_der, crl_public)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                crl_next_update, crl_der, crl_public,
+                cf_worker, cf_account_id, cf_crl_path, cf_hostname, cf_domain_id, cf_dp_url, cf_pushed_sha256,
+                cf_pushed_at, cf_push_error)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ca["id"], ca.get("parent_ca_id"), ca["name"], ca["domain"],
              ca["algorithm"], ca["not_before"], ca["not_after"], ca["serial"],
              ca["cert_pem"], _maybe_encrypt(ca["key_pem"]), ca["created_at"],
-             ca.get("crl_next_update"), ca.get("crl_der"), int(bool(ca.get("crl_public")))),
+             ca.get("crl_next_update"), ca.get("crl_der"), int(bool(ca.get("crl_public"))),
+             # The Worker link survives a restore; the token isn't in backups, so reconnect to manage it.
+             *(_text_or_none(ca.get(c)) for c in CF_COLUMNS)),
         )
+
+
+def _text_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 def _restore_certs(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
