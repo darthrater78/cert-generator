@@ -56,6 +56,17 @@ def error(message: str, status: int = 400) -> tuple[Response, int]:
     return jsonify({"error": message}), status
 
 
+def new_password_error(password: str, confirm: str, empty_message: str) -> str | None:
+    """Why a new encryption password can't be used, or None if it can."""
+    if not password:
+        return empty_message
+    if password != confirm:
+        return "Passwords do not match"
+    if len(password) < 8:
+        return "Password must be at least 8 characters"
+    return None
+
+
 # ── Authentication and sessions ─────────────────────────────────────
 
 def login_required(view: Callable[..., Any]) -> Callable[..., Any]:

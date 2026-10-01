@@ -1,6 +1,6 @@
 # Cert Generator
 
-**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.5.0 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.5.0)**
+**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.6.0 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.6.0)**
 
 A tool for creating Certificate Authorities and issuing self-signed certificates for posture demos. Runs as a **Docker web app** or a **Windows desktop app** — both use the same interface and database format, and backups created in one mode can be restored in the other.
 
@@ -36,6 +36,7 @@ Both modes have full feature parity — the same UI, database format, and capabi
 - **SSH key import** — import existing SSH private keys from Bitwarden or other sources; supports OpenSSH, PEM PKCS#8, PEM traditional, and DER formats with automatic algorithm detection and optional passphrase; imported keys are visually marked and fully functional (export, copy, backup/restore)
 - **SSH key export** — download private keys in OpenSSH or PEM (PKCS#8) format, copy public keys, or copy private keys for Bitwarden SSH import
 - **Database encryption** — encrypt all private keys at rest with AES-256-GCM using a master password derived via Scrypt; unlock screen on startup when enabled
+- **Encryption recovery key** — enabling encryption shows a one-time recovery key; if you forget the master password, it unlocks the database and sets a new one (see [Forgotten encryption password](#forgotten-encryption-password))
 - **Backup and restore** — export all data (CAs, certificates, SSH keys) to an AES-256 encrypted `.certbak` file; restore replaces all data from a backup. Backup files are portable between Docker and desktop — create on one, restore on the other
 - **Login authentication** — username/password login for server mode (first-launch setup, bcrypt-hashed passwords, session-based auth)
 - **TOTP multi-factor authentication** — optional TOTP second factor using any authenticator app (Google Authenticator, Authy, 1Password, etc.); enable/disable from the MFA Settings panel, requires password + code to disable
@@ -84,7 +85,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.5.0
+    image: ghcr.io/darthrater78/cert-generator:2.6.0
     container_name: cert-generator
     restart: unless-stopped
     security_opt:
@@ -276,7 +277,7 @@ The embedded web server is hardened for both desktop and server use:
 
 **Server mode (Docker / standalone):**
 - **Login authentication** — on first launch, you create an admin account (optionally gated by `SETUP_TOKEN`); all subsequent access requires sign-in with username and password (bcrypt-hashed, session-based)
-- **Brute-force protection** — repeated failed passwords, MFA codes, or encryption passwords lock that account's attempts for 1 minute, doubling up to 15 minutes. Trusted devices are unaffected
+- **Brute-force protection** — repeated failed passwords, MFA codes, encryption passwords, or recovery keys lock that account's attempts for 1 minute, doubling up to 15 minutes. Trusted devices are unaffected
 - **TOTP MFA** — optional second factor via any authenticator app; enable per-user from MFA Settings. Each code is accepted only once
 - **Trusted devices** — "Trust this device" sets an httpOnly cookie with a SHA-256 hashed token; auto-login skips password and MFA for 30 days unless "Require password every visit" is enabled. Signing out forgets the device
 - **Session revocation** — password resets, MFA changes, "Revoke all devices", and backup restores end every other session
@@ -323,7 +324,18 @@ RESET_MFA=admin python -m app.serve
 
 `RESET_MFA` disables TOTP, clears all trusted devices, and turns off "Require password every visit" for the named user. `RESET_PASSWORD` also clears the user's trusted devices. Both end every existing session for that user, so recovering from a compromised account locks the intruder out. Neither variable affects database encryption — the master encryption password is separate from the login password.
 
-With both MFA and database encryption enabled, the MFA page asks for the encryption password after a restart, because the MFA secret is encrypted too. Entering it also unlocks the database.
+With both MFA and database encryption enabled, the MFA page asks for the encryption password after a restart, because the MFA secret is encrypted too. Entering it also unlocks the database. If you've forgotten it, **Forgot it? Use your recovery key** on the same page takes the recovery key and a new encryption password instead.
+
+### Forgotten encryption password
+
+The account-recovery variables can't help here: nobody can decrypt the keys without the master password or the **recovery key**. The recovery key is shown once when you enable encryption, as five groups of five characters (`K7QM2-XR4TD-…`). Store it away from the server, in a password manager or on paper. Anyone with it and a copy of the database can read your private keys.
+
+- **To use it**, choose **Forgot it? Use your recovery key** on the unlock screen (or on the MFA page), enter the key and a new master password. The database unlocks, and a **new recovery key** replaces the one you typed, which stops working. Case, spaces and dashes don't matter.
+- **To replace it** (lost, or possibly seen), open **Encryption** settings and choose **Replace recovery key** with your current password. The old key stops working.
+- **Databases encrypted before v2.6.0** have no recovery key. Their next unlock upgrades them to the new format, and a banner offers **Create recovery key**.
+- Changing the master password keeps the recovery key valid. Disabling encryption removes it.
+
+This works the same in Docker and the Windows EXE.
 
 ### Quick start
 
@@ -362,7 +374,7 @@ Export options per certificate:
 
 ## Data storage
 
-All CAs, certificates, and SSH keys are stored in a SQLite database. When database encryption is enabled, all private keys are encrypted at rest with AES-256-GCM.
+All CAs, certificates, and SSH keys are stored in a SQLite database. When database encryption is enabled, all private keys (and the MFA secrets) are encrypted at rest with AES-256-GCM under a random 256-bit data key. The database stores that key only wrapped: once with a key derived from the master password (Scrypt), and once with one derived from the recovery key (HKDF; the recovery key is 125 random bits). Changing the password re-wraps the data key without re-encrypting anything. Backups are separate: a `.certbak` holds the decrypted data, sealed with the backup password you choose.
 
 | Mode | Database path | Exports path |
 |------|--------------|--------------|
@@ -374,6 +386,33 @@ The database format is identical in both modes. Use **Backup** to create an encr
 ## Version history
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
+
+### v2.6.0 — 2026-10-01
+
+#### Docker
+- **Encryption recovery key.** Enabling database encryption now shows a one-time recovery key (five groups of five characters) with **Copy** and **Download .txt**, and asks you to confirm you've stored it. If you forget the master password, **Forgot it? Use your recovery key** on the unlock screen takes the key and a new password, unlocks the database, and issues a new recovery key; the used one stops working. See [Forgotten encryption password](https://github.com/darthrater78/cert-generator#forgotten-encryption-password)
+- With MFA and a locked database, the MFA page offers the same recovery: the authenticator code, the recovery key and a new encryption password. The new recovery key is shown once on the next page
+- **Encryption** settings can replace the recovery key (with your current password), which revokes the old one
+- **Existing encrypted databases upgrade on their next unlock**: the keys are re-encrypted under a random data key, and a banner offers **Create recovery key**. Until you create one, a forgotten password still means the keys are lost
+- Changing the master password no longer re-encrypts every key; it re-wraps the data key, and the recovery key stays valid
+- Wrong recovery keys count toward the same lockout as wrong encryption passwords
+- **Endpoint import for each certificate.** An **Endpoint import ▾** button on every valid certificate opens the commands to install it on a machine, with **Windows**, **macOS** and **Linux** tabs and **Copy commands**. It first asks whether the root CA (and any intermediate) is already on that machine: **No** gives the whole workflow, trust chain first, with a **Download** button for each CA file the commands use; **Yes** gives just the certificate step. Either way, **Export…** opens this certificate's export in the format the commands expect. The commands follow the certificate's template and chain, with Windows stores per Microsoft's layout: the root CA in Trusted Root Certification Authorities, an intermediate in Intermediate Certification Authorities, Computer and Web Server certificates in Local Computer › Personal, and Client Auth, User, Email and Code Signing in Current User › Personal (Code Signing adds Trusted Publishers). macOS uses the System and login keychains; Linux uses the system CA bundle, `/etc/ssl` for server certificates and the NSS database for user certificates. File names match what **Export** downloads
+- **CA exports are named after the CA** (`ca-<CA name>-certificate.der`) instead of its domain, so a root and an intermediate that share a domain no longer download to the same file name
+- **The CA's Export defaults to DER · Certificate Only**, the file an endpoint needs to trust the CA. A note under it explains the two cases: **Trusted Endpoint** (Certificate Only, no key) and **TLS Inspection / CA Move** (Certificate + Key, only for a device that issues certificates with this CA, never on endpoints).
+- The CA page groups its controls under **Export CA certificate** and **Revocation list (CRL)**, and the Import Guide's Quick Start points to Endpoint import
+- **Export CRL** now says on the page that it's for the placeholder distribution point only and never changes the CRL this server publishes
+- Dialog buttons (Close, Export…, Copy PEM and the rest) stay pinned at the bottom of the dialog while long content, such as the certificate viewer, scrolls
+- The sidebar's **Tools** stand out and are grouped by use: Create, Data, Security, Help; the sidebar is more compact, so more of it fits without scrolling
+- On phones, warning banners show one line with **More**, so they no longer fill the screen
+- The Certificate and SSH guides have a bolder, clearer tab bar (shorter labels: S/MIME, CRL) and section headings with an accent bar, so they're easier to scan
+
+#### Windows EXE
+- The same recovery key, unlock-screen recovery, replace option and upgrade of existing encrypted databases as Docker. **Download .txt** is browser-only; the EXE offers **Copy**
+- The same Endpoint import, pinned dialog buttons, CA export default and key warning, CA export names, Export CRL note (placeholder only, as the EXE doesn't serve CRLs), grouped Tools and guide styling as Docker
+- The built-in self-test now covers unlocking with the recovery key
+
+#### Internal
+- Every change to the encryption key settings runs under SQLite's write lock, so two simultaneous unlocks of a pre-2.6.0 database can't upgrade it twice with different keys
 
 ### v2.5.0 — 2026-10-01
 

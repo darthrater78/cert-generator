@@ -86,7 +86,7 @@ def test_mfa_login_after_restart_with_encryption(admin_client, fresh_app):
     assert b"encryption_password" in page.data
 
     resp = browser.post("/mfa", data={"code": pyotp.TOTP(secret).now()})
-    assert b"Encryption password is required" in resp.data
+    assert b"Encryption password or recovery key is required" in resp.data
     resp = browser.post("/mfa", data={"code": pyotp.TOTP(secret).now(), "encryption_password": "wrong-password"})
     assert b"Invalid encryption password" in resp.data
     resp = browser.post("/mfa", data={"code": pyotp.TOTP(secret).now(), "encryption_password": ENCRYPTION_PASSWORD})

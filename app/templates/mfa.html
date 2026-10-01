@@ -25,8 +25,18 @@
     <input type="text" id="code" name="code" autocomplete="one-time-code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" required autofocus placeholder="000000">
     {% if locked %}
     <label for="encryption_password">Encryption Password</label>
-    <input type="password" id="encryption_password" name="encryption_password" autocomplete="off" required>
+    <input type="password" id="encryption_password" name="encryption_password" autocomplete="off">
     <div class="hint">The database is locked. Your encryption password is needed to read your MFA secret, and unlocks the database.</div>
+    <details class="recovery">
+      <summary>Forgot it? Use your recovery key</summary>
+      <label for="recovery_key">Recovery Key</label>
+      <input type="text" id="recovery_key" name="recovery_key" autocomplete="off" spellcheck="false" autocapitalize="characters" placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX">
+      <label for="new_password">New Encryption Password (min 8 characters)</label>
+      <input type="password" id="new_password" name="new_password" autocomplete="new-password">
+      <label for="confirm_password">Confirm New Password</label>
+      <input type="password" id="confirm_password" name="confirm_password" autocomplete="new-password">
+      <div class="hint">Sets a new encryption password and replaces the recovery key. You'll see the new one once.</div>
+    </details>
     {% endif %}
     <div class="checkbox-row">
       <input type="checkbox" id="trust_device" name="trust_device" value="1">

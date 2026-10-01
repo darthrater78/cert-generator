@@ -11,7 +11,7 @@ from flask import Blueprint, Response, current_app, redirect, render_template, r
 
 from .. import db, state
 from ..security import lockout_message, verify_totp
-from ..web import auth_limiter, hash_token, start_session
+from ..web import auth_limiter, hash_token, new_password_error, start_session
 
 log = logging.getLogger("cert-generator")
 
@@ -197,6 +197,51 @@ def _mfa_page(error: str | None, locked: bool, status: int = 200):
     return render_template("mfa.html", error=error, locked=locked), status
 
 
+def _form_encryption_key(limit_key: str) -> tuple[str | None, bytes | None]:
+    """Column key from the MFA form's encryption password or recovery key.
+
+    Only checks it: nothing is loaded or changed until the code is verified too.
+    """
+    recovery_key = (request.form.get("recovery_key") or "").strip()
+    if recovery_key:
+        problem = new_password_error(
+            (request.form.get("new_password") or "").strip(),
+            (request.form.get("confirm_password") or "").strip(),
+            "Choose a new encryption password",
+        )
+        if problem:
+            return problem, None
+        key = db.key_for_recovery_key(recovery_key)
+        if key is None:
+            auth_limiter.failure(limit_key)
+            return "Invalid recovery key", None
+        return None, key
+    enc_password = (request.form.get("encryption_password") or "").strip()
+    if not enc_password:
+        return "Encryption password or recovery key is required", None
+    key = db.derive_key_if_valid(enc_password)
+    if key is None:
+        auth_limiter.failure(limit_key)
+        return "Invalid encryption password", None
+    return None, key
+
+
+def _unlock_after_mfa(user: dict[str, Any]) -> str | None:
+    """Load the column key once the code has passed; returns the new recovery key if one was used."""
+    recovery_key = (request.form.get("recovery_key") or "").strip()
+    if recovery_key:
+        replacement = db.recover_with_key(recovery_key, (request.form.get("new_password") or "").strip())
+        log.warning("Encryption password reset with the recovery key during MFA for user: %s", user["username"])
+        return replacement
+    # Unlocking by password also moves a pre-2.6.0 database to the data-key format.
+    key = db.open_with_password((request.form.get("encryption_password") or "").strip())
+    if key is None:
+        raise ValueError("Wrong password")
+    db.set_master_key(key)
+    log.info("Database unlocked during MFA verification for user: %s", user["username"])
+    return None
+
+
 def _check_mfa_submission(user: dict[str, Any], locked: bool) -> tuple[str | None, bytes | None]:
     """Validate the posted code (and encryption password when locked).
 
@@ -210,13 +255,9 @@ def _check_mfa_submission(user: dict[str, Any], locked: bool) -> tuple[str | Non
 
     enc_key = None
     if locked:
-        enc_password = (request.form.get("encryption_password") or "").strip()
-        if not enc_password:
-            return "Encryption password is required", None
-        enc_key = db.derive_key_if_valid(enc_password)
-        if enc_key is None:
-            auth_limiter.failure(limit_key)
-            return "Invalid encryption password", None
+        problem, enc_key = _form_encryption_key(limit_key)
+        if problem:
+            return problem, None
 
     secret = db.get_totp_secret(user["id"], key=enc_key)
     step = verify_totp(secret, code, user["totp_last_step"]) if secret else None
@@ -253,12 +294,20 @@ def mfa_verify():
     if error:
         return _mfa_page(error, locked)
 
+    new_recovery_key = None
     if enc_key is not None:
-        db.set_master_key(enc_key)
-        log.info("Database unlocked during MFA verification for user: %s", user["username"])
+        try:
+            new_recovery_key = _unlock_after_mfa(user)
+        except ValueError:
+            # The password or recovery key changed between the check and now.
+            return _mfa_page("Unlock failed, try again", locked)
     start_session(user, authenticated_now=True)
     log.info("MFA verified for user: %s", user["username"])
-    resp = current_app.make_response(redirect("/"))
+    if new_recovery_key:
+        resp = current_app.make_response(render_template("recovery_key.html", recovery_key=new_recovery_key))
+        resp.headers["Cache-Control"] = "no-store"
+    else:
+        resp = current_app.make_response(redirect("/"))
     if trust_device:
         _create_trust_cookie(user["id"], resp)
     return resp

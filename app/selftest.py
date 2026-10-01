@@ -92,11 +92,16 @@ def _core_checks(checks: _Checks, workdir: Path, export_dir: Path) -> None:
     def encryption() -> str:
         enable = client.post("/api/settings/encryption/enable", json={"password": "selftest-pass", "confirm": "selftest-pass"})  # nosec B105 - throwaway self-test database
         _expect(enable.status_code == 200, f"enable: {enable.status_code}")
+        recovery_key = enable.get_json().get("recovery_key", "")
         db.set_master_key(None)
         _expect(client.post("/api/ca", json={"domain": "locked.example"}).status_code == 423, "locked write allowed")
         unlock = client.post("/api/settings/encryption/unlock", json={"password": "selftest-pass"})  # nosec B105 - throwaway self-test database
         _expect(unlock.status_code == 200, f"unlock: {unlock.status_code}")
-        return "enable, locked refusal, unlock"
+        db.set_master_key(None)
+        recover = client.post("/api/settings/encryption/recover", json={
+            "recovery_key": recovery_key, "password": "selftest-pass-2", "confirm": "selftest-pass-2"})  # nosec B105 - throwaway self-test database
+        _expect(recover.status_code == 200 and db.is_unlocked(), f"recover: {recover.status_code}")
+        return "enable, locked refusal, unlock, recovery key"
 
     checks.run("desktop token auth", auth)
     checks.run("index page renders", page)

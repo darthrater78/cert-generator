@@ -158,6 +158,33 @@ button:focus-visible, input[type="checkbox"]:focus-visible { outline: 2px solid 
 /* text fields show focus as the 2px accent underline above, not a box */
 input:not([type="checkbox"]):focus-visible { outline: none; }
 
+details.recovery { margin: 0 0 18px; }
+details.recovery summary {
+  cursor: pointer;
+  font: italic 13px var(--font-serif);
+  color: var(--accent-text);
+  margin-bottom: 14px;
+}
+.recovery-key {
+  font: 600 clamp(13px, 4.2vw, 18px) var(--font-mono);
+  letter-spacing: 0.04em;
+  text-align: center;
+  padding: 14px 8px;
+  margin: 0 0 16px;
+  border: 1px dashed var(--accent);
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+a.button {
+  display: block; text-align: center; text-decoration: none;
+  padding: 12px 14px;
+  background: var(--accent); color: var(--on-accent);
+  border-radius: 2px;
+  font: 600 12px var(--font-mono);
+  letter-spacing: 0.18em; text-transform: uppercase;
+}
+a.button:hover { filter: brightness(1.1); }
+
 .error {
   border: 1px solid var(--danger);
   border-left-width: 3px;

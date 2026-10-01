@@ -500,7 +500,7 @@ def export_ca(ca_id: int):
             export_data, filename = crypto_engine.export_certificate(ca["cert_pem"], ca["key_pem"], fmt, password=password)
     except ValueError as e:
         return error(str(e))
-    return deliver_export(export_data, f"ca-{ca['domain']}-{filename}")
+    return deliver_export(export_data, f"ca-{_safe_name(ca['name'])}-{filename}")
 
 
 @bp.post("/api/export/cert/<int:cert_id>")
