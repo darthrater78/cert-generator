@@ -369,6 +369,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input[type="checkbo
   margin-bottom: 14px;
 }
 .form-row.full { grid-template-columns: 1fr; }
+.form-row[hidden], .form-group[hidden] { display: none; }
+.form-row .full-span { grid-column: 1 / -1; margin-top: -6px; overflow-wrap: anywhere; }
 .form-group { display: flex; flex-direction: column; gap: 2px; }
 .form-group label, .field-label {
   font: italic 13px var(--font-serif);
@@ -516,6 +518,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   font: 13px var(--font-mono);
   overflow-wrap: anywhere;
 }
+.info-item .crl-url { display: block; margin-top: 3px; font-size: 11px; color: var(--text-dim); }
 .serial-toggle { cursor: pointer; border-bottom: 1px dotted var(--rule); }
 .serial-toggle:hover { color: var(--accent-text); }
 
@@ -720,6 +723,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   text-align: center;
 }
 .unlock-box input:focus { border-color: var(--accent); box-shadow: 0 1px 0 var(--accent); }
+#reauthError { color: var(--danger); font: 12px var(--font-mono); min-height: 16px; margin: -4px 0 8px; }
 .unlock-box .error-msg { color: var(--danger); font: 12px var(--font-mono); margin-bottom: 8px; min-height: 16px; }
 
 /* ================= mobile ================= */

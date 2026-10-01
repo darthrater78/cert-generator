@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from flask import Flask, Response, g, jsonify, redirect, render_template, request, session
+from flask.sessions import SecureCookieSessionInterface
 from werkzeug.exceptions import HTTPException
 
 from . import __version__, db, state
@@ -46,6 +47,20 @@ app.config.update(
     SESSION_COOKIE_SECURE=_env_flag("COOKIE_SECURE"),
     MAX_CONTENT_LENGTH=32 * 1024 * 1024,
 )
+
+
+
+class _SessionInterface(SecureCookieSessionInterface):
+    """No session cookie, refresh or ``Vary: Cookie`` on the public CRL path: those
+    responses are cacheable by proxies and must never carry a visitor's session."""
+
+    def save_session(self, app, session, response) -> None:
+        if request.path.startswith("/crl/"):
+            return
+        super().save_session(app, session, response)
+
+
+app.session_interface = _SessionInterface()
 
 for blueprint in (auth.bp, account.bp, pki.bp, ssh.bp, settings.bp):
     app.register_blueprint(blueprint)
@@ -151,7 +166,7 @@ def _auth_check() -> Response | None:
     rejection = _cross_site_rejection()
     if rejection is not None:
         return rejection
-    if request.path in _PUBLIC_PATHS or request.path.startswith("/static/"):
+    if request.path in _PUBLIC_PATHS or request.path.startswith(("/static/", "/crl/")):
         return None
     if not db.has_users():
         return redirect("/setup")

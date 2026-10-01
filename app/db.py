@@ -86,6 +86,16 @@ CREATE TABLE IF NOT EXISTS certificates (
     revoked     INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
+
+-- Revoked certificates that were deleted. Their serials stay on the CA's CRL
+-- until the certificate would have expired, so deleting never un-revokes.
+CREATE TABLE IF NOT EXISTS deleted_revocations (
+    ca_id      INTEGER NOT NULL REFERENCES certificate_authorities(id),
+    serial     TEXT    NOT NULL,
+    revoked_at TEXT    NOT NULL,
+    not_after  TEXT    NOT NULL,
+    PRIMARY KEY (ca_id, serial)
+);
 """
 
 # (table, column, definition) added after the original schema shipped.
@@ -100,6 +110,9 @@ _MIGRATIONS = (
     ("trusted_devices", "label", "TEXT NOT NULL DEFAULT ''"),
     ("certificates", "revoked_at", "TEXT"),
     ("certificate_authorities", "crl_next_update", "TEXT"),
+    ("certificate_authorities", "crl_der", "BLOB"),
+    ("certificate_authorities", "crl_public", "INTEGER NOT NULL DEFAULT 0"),
+    ("certificates", "crl_dp_url", "TEXT"),  # '' = none; NULL = not yet read from cert_pem
 )
 
 _INDEXES = (
@@ -149,6 +162,15 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")  # nosec B608
         for statement in _INDEXES:
             conn.execute(statement)
+        _backfill_crl_dp_urls(conn)
+
+
+def _backfill_crl_dp_urls(conn: sqlite3.Connection) -> None:
+    """Read the CRL distribution point out of certificates stored before it was recorded."""
+    rows = conn.execute("SELECT id, cert_pem FROM certificates WHERE crl_dp_url IS NULL").fetchall()
+    for row in rows:
+        urls = crypto_engine.crl_distribution_points(row["cert_pem"])
+        conn.execute("UPDATE certificates SET crl_dp_url = ? WHERE id = ?", (urls[0] if urls else "", row["id"]))
 
 
 # ── Encryption at rest ──────────────────────────────────────────────
@@ -358,6 +380,15 @@ def list_child_cas(ca_id: int) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
+def get_ca_summary(ca_id: int) -> dict[str, Any] | None:
+    """id, name, domain and CRL state, without the key: readable while locked."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id, name, domain, crl_public, crl_next_update FROM certificate_authorities WHERE id = ?", (ca_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def get_ca(ca_id: int) -> dict[str, Any] | None:
     with _connect() as conn:
         row = conn.execute(
@@ -367,8 +398,44 @@ def get_ca(ca_id: int) -> dict[str, Any] | None:
 
 
 def set_ca_crl_next_update(ca_id: int, next_update: str) -> None:
+    """Next update of the CRL last exported for offline import."""
     with _connect() as conn:
         conn.execute("UPDATE certificate_authorities SET crl_next_update = ? WHERE id = ?", (next_update, ca_id))
+
+
+def publish_crl(ca_id: int, crl_der: bytes) -> None:
+    """Replace the CRL that /crl/<id>.crl serves (see crl_publisher)."""
+    with _connect() as conn:
+        conn.execute("UPDATE certificate_authorities SET crl_der = ? WHERE id = ?", (crl_der, ca_id))
+
+
+def set_crl_public(ca_id: int) -> None:
+    """Opt the CA in to /crl/<id>.crl: a certificate now names this server as its distribution point."""
+    with _connect() as conn:
+        conn.execute("UPDATE certificate_authorities SET crl_public = 1 WHERE id = ?", (ca_id,))
+
+
+def is_crl_public(ca_id: int) -> bool:
+    with _connect() as conn:
+        row = conn.execute("SELECT crl_public FROM certificate_authorities WHERE id = ?", (ca_id,)).fetchone()
+        return bool(row and row["crl_public"])
+
+
+def list_public_crls() -> list[tuple[int, bytes | None]]:
+    """(CA id, served CRL or None) for every CA that opted in to /crl/<id>.crl."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT id, crl_der FROM certificate_authorities WHERE crl_public = 1").fetchall()
+        return [(r["id"], r["crl_der"]) for r in rows]
+
+
+def get_published_crl(ca_id: int) -> bytes | None:
+    """The served CRL of a CA that opted in (public, never encrypted), readable while the
+    database is locked. None for any other CA, so ids can't be probed."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT crl_der FROM certificate_authorities WHERE id = ? AND crl_public = 1", (ca_id,),
+        ).fetchone()
+        return row["crl_der"] if row else None
 
 
 def get_ca_cert_chain(ca_id: int, max_depth: int = 16) -> list[bytes]:
@@ -406,6 +473,7 @@ def delete_ca(ca_id: int) -> bool:
         # Descendants are discovered after their parents; delete in reverse.
         for node_id in reversed(ids):
             conn.execute("DELETE FROM certificates WHERE ca_id = ?", (node_id,))
+            conn.execute("DELETE FROM deleted_revocations WHERE ca_id = ?", (node_id,))
             conn.execute("DELETE FROM certificate_authorities WHERE id = ?", (node_id,))
         return True
 
@@ -421,20 +489,24 @@ def save_cert(
     serial: str,
     cert_pem: bytes,
     key_pem: bytes,
+    crl_dp_url: str | None = None,
 ) -> int:
     encrypted_key = _maybe_encrypt(key_pem)
     with _connect() as conn:
         cursor = conn.execute(
             """INSERT INTO certificates
-               (ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, cert_pem, key_pem)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, cert_pem, encrypted_key),
+               (ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, cert_pem, key_pem,
+                crl_dp_url)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, cert_pem, encrypted_key,
+             crl_dp_url or ""),
         )
         return cursor.lastrowid
 
 
 _CERT_LIST_COLUMNS = (
-    "id, ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, revoked, created_at"
+    "id, ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, revoked, created_at, "
+    "crl_dp_url"
 )
 
 
@@ -450,6 +522,13 @@ def list_certs(ca_id: int | None = None) -> list[dict[str, Any]]:
                 f"SELECT {_CERT_LIST_COLUMNS} FROM certificates ORDER BY created_at DESC"  # nosec B608 - constant column list
             ).fetchall()
         return [dict(r) for r in rows]
+
+
+def get_cert_summary(cert_id: int) -> dict[str, Any] | None:
+    """The certificate's listing columns, without its key: readable while locked."""
+    with _connect() as conn:
+        row = conn.execute(f"SELECT {_CERT_LIST_COLUMNS} FROM certificates WHERE id = ?", (cert_id,)).fetchone()  # nosec B608 - constant column list
+        return dict(row) if row else None
 
 
 def get_cert(cert_id: int) -> dict[str, Any] | None:
@@ -474,18 +553,40 @@ def revoke_cert(cert_id: int) -> bool:
 
 
 def list_revoked_serials(ca_id: int) -> list[tuple[str, str]]:
-    """(serial, revocation time). Certificates revoked before revoked_at existed use their issue time."""
+    """(serial, revocation time) for the CA's CRL: revoked certificates, plus deleted
+    revoked ones until their expiry. Certificates revoked before revoked_at existed
+    use their issue time."""
     with _connect() as conn:
         rows = conn.execute(
             "SELECT serial, COALESCE(revoked_at, created_at) AS revoked_at "
-            "FROM certificates WHERE ca_id = ? AND revoked = 1",
-            (ca_id,),
+            "FROM certificates WHERE ca_id = ? AND revoked = 1 "
+            "UNION ALL "
+            "SELECT serial, revoked_at FROM deleted_revocations "
+            "WHERE ca_id = ? AND julianday(not_after) > julianday('now')",
+            (ca_id, ca_id),
         ).fetchall()
         return [(r["serial"], r["revoked_at"]) for r in rows]
 
 
-def delete_cert(cert_id: int) -> bool:
+def list_deleted_revocations(ca_id: int) -> set[str]:
+    """Serials on the CA's CRL whose certificate has been deleted."""
     with _connect() as conn:
+        rows = conn.execute(
+            "SELECT serial FROM deleted_revocations WHERE ca_id = ? AND julianday(not_after) > julianday('now')",
+            (ca_id,),
+        ).fetchall()
+        return {r["serial"] for r in rows}
+
+
+def delete_cert(cert_id: int) -> bool:
+    """Delete a certificate. A revoked one stays on its CA's CRL until it expires."""
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO deleted_revocations (ca_id, serial, revoked_at, not_after) "
+            "SELECT ca_id, serial, COALESCE(revoked_at, created_at), not_after "
+            "FROM certificates WHERE id = ? AND revoked = 1",
+            (cert_id,),
+        )
         cursor = conn.execute("DELETE FROM certificates WHERE id = ?", (cert_id,))
         return cursor.rowcount > 0
 
@@ -538,7 +639,7 @@ def delete_ssh_key(key_id: int) -> bool:
 
 # ── Backup and restore ──────────────────────────────────────────────
 
-_BLOB_COLUMNS = {"cert_pem", "key_pem", "public_key", "private_key"}
+_BLOB_COLUMNS = {"cert_pem", "key_pem", "public_key", "private_key", "crl_der"}
 
 
 def _row_to_exportable(row: sqlite3.Row) -> dict[str, Any]:
@@ -565,6 +666,8 @@ def export_all_data() -> dict[str, Any]:
             "SELECT * FROM certificates ORDER BY id").fetchall()]
         ssh_keys = [_row_to_exportable(r) for r in conn.execute(
             "SELECT * FROM ssh_keys ORDER BY id").fetchall()]
+        deleted_revocations = [dict(r) for r in conn.execute(
+            "SELECT * FROM deleted_revocations ORDER BY ca_id, serial").fetchall()]
         users = []
         for r in conn.execute("SELECT id, username, password_hash, totp_secret, totp_enabled, require_password, created_at FROM users ORDER BY id").fetchall():
             u = dict(r)
@@ -577,6 +680,7 @@ def export_all_data() -> dict[str, Any]:
         "certificate_authorities": cas,
         "certificates": certs,
         "ssh_keys": ssh_keys,
+        "deleted_revocations": deleted_revocations,
         "users": users,
     }
 
@@ -594,12 +698,12 @@ def _restore_cas(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
         conn.execute(
             """INSERT INTO certificate_authorities
                (id, parent_ca_id, name, domain, algorithm, not_before, not_after, serial, cert_pem, key_pem, created_at,
-                crl_next_update)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                crl_next_update, crl_der, crl_public)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ca["id"], ca.get("parent_ca_id"), ca["name"], ca["domain"],
              ca["algorithm"], ca["not_before"], ca["not_after"], ca["serial"],
              ca["cert_pem"], _maybe_encrypt(ca["key_pem"]), ca["created_at"],
-             ca.get("crl_next_update")),
+             ca.get("crl_next_update"), ca.get("crl_der"), int(bool(ca.get("crl_public")))),
         )
 
 
@@ -657,13 +761,21 @@ def import_all_data(data: dict[str, Any]) -> dict[str, int]:
     certs = _import_rows(data, "certificates")
     ssh_keys = _import_rows(data, "ssh_keys")
     users = _import_rows(data, "users")
+    deleted_revocations = _import_rows(data, "deleted_revocations")  # absent in older backups
     try:
         with _connect() as conn:
             conn.execute("DELETE FROM certificates")
+            conn.execute("DELETE FROM deleted_revocations")
             conn.execute("DELETE FROM certificate_authorities")
             conn.execute("DELETE FROM ssh_keys")
             _restore_cas(conn, cas)
             _restore_certs(conn, certs)
+            _backfill_crl_dp_urls(conn)
+            for row in deleted_revocations:
+                conn.execute(
+                    "INSERT INTO deleted_revocations (ca_id, serial, revoked_at, not_after) VALUES (?, ?, ?, ?)",
+                    (row["ca_id"], row["serial"], row["revoked_at"], row["not_after"]),
+                )
             _restore_ssh_keys(conn, ssh_keys)
             _restore_users(conn, users)
     except (KeyError, TypeError, AttributeError, sqlite3.IntegrityError, ValueError) as e:

@@ -1,6 +1,7 @@
 """End-to-end UI tests (#20): downloads, sign-out, CRL lifetime, legacy cleanup, mobile."""
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -66,8 +67,9 @@ def test_certificate_exports_download(signed_in: Page):
     name, data = _download(page, "[data-action=doExportCert]")
     assert name == "host.e2e.test-fullchain.pem" and data.count(b"BEGIN CERTIFICATE") == 2
 
-    page.click("#certTableContainer [data-action=revokeCert]")
-    _toast(page, "revoked")
+    # no distribution point on this server: revoking offers the updated CRL for import
+    name, _ = _download(page, "#certTableContainer [data-action=revokeCert]")
+    assert name.endswith(".crl")
 
 
 def test_crl_lifetime_and_next_update(signed_in: Page):
@@ -242,8 +244,7 @@ def test_certificate_viewer_crl_section(signed_in: Page):
     page.fill("#certCN", "www.crlview.test")
     page.click("[data-action=issueCert]")
     _toast(page, "issued")
-    page.click("#certTableContainer [data-action=revokeCert]")
-    _toast(page, "revoked")
+    _download(page, "#certTableContainer [data-action=revokeCert]")
 
     page.click("#certTableContainer .cert-link")
     crl = page.locator("#certViewCrl")
@@ -251,5 +252,93 @@ def test_certificate_viewer_crl_section(signed_in: Page):
     page.check("#certViewShowCrl")
     expect(crl).to_contain_text("Revoked")
     expect(crl).to_contain_text("this certificate")
+    page.click("#certViewCrl [data-action=viewCRL]")
+    viewer = page.locator("#viewCrlModal")
+    expect(viewer).to_contain_text("Revocations (not published here)")
+    expect(viewer).to_contain_text("www.crlview.test")
+    expect(page.locator("#crlViewPemCard")).to_be_hidden()
+    page.click("#viewCrlModal [data-action=viewCertFromCrl]")
+    expect(viewer).to_be_hidden()
+    expect(page.locator("#viewCertModal")).to_be_visible()
     page.uncheck("#certViewShowCrl")
     expect(crl).to_be_hidden()
+
+
+def test_crl_served_by_this_server(signed_in: Page, live_server, playwright):
+    page = signed_in
+    _create_ca(page, "served.test")
+    page.click("[data-action=showIssueCert]")
+    page.fill("#certCN", "www.served.test")
+    expect(page.locator("#crlDpRow")).to_be_hidden()
+    page.check("#certIncludeCRL")
+    expect(page.locator("#certCrlDp")).to_have_value("server")
+    expect(page.locator("#certCrlBaseUrl")).to_have_value(live_server.url)
+    page.click("[data-action=issueCert]")
+    _toast(page, "issued")
+
+    # published as soon as a certificate points here; no export needed
+    expect(page.locator("#caInfo .crl-url")).to_contain_text("/crl/")
+    expect(page.locator("#caInfo")).to_contain_text("Renews automatically")
+
+    page.click("#certTableContainer .cert-link")
+    expect(page.locator("#viewCertModal")).to_contain_text(live_server.url + "/crl/")
+    page.check("#certViewShowCrl")
+    crl_url = page.locator("#certViewCrl .mono").first.inner_text()
+    assert crl_url.startswith(live_server.url + "/crl/") and crl_url.endswith(".crl")
+
+    anon = playwright.request.new_context()
+    resp = anon.get(crl_url)
+    assert resp.status == 200 and resp.headers["content-type"] == "application/pkix-crl"
+    empty = len(resp.body())
+    page.click("#viewCertModal [data-action=hideModal]")
+
+    # revoking republishes the served CRL right away
+    page.click("#certTableContainer [data-action=revokeCert]")
+    _toast(page, "serves an updated CRL")
+    assert len(anon.get(crl_url).body()) > empty
+    anon.dispose()
+
+    page.click("[data-action=viewCRL]")
+    viewer = page.locator("#viewCrlModal")
+    expect(viewer).to_contain_text("Published CRL")
+    expect(viewer).to_contain_text("www.served.test")
+    expect(page.locator("#crlViewPem")).to_have_value(re.compile("BEGIN X509 CRL"))
+
+
+def test_private_key_asks_to_confirm_after_trusted_device_sign_in(signed_in: Page, live_server, browser_errors):
+    page = signed_in
+    page.click("[data-action=showCreateSSHKey]")
+    page.fill("#sshKeyName", "reauth-key")
+    page.click("[data-action=generateSSHKey]")
+    _toast(page, "SSH key generated")
+    # Sign in again as a trusted device, then drop the session: the next visit is
+    # signed in by the device cookie alone, which doesn't count as a recent sign-in.
+    page.context.clear_cookies()
+    page.goto(live_server.url + "/login")
+    page.fill("#username", ADMIN)
+    page.fill("#password", ADMIN_PASSWORD)
+    page.check("#trust_device")
+    page.click("button[type=submit]")
+    page.wait_for_url(live_server.url + "/")
+    page.wait_for_load_state("networkidle")  # a late response would set the session cookie again
+    page.context.clear_cookies(name="session")
+    page.reload()
+    page.click(".ssh-item >> text=reauth-key")
+    page.select_option("#sshExportPart", "private")
+
+    page.click("[data-action=exportSSHKey]")
+    expect(page.locator("#reauthModal")).to_be_visible()
+    page.click("[data-action=cancelReauth]")
+    _toast(page, "Cancelled")
+
+    page.click("[data-action=exportSSHKey]")
+    page.fill("#reauthSecret", "wrong-password")
+    page.click("[data-action=submitReauth]")
+    expect(page.locator("#reauthError")).to_have_text("That password or code isn't right")
+    page.fill("#reauthSecret", ADMIN_PASSWORD)
+    with page.expect_download() as info:
+        page.press("#reauthSecret", "Enter")
+    assert b"OPENSSH PRIVATE KEY" in Path(info.value.path()).read_bytes()
+    expect(page.locator("#reauthModal")).to_be_hidden()
+    # the expected 403s and the failed attempt are logged by the browser as resource errors
+    browser_errors[:] = [e for e in browser_errors if "status of 403" not in e and "status of 400" not in e]

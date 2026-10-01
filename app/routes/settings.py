@@ -11,7 +11,7 @@ from flask import Blueprint, g, jsonify, session
 
 from .. import crypto_engine, db, legacy_exports, state
 from ..security import lockout_message
-from ..web import auth_limiter, deliver_export, error, json_body, str_field
+from ..web import auth_limiter, deliver_export, error, json_body, recent_auth_required, str_field
 
 log = logging.getLogger("cert-generator")
 
@@ -114,6 +114,7 @@ def dismiss_encryption_prompt():
 # ── Backup and restore ──────────────────────────────────────────────
 
 @bp.post("/api/backup")
+@recent_auth_required
 def create_backup():
     password = str_field(json_body(), "password").strip()
     if not password:
@@ -143,6 +144,7 @@ def _decode_backup(password: str, file_data: str) -> tuple[dict | None, str | No
 
 
 @bp.post("/api/restore")
+@recent_auth_required
 def restore_backup():
     data = json_body()
     password = str_field(data, "password").strip()

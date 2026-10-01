@@ -79,6 +79,37 @@ class AttemptLimiter:
                 del self._state[k]
 
 
+class RateLimiter:
+    """At most ``limit`` hits per ``window`` seconds per key (fixed window), in memory.
+    Tracks at most ``max_keys`` keys, so a flood of addresses can't grow it unbounded."""
+
+    def __init__(self, limit: int, window: float = 60.0, max_keys: int = 10_000) -> None:
+        self._limit = limit
+        self._window = window
+        self._max_keys = max_keys
+        self._lock = threading.Lock()
+        self._hits: dict[str, tuple[float, int]] = {}  # key -> (window start, count)
+
+    def allow(self, key: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            start, count = self._hits.get(key, (now, 0))
+            if now - start >= self._window:
+                start, count = now, 0
+            if count >= self._limit:
+                return False
+            if key not in self._hits and len(self._hits) >= self._max_keys:
+                self._hits = {k: v for k, v in self._hits.items() if now - v[0] < self._window}
+                if len(self._hits) >= self._max_keys:
+                    return False  # fail closed under an address flood
+            self._hits[key] = (start, count + 1)
+            return True
+
+    def reset(self) -> None:
+        with self._lock:
+            self._hits.clear()
+
+
 def lockout_message(seconds: float) -> str:
     minutes = max(1, round(seconds / 60))
     unit = "minute" if minutes == 1 else "minutes"

@@ -584,6 +584,27 @@ def crl_next_update(crl_der: bytes) -> str:
     return crl.next_update_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def describe_crl(crl_der: bytes) -> dict:
+    """A human-readable breakdown of a CRL, for the CRL viewer, like `openssl crl -text`."""
+    crl = x509.load_der_x509_crl(crl_der)
+    return {
+        "issuer": _describe_name(crl.issuer),
+        "last_update": crl.last_update_utc.isoformat(),
+        "next_update": crl.next_update_utc.isoformat() if crl.next_update_utc else None,
+        "signature_algorithm": _oid_label(crl.signature_algorithm_oid),
+        "entries": [
+            {"serial": format_serial(hex(entry.serial_number)), "serial_hex": hex(entry.serial_number),
+             "revoked_at": entry.revocation_date_utc.isoformat()}
+            for entry in crl
+        ],
+        "fingerprints": {
+            "sha256": _colon_hex(hashlib.sha256(crl_der).digest()),
+            "sha1": _colon_hex(hashlib.sha1(crl_der, usedforsecurity=False).digest()),
+        },
+        "pem": crl.public_bytes(serialization.Encoding.PEM).decode("ascii"),
+    }
+
+
 def format_serial(serial_hex: str) -> str:
     """"0x7cff…" → "7C:FF:…", the colon form the certificate viewer shows."""
     value = int(serial_hex, 16)
