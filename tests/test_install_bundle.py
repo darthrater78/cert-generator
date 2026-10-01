@@ -178,6 +178,22 @@ def test_placeholder_certificate_bundles_the_crl(admin_client):
     assert "no store for imported CRLs" in zf.read("install.sh").decode()
 
 
+def test_local_crl_folder_made_by_someone_else_is_not_reused(admin_client):
+    """Any user can create C:\\ProgramData\\CertGenerator first and keep owning it, then swap the
+    script the listener runs as LOCAL SERVICE; the install moves such a folder (or a link) aside."""
+    ca_id = _create_ca(admin_client, "own.test")
+    cert_id = _issue(admin_client, ca_id, "host.own.test", crl_dp="placeholder")
+    script = _open(_bundle(admin_client, cert_id, os="windows", include_ca=False)).read("install.ps1").decode()
+    check = script.index("GetOwner([System.Security.Principal.SecurityIdentifier])")
+    assert "$owner -ne 'S-1-5-32-544' -and $owner -ne 'S-1-5-18'" in script
+    assert "[System.IO.FileAttributes]::ReparsePoint" in script
+    assert "Rename-Item -LiteralPath $base -NewName $aside" in script and "Remove-Item -LiteralPath $base" not in script
+    create = script.index("New-Item -ItemType Directory -Force -Path $crlDir")
+    owner = script.index("icacls.exe $base /setowner '*S-1-5-32-544'")
+    copy = script.index("'serve-crl.ps1') -Destination")
+    assert check < create < owner < copy  # checked before use, owned by Administrators before the script lands
+
+
 def test_uninstall_removes_only_what_the_bundle_installed(admin_client):
     root = _create_ca(admin_client, "un.test")
     cert_id = _issue(admin_client, root, "un.host")

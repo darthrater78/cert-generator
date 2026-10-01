@@ -82,7 +82,23 @@ def install_lines(host: str, crl_file: str, bundled_crl: str) -> list[str]:
         "$base = Join-Path $env:ProgramData 'CertGenerator'",
         "$crlDir = Join-Path $base 'crl'",
         "Step \"Local CRL server: folder $base (Administrators change it, the listener only reads it)\"",
+        # Any user can create folders in ProgramData. One they made in advance (or a junction
+        # to somewhere else) would stay theirs, and they could then swap the script the
+        # listener runs as LOCAL SERVICE, so it is moved aside, not reused or followed.
+        "if (Test-Path -LiteralPath $base) {",
+        "  try {",
+        "    $item = Get-Item -LiteralPath $base -Force",
+        "    $owner = (Get-Acl -LiteralPath $base).GetOwner([System.Security.Principal.SecurityIdentifier]).Value",
+        "    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { $owner = 'a link' }",
+        "  } catch { $owner = 'unreadable' }",
+        "  if ($owner -ne 'S-1-5-32-544' -and $owner -ne 'S-1-5-18') {",
+        "    $aside = 'CertGenerator.untrusted-' + (Get-Date -Format 'yyyyMMddHHmmss')",
+        "    Write-Host \"    $base isn't owned by Administrators ($owner): moving it aside as $aside\" -ForegroundColor Yellow",
+        "    Run { Rename-Item -LiteralPath $base -NewName $aside }",
+        "  }",
+        "}",
         "Run { New-Item -ItemType Directory -Force -Path $crlDir | Out-Null }",
+        "Run { icacls.exe $base /setowner '*S-1-5-32-544' | Out-Null }",
         "Run { icacls.exe $base /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' '*S-1-5-19:(OI)(CI)RX' | Out-Null }",
         f"Run {{ Copy-Item -LiteralPath (Join-Path $here {q(bundled_crl)}) -Destination (Join-Path $crlDir $crlFile) -Force }}",
         "Run { Copy-Item -LiteralPath (Join-Path $here 'serve-crl.ps1') -Destination (Join-Path $base 'serve-crl.ps1') -Force }",

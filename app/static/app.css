@@ -480,7 +480,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 @media (max-width: 1700px) {
   .row-actions { flex-wrap: wrap; width: 260px; margin-left: auto; }
 }
-@media (max-width: 1400px) {
+@media (max-width: 1500px) {
   .cert-table th:nth-child(4), .cert-table td:nth-child(4) { display: none; }
   .row-actions { width: 150px; }
 }
@@ -954,8 +954,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   font: 13px var(--font-serif); color: var(--text);
 }
 .import-pop .import-file code { font: 11.5px var(--font-mono); overflow-wrap: anywhere; }
-.import-pop .import-file small { display: block; font: 11.5px var(--font-ui); color: var(--text-dim); margin-top: 2px; }
+.import-pop .import-file small { display: block; font: 11.5px var(--font-ui); color: var(--text-dim); margin-top: 2px; overflow-wrap: anywhere; }
 .import-pop .import-file button { flex-shrink: 0; }
+.import-pop .import-file > :first-child { min-width: 0; }
 .import-pop .import-admin {
   font: 13px var(--font-serif); color: var(--text);
   padding: 7px 12px; margin: 0 0 8px; border-left: 3px solid var(--border); background: var(--bg);
