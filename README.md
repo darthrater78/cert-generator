@@ -400,6 +400,8 @@ Each entry lists its changes per deliverable: a `#### Docker` section means the 
 #### Internal
 - The image's Trivy scans (CI and release) now cover Python packages as well as OS packages, so a library bundled by the base image can no longer slip past them
 - CI skips the tests, browser tests, EXE build and image build when a change touches only documentation
+- Bandit and pip-audit come with `requirements-dev.txt`, and the README lists the local scan commands (Bandit, pip-audit, Trivy)
+- The page no longer reports an error when a reload cuts off a request still loading (it made a Firefox browser test flaky)
 
 ### v2.4.0 — 2026-09-29
 
