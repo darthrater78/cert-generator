@@ -7,7 +7,7 @@ import re
 from flask import Blueprint, jsonify
 
 from .. import crypto_engine, db
-from ..web import deliver_export, error, json_body, str_field
+from ..web import deliver_export, error, json_body, reauth_rejection, recent_auth_required, str_field
 
 log = logging.getLogger("cert-generator")
 
@@ -121,6 +121,9 @@ def export_ssh_key(key_id: int):
 
     if fmt not in VALID_SSH_FORMATS:
         return error(f"Invalid format. Choose from: {VALID_SSH_FORMATS}")
+    rejection = reauth_rejection()
+    if rejection is not None:
+        return rejection
     try:
         export_data, filename = crypto_engine.export_ssh_private_key(
             key["private_key"], fmt, passphrase=passphrase, original_passphrase=original_passphrase,
@@ -131,6 +134,7 @@ def export_ssh_key(key_id: int):
 
 
 @bp.get("/api/ssh-keys/<int:key_id>/private")
+@recent_auth_required
 def get_ssh_private_key(key_id: int):
     key = db.get_ssh_key(key_id)
     if not key:

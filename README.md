@@ -1,6 +1,6 @@
 # Cert Generator
 
-**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.4.0 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.4.0)**
+**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.5.0 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.5.0)**
 
 A tool for creating Certificate Authorities and issuing self-signed certificates for posture demos. Runs as a **Docker web app** or a **Windows desktop app** — both use the same interface and database format, and backups created in one mode can be restored in the other.
 
@@ -20,6 +20,7 @@ Both modes have full feature parity — the same UI, database format, and capabi
 - **Issue leaf certificates** signed by any CA (root or intermediate), with SAN (Subject Alternative Name) support including wildcards and IP addresses
 - **Certificate templates** matching Windows CA templates — Web Server, Computer, Client Authentication, User (Smart Card Logon), Code Signing, Email (S/MIME) — each with the correct key usage and extended key usage extensions
 - **Track all certificates** — view status (active/revoked/expired), details, and metadata
+- **Certificate viewer** — click a certificate (or **View**) to read it like `openssl x509 -text`: subject, issuer, validity, key and signature algorithm, every extension (SANs including UPN, key usage, extended key usage, basic constraints, key identifiers, CRL distribution points), SHA-256/SHA-1 fingerprints and the PEM, with Copy PEM and Export. A **Show the issuing CA's CRL** checkbox adds the CA's revocation list: whether this certificate is on it, the distribution point it carries, the CRL's next update and every revoked serial. The private key is never sent to the viewer
 - **Export in multiple formats** — PEM, DER, CRT (.crt), PKCS12 (.pfx)
 - **Export parts individually** — full bundle, certificate only, private key only, or full chain (cert + every issuing CA up to the root)
 - **Password-protected exports** — optionally encrypt the private key (PEM); PKCS12 bundles always require a password (the export dialog pre-fills `changeit` for Windows compatibility)
@@ -27,7 +28,10 @@ Both modes have full feature parity — the same UI, database format, and capabi
 - **In-app import guide** — step-by-step instructions for importing certificates on Windows, macOS, and Linux for each template type
 - **Modern crypto algorithms** — Ed25519, ECDSA P-256, ECDSA P-384, RSA-2048, RSA-4096
 - **Revoke certificates** to mark them as no longer trusted
-- **Offline CRL generation** — optionally embed a CRL Distribution Point in issued certificates and export a signed CRL file for manual import into Windows certificate stores, providing offline revocation status without a live server. Choose how long each CRL stays valid (7 days to 10 years, default 10 years); the CA page shows its next-update date and flags CRLs that need re-exporting
+- **CRL generation and publishing** — optionally embed a CRL Distribution Point in issued certificates. The distribution point is either **this server** (`<address>/crl/<CA id>.crl`, answered without sign-in; server mode only, see [Publishing the CRL](#publishing-the-crl)), where the app signs a 7-day CRL itself, re-signs it on every revocation and renews it before it runs out, or a **placeholder** URL for offline use, where you export a signed CRL file and import it into each Windows certificate store. Exported CRLs stay valid as long as you choose (7 days to 10 years, default 10 years); the CA page shows the published CRL and the exported one separately, and each certificate shows where its CRL comes from and whether it is published
+- **CRL viewer** — **View CRL** on the CA page (or **Open in CRL viewer** from a certificate) shows the CRL this server publishes: issuer, this and next update, signature, every revoked serial linked to its certificate, fingerprints and the PEM. For a CA it doesn't publish for, it lists the revocations an export would contain now
+- **Step-up confirmation for key material** — downloading a private key (CA, certificate or SSH), copying an SSH private key, backing up and restoring all ask for your password, or an authenticator code when MFA is on, unless you signed in within the last 5 minutes
+- **Revocation survives deletion** — deleting a revoked certificate keeps its serial on the CA's CRL until the certificate would have expired, and deleting a certificate that isn't revoked warns that clients keep trusting it
 - **SSH key generation** — generate Ed25519, ECDSA P-256/P-384, and RSA-2048/4096 SSH key pairs with optional passphrase protection
 - **SSH key import** — import existing SSH private keys from Bitwarden or other sources; supports OpenSSH, PEM PKCS#8, PEM traditional, and DER formats with automatic algorithm detection and optional passphrase; imported keys are visually marked and fully functional (export, copy, backup/restore)
 - **SSH key export** — download private keys in OpenSSH or PEM (PKCS#8) format, copy public keys, or copy private keys for Bitwarden SSH import
@@ -42,6 +46,8 @@ Both modes have full feature parity — the same UI, database format, and capabi
 <img width="1440" alt="The dashboard on the Slate theme: an intermediate CA's particulars and its register of issued certificates" src="docs/screenshots/dashboard.png" />
 
 <img width="49%" alt="The sign-in page, set as an engraved certificate over a faint openssl readout" src="docs/screenshots/sign-in.png" /> <img width="49%" alt="The Issue Certificate dialog" src="docs/screenshots/issue-certificate.png" />
+
+<img width="49%" alt="The certificate viewer: a web server certificate's general fields, subject, issuer, extensions, fingerprints and the issuing CA's CRL" src="docs/screenshots/cert-viewer.png" /> <img width="49%" alt="The CRL viewer: the intermediate CA's published CRL with one revoked serial linked to its certificate" src="docs/screenshots/crl-viewer.png" />
 
 <img width="49%" alt="An SSH key's particulars, public key and export options" src="docs/screenshots/ssh-key.png" /> <img width="49%" alt="The Umber theme with the Appearance menu open: six themes and the accent colour picker" src="docs/screenshots/themes.png" />
 
@@ -78,7 +84,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.4.0
+    image: ghcr.io/darthrater78/cert-generator:2.5.0
     container_name: cert-generator
     restart: unless-stopped
     security_opt:
@@ -122,6 +128,41 @@ The server speaks plain HTTP. For anything beyond a trusted LAN, put it behind a
 - set `SETUP_TOKEN` before first launch if the instance is reachable before you create the admin account
 
 Proxies that rewrite the `Host` header should forward the original as `X-Forwarded-Host`; the cross-site request check accepts either.
+
+#### Publishing the CRL
+
+Certificates issued with the **This server** distribution point name `<address>/crl/<CA id>.crl`, where `<address>` is the one typed in the Issue Certificate dialog (it defaults to the address you are using). That path is the only one that answers without signing in. The app signs that CRL itself the first time a certificate names this server, and keeps it current: each served CRL is valid for 7 days, it is re-signed on every revocation, and an hourly check renews it when less than half its life is left. Clients cache a CRL until its next update, so a revocation reaches them within 7 days. Nothing is signed per request. A CA's CRL is served only once a certificate has named this server, and unknown, unpublished and never-opted-in CAs all get the same `404`.
+
+With an encrypted database, signing needs the CA key, so revoking a certificate of a CA served here is refused while the database is locked, and renewals wait until it is unlocked (the served CRL keeps answering meanwhile). **Export CRL** is for the placeholder distribution point and offline import: it downloads a CRL with the lifetime you choose and never replaces the one this server serves. After you revoke a certificate whose distribution point is a placeholder, or that has none, the app offers that updated CRL for download.
+
+If clients reach the app through a reverse proxy, expose `/crl/` alone to them and keep everything else private. Allow only `GET` and `HEAD` on `^/crl/[0-9]+\.crl$`. Revocation checks are usually plain HTTP (clients don't fetch a CRL over HTTPS to avoid a circular check), so the CRL vhost is often HTTP while the admin UI stays on HTTPS.
+
+nginx:
+
+```nginx
+server {
+    listen 80;
+    server_name pki.example.lan;
+
+    location ~ ^/crl/[0-9]+\.crl$ {
+        limit_except GET { deny all; }  # GET also allows HEAD
+        proxy_pass http://127.0.0.1:5000;
+    }
+    location / { return 404; }
+}
+```
+
+Traefik (compose labels on the `cert-generator` service):
+
+```yaml
+labels:
+  - traefik.enable=true
+  - traefik.http.routers.crl.rule=Host(`pki.example.lan`) && PathRegexp(`^/crl/[0-9]+\.crl$`) && (Method(`GET`) || Method(`HEAD`))
+  - traefik.http.routers.crl.entrypoints=web
+  - traefik.http.services.crl.loadbalancer.server.port=5000
+```
+
+The desktop app can't serve CRLs (it listens on loopback only), so it offers the placeholder distribution point alone.
 
 ### Standalone EXE (Windows desktop)
 
@@ -191,6 +232,14 @@ python -m playwright install --with-deps chromium firefox webkit
 python -m pytest -m e2e --browser chromium --browser firefox --browser webkit
 ```
 
+Security scans before a release: Bandit and pip-audit come with `requirements-dev.txt`, and [Trivy](https://github.com/aquasecurity/trivy/releases) (a standalone binary) scans a built image with the same config CI uses:
+
+```bash
+bandit -r app -c pyproject.toml
+pip-audit -r requirements.txt -r requirements-desktop.txt
+docker build -t cert-generator:dev . && trivy image --config trivy.yaml --ignorefile .trivyignore.yaml cert-generator:dev
+```
+
 Editing a file under `.github/workflows/`? Lint it the same way CI does:
 
 ```bash
@@ -201,7 +250,7 @@ CI runs on every push and pull request to `master`:
 - the unit tests on Linux (Python 3.10 and 3.14) and Windows
 - the browser tests in Chromium, Firefox, and WebKit
 - a Windows EXE build and its `--self-test` / `--self-test-gui` checks (the EXE is kept as a workflow artifact for 7 days)
-- a Docker image build with a container smoke test, including a clean shutdown on `docker stop`, and a Trivy scan of the image (report only)
+- a Docker image build with a container smoke test, including a clean shutdown on `docker stop`, and a Trivy scan of the image's OS and Python packages (report only)
 - `actionlint` against `.github/workflows/**` (only runs when those files change)
 - dependency review on pull requests, which fails a PR that adds a dependency with a known high or critical advisory
 
@@ -210,7 +259,7 @@ A change that touches only documentation (`*.md`, `docs/**`, `LICENSE`) skips th
 ### Releases
 
 Pushing a `vX.Y.Z` tag on `master` runs `.github/workflows/release.yml`. Before building anything, it requires a passing CI run for the tagged commit — an in-progress run is waited on, but a missing or failed one stops the release. Both deliverables share one version line, and the changelog decides which of them a release publishes: the version's entry in this README's version history must carry a `#### Docker` section, a `#### Windows EXE` section, or both, and at least one is required.
-- **Docker image** — built once and pushed by digest; that digest is smoke-tested and scanned with Trivy (a fixable high or critical vulnerability stops the release, and the scan is uploaded to the Security tab), and only then tagged in `ghcr.io/darthrater78/cert-generator` as `X.Y.Z`, `X.Y`, and — only when the release includes Docker and is the newest — `latest`, with a build provenance attestation
+- **Docker image** — built once and pushed by digest; that digest is smoke-tested and scanned with Trivy (a fixable high or critical vulnerability in an OS or Python package stops the release, and the scan is uploaded to the Security tab), and only then tagged in `ghcr.io/darthrater78/cert-generator` as `X.Y.Z`, `X.Y`, and — only when the release includes Docker and is the newest — `latest`, with a build provenance attestation
 - **Windows EXE** — built and self-tested on Windows, attached to the GitHub release with a SHA-256 checksum and a build provenance attestation
 
 Whichever deliverable the entry lists is built, and the release is created only once those succeed. A deliverable with no section is not rebuilt: it stays at the version it last shipped, and the notes say so ("Docker image unchanged (2.1.0)"). GitHub's **Latest** release follows the newest release that includes the EXE, so `/releases/latest/download/CertGenerator.exe` always resolves to the current build.
@@ -231,11 +280,15 @@ The embedded web server is hardened for both desktop and server use:
 - **TOTP MFA** — optional second factor via any authenticator app; enable per-user from MFA Settings. Each code is accepted only once
 - **Trusted devices** — "Trust this device" sets an httpOnly cookie with a SHA-256 hashed token; auto-login skips password and MFA for 30 days unless "Require password every visit" is enabled. Signing out forgets the device
 - **Session revocation** — password resets, MFA changes, "Revoke all devices", and backup restores end every other session
+- **Step-up confirmation** — private-key downloads (CA and certificate keys, any bundle that includes a key, SSH private keys in any format), backup and restore require a password or authenticator-code sign-in within the last 5 minutes; otherwise the page asks for one and retries. Confirmations share the sign-in lockout, and a trusted-device auto-login doesn't count as one. Desktop mode has no accounts and is exempt
 - **Session cookies** — httpOnly, `SameSite=Lax`, signed with `SECRET_KEY`; `Secure` when `COOKIE_SECURE=true`
 - **Cross-site request protection** — state-changing requests from other sites are rejected (using `Sec-Fetch-Site`, falling back to `Origin`)
+- **Internal API** — the routes under `/api/` are the page's own API, authenticated by the session cookie. They are not a stable public interface and can change between releases
+- **Public CRL path** — `/crl/<id>.crl` is the one unauthenticated route. It accepts only `GET` and `HEAD`, serves only CAs that opted in by issuing a certificate pointing at this server, answers unknown and unpublished CAs with the same `404`, never reads or sets a session cookie, sends the CRL as an attachment under `Content-Security-Policy: default-src 'none'` with an `ETag`, and is rate limited to 300 requests a minute per client address
 - **Security headers** — a Content-Security-Policy that allows no inline script (`script-src 'self'`), `X-Frame-Options: DENY`, `nosniff`, and `Cache-Control: no-store` on API responses
 - **No key material on the server's disk** — exports and backups stream to the browser instead of being written to an export folder. If an older version left export files in `EXPORT_DIR`, a banner offers to review and delete them (only files matching the old export names are touched)
 - **Clean shutdown** — `docker stop` ends the server immediately instead of waiting for its timeout
+- **Patched, minimal image** — the image applies Debian security updates at build time rather than waiting for the base image to be rebuilt, and drops `pip` (with the libraries it bundles) once the app's dependencies are installed
 
 **Both modes:**
 - **Encryption fails closed** — while an encrypted database is locked, anything that would store a private key is refused rather than written in plaintext
@@ -321,6 +374,34 @@ The database format is identical in both modes. Use **Backup** to create an encr
 ## Version history
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
+
+### v2.5.0 — 2026-10-01
+
+#### Docker
+- **Certificate viewer.** Click an issued certificate's name, or its new **View** button, to see what's inside it: subject and issuer, validity to the minute, serial, key type and signature algorithm, every extension (SANs including UPN, key usage, extended key usage, basic constraints, key identifiers, CRL distribution points), SHA-256 and SHA-1 fingerprints, and the PEM with a **Copy PEM** button. **Export…** opens the usual export dialog. The private key is never sent to the viewer
+- **Show the issuing CA's CRL** — a checkbox in the viewer adds the CA's revocation list: whether this certificate is revoked, the CRL distribution point it carries (or a note that it has none), the CRL's next update, and every revoked serial with this certificate's highlighted. It reads what's already there
+- **The CRL distribution point can be this server.** When issuing a certificate with **Include CRL Distribution Point**, choose **This server** or **Placeholder URL (offline import)**. This server writes `<address>/crl/<CA id>.crl` into the certificate (the address is pre-filled from the page you're on and can be changed to one your clients reach) and opens that path, without sign-in, for the CA. See [Publishing the CRL](#publishing-the-crl) for exposing only that path through nginx or Traefik. Requests that set the old `include_crl_dp` flag still get the placeholder
+- **The served CRL keeps itself current.** This server signs a 7-day CRL for each CA it serves, re-signs it on every revocation and renews it hourly once less than half its life is left, so clients see a revocation within 7 days without any exporting. **Export CRL** now only downloads a file for offline import and never changes what is served. Revoking a certificate of a served CA needs the database unlocked
+- **Revoking says what happens next**: for a certificate pointing at this server, nothing to do; for a placeholder or no distribution point, the app offers the updated CRL for download to import on each machine
+- **CRL viewer.** **View CRL** on the CA page, or **Open in CRL viewer** in the certificate viewer, shows the published CRL: issuer, this and next update, signature, each revoked serial linked to its certificate, fingerprints and PEM, with **Copy PEM**. For a CA this server doesn't publish for, it lists the revocations an export would contain. The CA page now shows the **Published CRL** and the **Exported CRL** separately
+- **Confirm it's you before key material leaves.** Downloading any private key, copying an SSH private key, backing up and restoring ask for your password (or an authenticator code with MFA) unless you signed in within the last 5 minutes. Trusted-device auto-login doesn't count, and confirmations share the sign-in lockout
+- `/api/` is documented as the page's internal API (session-authenticated, not a stable contract)
+- **A CRL column** in the certificate table shows where each certificate's CRL comes from (None, Placeholder, This server, Not published, External), and the viewer's CRL row adds whether the URL answers from your browser
+- **Deleting a revoked certificate keeps it on the CRL** until it would have expired, so deleting never un-revokes it; the viewer marks such serials as "deleted certificate". Deleting a certificate that isn't revoked now warns that clients keep trusting it until it expires. Backups carry these entries and each CA's published CRL
+- The in-app Import Guide's CRL tab covers both distribution points, automatic publishing and the CRL viewer
+- After sign-in the first certificate authority opens right away. Previously the "No authorities yet" screen stayed up until you picked a CA, even when you had some, and it came back after deleting the open CA
+- Restoring a backup now keeps each CA's CRL next-update date instead of resetting it to "Not exported"
+- The image picks up Debian security updates at build time (fixes OpenSSL CVE-2026-75804 and CVE-2026-84782, and PCRE2 CVE-2026-103111, ahead of the upstream `python:3.14-slim` rebuild) and no longer ships `pip`, which removes the copies of urllib3, msgpack and setuptools it bundled
+
+#### Windows EXE
+- The same certificate viewer, CRL section, first-CA-on-load fix and restore fix as Docker
+- The same CRL column, deleted-revocation handling, delete warning, revoke guidance, CRL viewer and Import Guide update. The desktop app can't serve CRLs, so its Issue Certificate dialog offers the placeholder distribution point only. It has no accounts, so it doesn't ask you to confirm before key material leaves
+
+#### Internal
+- The image's Trivy scans (CI and release) now cover Python packages as well as OS packages, so a library bundled by the base image can no longer slip past them
+- CI skips the tests, browser tests, EXE build and image build when a change touches only documentation
+- Bandit and pip-audit come with `requirements-dev.txt`, and the README lists the local scan commands (Bandit, pip-audit, Trivy)
+- The page no longer reports an error when a reload cuts off a request still loading (it made a Firefox browser test flaky)
 
 ### v2.4.0 — 2026-09-29
 

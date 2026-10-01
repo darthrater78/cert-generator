@@ -110,9 +110,9 @@ const EXPIRY_WARNING_DAYS = 30;
 // Certificate authorities by id, from the last list load (for "issued by").
 const caIndex = new Map();
 
-// "0x7cff2c0d6fb3…" → "7C:FF:2C:0D:6F:B3", the leading bytes of a serial.
+// "0x7cff2c0d6fb3…" or "7C:FF:2C:…" → "7C:FF:2C:0D:6F:B3", the leading bytes of a serial.
 function shortSerial(serial) {
-  let hex = String(serial || '').replace(/^0x/i, '').toUpperCase();
+  let hex = String(serial || '').replace(/^0x/i, '').replace(/:/g, '').toUpperCase();
   if (hex.length % 2) hex = '0' + hex;
   return (hex.match(/../g) || []).slice(0, 6).join(':');
 }
@@ -125,7 +125,16 @@ const TEMPLATE_DESCS = {
   'email': 'Email Protection',
 };
 
-async function api(url, opts = {}) {
+// A reload or navigation aborts requests in flight, and Firefox rejects them (NetworkError,
+// AbortError) as soon as it starts. Background loads have no one to report to by then.
+let pageUnloading = false;
+window.addEventListener('beforeunload', () => { pageUnloading = true; });
+window.addEventListener('pageshow', () => { pageUnloading = false; });
+window.addEventListener('unhandledrejection', (event) => {
+  if (pageUnloading) event.preventDefault();
+});
+
+async function api(url, opts = {}, retried = false) {
   const res = await fetch(url, {
     headers: { 'Content-Type': 'application/json', ...opts.headers },
     ...opts,
@@ -135,10 +144,57 @@ async function api(url, opts = {}) {
     if (res.status === 423 && err.locked) {
       document.getElementById('unlockOverlay').classList.remove('hidden');
     }
+    // Private keys and backups need a recent sign-in: ask, then repeat the request once.
+    if (res.status === 403 && err.reauth_required && !retried) {
+      if (await promptReauth(err.mfa)) return api(url, opts, true);
+      throw new Error('Cancelled. Confirm it\'s you to continue.');
+    }
     throw new Error(err.error || 'Request failed');
   }
   return res;
 }
+
+// ── Re-authentication ───────────────────────────────────────────────
+let reauthPending = null;
+
+function promptReauth(mfa) {
+  if (reauthPending) return reauthPending.promise;
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  reauthPending = { promise, resolve };
+  document.getElementById('reauthLabel').textContent = mfa ? 'Password or authenticator code' : 'Password';
+  document.getElementById('reauthError').textContent = '';
+  const input = document.getElementById('reauthSecret');
+  input.value = '';
+  showModal('reauthModal');
+  input.focus();
+  return promise;
+}
+
+function finishReauth(ok) {
+  hideModal('reauthModal');
+  document.getElementById('reauthSecret').value = '';
+  const pending = reauthPending;
+  reauthPending = null;
+  if (pending) pending.resolve(ok);
+}
+
+async function submitReauth() {
+  const input = document.getElementById('reauthSecret');
+  const errorBox = document.getElementById('reauthError');
+  if (!input.value) { errorBox.textContent = 'Enter your password'; return; }
+  const res = await fetch('/api/reauth', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ secret: input.value }),
+  });
+  if (res.ok) { finishReauth(true); return; }
+  const err = await res.json().catch(() => ({}));
+  errorBox.textContent = err.error || 'Request failed';
+  input.select();
+}
+
+function cancelReauth() { finishReauth(false); }
 
 function toast(msg, type = 'success') {
   const el = document.createElement('div');
@@ -152,7 +208,31 @@ function showModal(id) { closeMobileMenu(); document.getElementById(id).classLis
 function hideModal(id) { document.getElementById(id).classList.add('hidden'); }
 
 function showCreateCA() { showModal('createCAModal'); document.getElementById('caDomain').focus(); }
-function showIssueCert() { showModal('issueCertModal'); document.getElementById('certCN').focus(); }
+function showIssueCert() {
+  updateCrlDpFields();
+  showModal('issueCertModal');
+  document.getElementById('certCN').focus();
+}
+
+// The distribution point choice: this server (server mode only) or the offline placeholder.
+function updateCrlDpFields() {
+  const include = document.getElementById('certIncludeCRL').checked;
+  const select = document.getElementById('certCrlDp');
+  select.querySelector('option[value="server"]').disabled = !SERVER_MODE;
+  if (!SERVER_MODE) select.value = 'placeholder';
+  const server = select.value === 'server';
+  const baseUrl = document.getElementById('certCrlBaseUrl');
+  if (!baseUrl.value) baseUrl.value = window.location.origin;
+
+  document.getElementById('crlDpRow').hidden = !include;
+  document.getElementById('crlBaseUrlGroup').hidden = !server;
+  const ca = caIndex.get(currentCAId);
+  document.getElementById('crlDpHint').textContent = server
+    ? 'Clients fetch ' + baseUrl.value.replace(/\/+$/, '') + '/crl/' + currentCAId + '.crl without signing in. ' +
+      'This server signs that CRL itself, republishes it on every revocation and renews it before it expires.'
+    : 'Points at http://pki.' + (ca ? ca.domain : '<domain>') + '/crl/… — nothing answers there; ' +
+      'import the exported CRL on each machine (see Import Guide).';
+}
 
 async function loadCAs() {
   const res = await api('/api/ca');
@@ -184,9 +264,15 @@ async function loadCAs() {
   });
 
   document.getElementById('caCount').textContent = cas.length;
-  if (cas.length === 0 && !currentSSHKeyId) {
+  if (currentSSHKeyId) return;
+  if (currentCAId && !caIndex.has(currentCAId)) currentCAId = null;
+  if (cas.length === 0) {
     document.getElementById('welcomeView').classList.remove('hidden');
     document.getElementById('caView').classList.add('hidden');
+  } else if (!currentCAId) {
+    // Nothing selected yet (fresh sign-in, or the open CA was deleted): open the
+    // first authority instead of leaving the "No authorities yet" screen up.
+    selectCA((roots[0] || cas[0]).id);
   }
 }
 
@@ -222,7 +308,11 @@ async function selectCA(caId) {
     infoItem('Serial', serialToggle(ca.serial)) +
     infoItem('Created', formatDate(ca.not_before)) +
     infoItem('Expires', formatDate(ca.not_after)) +
-    infoItem('CRL Next Update', crlStatusBadge(ca.crl_next_update)) +
+    (SERVER_MODE && ca.crl_served
+      ? infoItem('Published CRL', servedCrlBadge(ca.crl_served_next_update) +
+          '<div class="crl-url">' + escapeHtml(window.location.origin + '/crl/' + ca.id + '.crl') + '</div>')
+      : '') +
+    infoItem('Exported CRL', crlStatusBadge(ca.crl_next_update)) +
     infoItem('Status', expired
       ? '<span class="badge badge-expired">Expired</span>'
       : '<span class="badge badge-active">Active</span>');
@@ -253,22 +343,17 @@ async function loadCerts(caId) {
   document.getElementById('certTableContainer').querySelector('table').classList.remove('hidden');
 
   tbody.innerHTML = certs.map(c => {
-    const daysLeft = Math.ceil((new Date(c.not_after) - new Date()) / 86400000);
-    let status = '';
-    if (c.revoked) status = '<span class="badge badge-revoked">Revoked</span>';
-    else if (daysLeft < 0) status = '<span class="badge badge-expired">Expired</span>';
-    else if (daysLeft <= EXPIRY_WARNING_DAYS) status = '<span class="badge badge-expired">Expires in ' + daysLeft + 'd</span>';
-    else status = '<span class="badge badge-active">Active</span>';
-
     const tmplLabel = TEMPLATE_LABELS[c.template] || c.template || 'Web Server';
     return '<tr' + (c.revoked ? ' class="revoked"' : '') + '>' +
-      '<td>' + escapeHtml(c.common_name) + '</td>' +
+      '<td><button type="button" class="cert-link" data-action="viewCert" data-arg="' + c.id + '">' + escapeHtml(c.common_name) + '</button></td>' +
       '<td>' + escapeHtml(tmplLabel) + '</td>' +
       '<td class="sans" title="' + escapeHtml(c.san_domains) + '">' + escapeHtml(c.san_domains) + '</td>' +
       '<td>' + escapeHtml(algoShort(c.algorithm)) + '</td>' +
       '<td>' + formatDate(c.not_after) + '</td>' +
-      '<td>' + status + '</td>' +
+      '<td>' + certStatusBadge(c.not_after, c.revoked) + '</td>' +
+      '<td>' + crlDpBadge(c.crl_dp) + '</td>' +
       '<td>' +
+        '<button class="btn btn-ghost btn-sm" data-action="viewCert" data-arg="' + c.id + '\">View</button> ' +
         '<button class="btn btn-ghost btn-sm" data-action="showExportCert" data-arg="' + c.id + '\">Export</button> ' +
         (!c.revoked ? '<button class="btn btn-ghost btn-sm" data-action="revokeCert" data-arg="' + c.id + '\">Revoke</button> ' : '') +
         '<button class="btn btn-danger btn-sm" data-action="deleteCert" data-arg="' + c.id + '\">Delete</button>' +
@@ -370,7 +455,7 @@ async function issueCert() {
   const template = document.getElementById('certTemplate').value;
   const email = document.getElementById('certEmail').value.trim();
   const upn = document.getElementById('certUPN').value.trim();
-  const includeCrlDp = document.getElementById('certIncludeCRL').checked;
+  const crlDp = document.getElementById('certIncludeCRL').checked ? document.getElementById('certCrlDp').value : 'none';
 
   try {
     const res = await api('/api/ca/' + currentCAId + '/certs', {
@@ -383,7 +468,8 @@ async function issueCert() {
         template: template,
         email: email || undefined,
         upn: upn || undefined,
-        include_crl_dp: includeCrlDp,
+        crl_dp: crlDp,
+        crl_base_url: crlDp === 'server' ? document.getElementById('certCrlBaseUrl').value.trim() : undefined,
       }),
     });
     const cert = await res.json();
@@ -393,8 +479,9 @@ async function issueCert() {
     document.getElementById('certEmail').value = '';
     document.getElementById('certUPN').value = '';
     document.getElementById('certIncludeCRL').checked = false;
+    updateCrlDpFields();
     toast('Certificate issued: ' + cert.common_name);
-    loadCerts(currentCAId);
+    selectCA(currentCAId);  // also refreshes the CA's published CRL
   } catch (e) {
     toast(e.message, 'error');
   }
@@ -408,6 +495,186 @@ function showExportCert(certId) {
   document.getElementById('certExportChain').checked = false;
   updateCertPasswordVisibility();
   showModal('exportCertModal');
+}
+
+let viewCertId = null;
+
+function certStatusBadge(notAfter, revoked) {
+  const daysLeft = Math.ceil((new Date(notAfter) - new Date()) / 86400000);
+  if (revoked) return '<span class="badge badge-revoked">Revoked</span>';
+  if (daysLeft < 0) return '<span class="badge badge-expired">Expired</span>';
+  if (daysLeft <= EXPIRY_WARNING_DAYS) return '<span class="badge badge-expired">Expires in ' + daysLeft + 'd</span>';
+  return '<span class="badge badge-active">Active</span>';
+}
+
+// Where a certificate tells clients to check revocation, and whether anything answers there.
+const CRL_DP_LABELS = {
+  none: ['badge-algo', 'None', 'No distribution point: clients can only learn of a revocation from a CRL you import yourself.'],
+  placeholder: ['badge-expired', 'Placeholder', 'Placeholder URL: nothing answers there. Import the exported CRL on each machine.'],
+  server_live: ['badge-active', 'This server', 'Served by this server, which keeps the CRL current automatically.'],
+  server_pending: ['badge-expired', 'Not published', 'Points at this server, but no CRL is published yet. It publishes once the database is unlocked.'],
+  other: ['badge-algo', 'External', 'Points at an address this app does not manage.'],
+};
+
+function crlDpKey(dp) {
+  if (!dp) return 'none';
+  if (dp.kind === 'server') return dp.published ? 'server_live' : 'server_pending';
+  return CRL_DP_LABELS[dp.kind] ? dp.kind : 'other';
+}
+
+function crlDpBadge(dp) {
+  const [cls, label, note] = CRL_DP_LABELS[crlDpKey(dp)];
+  return '<span class="badge ' + cls + '" title="' + escapeHtml(note) + '">' + escapeHtml(label) + '</span>';
+}
+
+function crlDpDetail(dp) {
+  const [, , note] = CRL_DP_LABELS[crlDpKey(dp)];
+  return crlDpBadge(dp) + (dp && dp.url ? '<div class="mono">' + escapeHtml(dp.url) + '</div>' : '') +
+    '<div class="dim crl-note">' + escapeHtml(note) + '</div>' +
+    (dp && dp.kind === 'server' ? '<div class="crl-probe dim" id="crlProbe"></div>' : '');
+}
+
+// Ask the distribution point for its CRL, when the page's CSP lets us (same origin only).
+async function probeCrlDp(dp) {
+  const out = document.getElementById('crlProbe');
+  if (!out || !dp || !dp.url) return;
+  let url;
+  try { url = new URL(dp.url); } catch { return; }
+  if (url.origin !== window.location.origin) {
+    out.textContent = 'Reachability: can\'t check from this page (' + url.origin + ' is a different address).';
+    return;
+  }
+  out.textContent = 'Reachability: checking…';
+  try {
+    const res = await fetch(url.pathname, { method: 'HEAD', credentials: 'omit', cache: 'no-store' });
+    out.textContent = res.ok
+      ? 'Reachability: answers from this browser (HTTP ' + res.status + ').'
+      : 'Reachability: failed, HTTP ' + res.status + (res.status === 404 ? '. No CRL is published yet.' : '.');
+  } catch {
+    out.textContent = 'Reachability: no answer from ' + url.origin + '.';
+  }
+}
+
+function formatDateTime(iso) {
+  if (!iso) return '-';
+  return new Date(iso).toLocaleString('en-US', {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+  });
+}
+
+function detailRows(rows) {
+  return '<dl class="cert-detail">' + rows.map(([label, value]) =>
+    '<dt>' + escapeHtml(label) + '</dt><dd>' + value + '</dd>').join('') + '</dl>';
+}
+
+function detailSection(title, rows) {
+  return rows.length ? '<div class="card"><h3>' + escapeHtml(title) + '</h3>' + detailRows(rows) + '</div>' : '';
+}
+
+// The viewer's sections as HTML; every value from the certificate is escaped.
+function certDetailHtml(d) {
+  const issuerCA = caIndex.get(d.ca_id);
+  const nameRows = (attrs) => attrs.map(a => [a.name, escapeHtml(a.value)]);
+  const general = [
+    ['Status', certStatusBadge(d.not_after, d.revoked) +
+      (d.revoked && d.revoked_at ? ' <span class="dim">on ' + escapeHtml(formatDateTime(d.revoked_at)) + '</span>' : '')],
+    ['Issued by', escapeHtml(issuerCA ? issuerCA.name : d.issuer.map(a => a.value).join(', '))],
+    ['Valid from', escapeHtml(formatDateTime(d.not_before))],
+    ['Valid until', escapeHtml(formatDateTime(d.not_after))],
+    ['Serial number', '<span class="mono">' + escapeHtml(d.serial) + '</span>'],
+    ['Version', 'v' + escapeHtml(d.version)],
+    ['Public key', escapeHtml(d.public_key)],
+    ['Signature', escapeHtml(d.signature_algorithm)],
+    ['CRL', crlDpDetail(d.crl_dp)],
+  ];
+  const extensions = d.extensions.map(e => [
+    e.name + (e.critical ? ' (critical)' : ''),
+    e.values.length ? e.values.map(v => '<div>' + escapeHtml(v) + '</div>').join('') : '<span class="dim">—</span>',
+  ]);
+  const fingerprints = [
+    ['SHA-256', '<span class="mono">' + escapeHtml(d.fingerprints.sha256) + '</span>'],
+    ['SHA-1', '<span class="mono">' + escapeHtml(d.fingerprints.sha1) + '</span>'],
+  ];
+  return detailSection('General', general) +
+    detailSection('Subject', nameRows(d.subject)) +
+    detailSection('Issuer', nameRows(d.issuer)) +
+    detailSection('Extensions', extensions) +
+    detailSection('Fingerprints', fingerprints);
+}
+
+async function viewCert(certId) {
+  try {
+    const res = await api('/api/certs/' + certId + '/details');
+    const d = await res.json();
+    viewCertId = certId;
+    document.getElementById('certViewEyebrow').textContent =
+      (TEMPLATE_LABELS[d.template] || d.template || 'Certificate') + ' · No. ' + shortSerial(d.serial);
+    document.getElementById('certViewTitle').textContent = d.common_name;
+    document.getElementById('certViewBody').innerHTML = certDetailHtml(d);
+    probeCrlDp(d.crl_dp);
+    document.getElementById('certViewPem').value = d.pem;
+    await renderCertCrl();
+    showModal('viewCertModal');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function renderCertCrl() {
+  const box = document.getElementById('certViewCrl');
+  const show = document.getElementById('certViewShowCrl').checked;
+  box.classList.toggle('hidden', !show);
+  if (!show || !viewCertId) return;
+  box.innerHTML = '';
+  try {
+    const res = await api('/api/certs/' + viewCertId + '/crl');
+    const c = await res.json();
+    const [cls, label, note] = c.cert_revoked
+      ? ['badge-revoked', 'Revoked', c.published_path
+          ? 'Listed in the CRL this server publishes.'
+          : 'Listed in this CA\'s CRL. Export it and import it on machines that should stop trusting this certificate.']
+      : ['badge-active', 'Not revoked', 'This certificate is not on the CRL.'];
+    const revoked = c.revoked.length
+      ? c.revoked.map(r => '<div class="crl-entry' + (r.this ? ' crl-this' : '') + '">' + escapeHtml(r.serial) +
+          '<div class="dim">revoked ' + escapeHtml(formatDateTime(r.revoked_at)) + (r.this ? ' · this certificate' : '') + (r.deleted ? ' · deleted certificate' : '') +
+          '</div></div>').join('')
+      : '<span class="dim">None</span>';
+    box.innerHTML = detailSection('Revocation (CRL)', [
+      ['This certificate', '<span class="badge ' + cls + '">' + escapeHtml(label) + '</span>' +
+        (note ? '<div class="dim crl-note">' + escapeHtml(note) + '</div>' : '')],
+      ['Issuing CA', escapeHtml(c.ca_name)],
+      ['Distribution point', c.distribution_points.length
+        ? c.distribution_points.map(u => '<div>' + escapeHtml(u) + '</div>').join('')
+        : '<span class="dim">None in this certificate — clients won\'t check a CRL automatically</span>'],
+      ['Published here', c.published_path
+        ? '<span class="mono">' + escapeHtml(window.location.origin + c.published_path) + '</span>'
+        : c.served
+          ? '<span class="dim">Not yet: it publishes at /crl/' + escapeHtml(c.ca_id) + '.crl once the database is unlocked</span>'
+          : '<span class="dim">No — none of this CA\'s certificates use this server as their distribution point</span>'],
+      ['Next update', c.published_path ? servedCrlBadge(c.served_next_update) : crlStatusBadge(c.next_update)],
+      ['Revoked serials (' + c.revoked.length + ')', revoked],
+    ]) + '<p><button class="btn btn-ghost btn-sm" data-action="viewCRL" data-arg="' + escapeHtml(c.ca_id) + '">Open in CRL viewer</button></p>';
+  } catch (e) {
+    box.innerHTML = '<p class="dim">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function toggleCertCrl() {
+  renderCertCrl();
+}
+
+async function copyCertPem() {
+  try {
+    await navigator.clipboard.writeText(document.getElementById('certViewPem').value);
+    toast('Certificate PEM copied');
+  } catch {
+    toast('Copy failed', 'error');
+  }
+}
+
+function exportFromCertView() {
+  hideModal('viewCertModal');
+  showExportCert(viewCertId);
 }
 
 async function doExportCert() {
@@ -501,17 +768,109 @@ async function saveExport(url, body) {
 
 async function revokeCert(certId) {
   if (!confirm('Revoke this certificate?')) return;
+  let result;
   try {
-    await api('/api/certs/' + certId + '/revoke', { method: 'POST' });
-    toast('Certificate revoked');
-    loadCerts(currentCAId);
+    result = await (await api('/api/certs/' + certId + '/revoke', { method: 'POST' })).json();
   } catch (e) {
     toast(e.message, 'error');
+    return;
+  }
+  selectCA(currentCAId);
+  // Served CRLs are republished by the server; anything else needs a CRL imported by hand.
+  if (!result.download_crl) {
+    toast('Certificate revoked. ' + result.note);
+  } else if (confirm('Certificate revoked. ' + result.note + '\n\nDownload the updated CRL now?')) {
+    await exportCRL();
+  }
+}
+
+function servedCrlBadge(nextUpdate) {
+  if (!nextUpdate) return '<span class="badge badge-expired">Not published</span>';
+  const overdue = new Date(nextUpdate) < new Date();
+  return (overdue
+    ? '<span class="badge badge-expired">Overdue: unlock the database</span>'
+    : '<span class="badge badge-active">Renews automatically</span>') +
+    ' <span class="dim">next update ' + escapeHtml(formatDateTime(nextUpdate)) + '</span>';
+}
+
+// ── CRL viewer ──────────────────────────────────────────────────────
+async function viewCRL(caId) {
+  const id = typeof caId === 'number' ? caId : currentCAId;
+  if (!id) return;
+  let c;
+  try {
+    c = await (await api('/api/ca/' + id + '/crl/view')).json();
+  } catch (e) {
+    toast(e.message, 'error');
+    return;
+  }
+  const crl = c.crl;
+  document.getElementById('crlViewEyebrow').textContent = crl ? 'Published CRL' : 'Revocations (not published here)';
+  document.getElementById('crlViewTitle').textContent = c.ca_name;
+  const general = crl ? [
+    ['Issuer', escapeHtml(crl.issuer.map(a => a.value).join(', '))],
+    ['This update', escapeHtml(formatDateTime(crl.last_update))],
+    ['Next update', servedCrlBadge(crl.next_update)],
+    ['Signature', escapeHtml(crl.signature_algorithm)],
+    ['Served at', '<span class="mono">' + escapeHtml(window.location.origin + c.published_path) + '</span>'],
+  ] : [
+    ['Published', '<span class="dim">No. None of this CA\'s certificates use this server as their distribution point, ' +
+      'so clients get revocations from a CRL you export and import.</span>'],
+    ['Last export', crlStatusBadge(c.exported_next_update)],
+  ];
+  if (c.out_of_date) {
+    general.push(['Status', '<span class="badge badge-expired">Out of date</span> ' +
+      '<span class="dim">Revocations since this CRL was signed publish once the database is unlocked.</span>']);
+  }
+  const entries = c.entries.length
+    ? c.entries.map(e => '<div class="crl-entry"><span class="mono">' + escapeHtml(e.serial) + '</span>' +
+        '<div class="dim">revoked ' + escapeHtml(formatDateTime(e.revoked_at)) +
+        (e.cert_id
+          ? ' · <a href="#" data-action="viewCertFromCrl" data-arg="' + escapeHtml(e.cert_id) + '">' + escapeHtml(e.common_name) + '</a>'
+          : '') +
+        (e.deleted ? ' · deleted certificate' : '') + '</div></div>').join('')
+    : '<span class="dim">None</span>';
+  const fingerprints = crl ? [
+    ['SHA-256', '<span class="mono">' + escapeHtml(crl.fingerprints.sha256) + '</span>'],
+    ['SHA-1', '<span class="mono">' + escapeHtml(crl.fingerprints.sha1) + '</span>'],
+  ] : [];
+  document.getElementById('crlViewBody').innerHTML = detailSection('General', general) +
+    detailSection('Revoked certificates (' + c.entries.length + ')', [['Entries', entries]]) +
+    detailSection('Fingerprints', fingerprints);
+  document.getElementById('crlViewPemCard').hidden = !crl;
+  document.getElementById('crlViewCopyBtn').hidden = !crl;
+  document.getElementById('crlViewPem').value = crl ? crl.pem : '';
+  showModal('viewCrlModal');
+}
+
+function viewCertFromCrl(certId) {
+  hideModal('viewCrlModal');
+  viewCert(certId);
+  return false;
+}
+
+async function copyCrlPem() {
+  try {
+    await navigator.clipboard.writeText(document.getElementById('crlViewPem').value);
+    toast('CRL PEM copied');
+  } catch {
+    toast('Copy failed', 'error');
   }
 }
 
 async function deleteCert(certId) {
-  if (!confirm('Permanently delete this certificate?')) return;
+  let revoked = false;
+  try {
+    revoked = Boolean((await (await api('/api/certs/' + certId)).json()).revoked);
+  } catch (e) {
+    toast(e.message, 'error');
+    return;
+  }
+  const question = revoked
+    ? 'Permanently delete this certificate? It stays on the CA\'s CRL until it expires.'
+    : 'This certificate is not revoked, so clients keep trusting it until it expires even after you delete it. ' +
+      'Revoke it first to put it on the CRL.\n\nDelete it anyway?';
+  if (!confirm(question)) return;
   try {
     await api('/api/certs/' + certId, { method: 'DELETE' });
     toast('Certificate deleted');
@@ -533,6 +892,7 @@ function updateCertPasswordVisibility() {
   if (!showChain) document.getElementById('certExportChain').checked = false;
 }
 document.getElementById('certExportFormat').addEventListener('change', updateCertPasswordVisibility);
+document.getElementById('certCrlBaseUrl').addEventListener('input', updateCrlDpFields);
 document.getElementById('certExportPart').addEventListener('change', updateCertPasswordVisibility);
 
 function infoItem(label, value, cls = '') {
@@ -1197,7 +1557,10 @@ async function initApp() {
 const UI_ACTIONS = new Set([
   'deleteLegacyExports',
   'cancelMFASetup',
+  'cancelReauth',
   'copyPrivateKey',
+  'copyCertPem',
+  'copyCrlPem',
   'copyPublicKey',
   'createBackup',
   'createCA',
@@ -1220,6 +1583,7 @@ const UI_ACTIONS = new Set([
   'doUnlock',
   'exportCA',
   'exportCRL',
+  'exportFromCertView',
   'exportSSHKey',
   'generateSSHKey',
   'hideModal',
@@ -1244,13 +1608,19 @@ const UI_ACTIONS = new Set([
   'showRestoreModal',
   'showSSHGuide',
   'showSSHGuideTab',
+  'submitReauth',
   'setAccent',
   'setTheme',
   'toggleAccentMenu',
+  'toggleCertCrl',
   'toggleMobileMenu',
   'toggleSection',
   'toggleSerial',
   'updateCaPasswordVisibility',
+  'updateCrlDpFields',
+  'viewCRL',
+  'viewCert',
+  'viewCertFromCrl',
 ]);
 
 function runAction(name, el, event) {

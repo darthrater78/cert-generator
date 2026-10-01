@@ -182,6 +182,7 @@
               <option value="365">CRL valid 1 year</option>
               <option value="3650" selected>CRL valid 10 years</option>
             </select>
+            <button class="btn btn-ghost btn-sm" data-action="viewCRL">View CRL</button>
             <button class="btn btn-ghost btn-sm" data-action="exportCRL" title="Generate and download a CRL file signed by this CA. Import into Windows cert stores to provide offline revocation status.">Export CRL</button>
           </div>
         </div>
@@ -198,6 +199,7 @@
                   <th>Algorithm</th>
                   <th>Expires</th>
                   <th>Status</th>
+                  <th>CRL</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -437,9 +439,23 @@
     </div>
     <div class="form-row full">
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
-        <input type="checkbox" id="certIncludeCRL"> Include CRL Distribution Point
-        <span style="font-size:11px;color:var(--text-dim)">(adds offline revocation checking — see Import Guide)</span>
+        <input type="checkbox" id="certIncludeCRL" data-change="updateCrlDpFields"> Include CRL Distribution Point
+        <span style="font-size:11px;color:var(--text-dim)">(lets clients check revocation — see Import Guide)</span>
       </label>
+    </div>
+    <div class="form-row full" id="crlDpRow" hidden>
+      <div class="form-group">
+        <label for="certCrlDp">Distribution point</label>
+        <select id="certCrlDp" data-change="updateCrlDpFields">
+          <option value="server">This server</option>
+          <option value="placeholder">Placeholder URL (offline import)</option>
+        </select>
+      </div>
+      <div class="form-group" id="crlBaseUrlGroup">
+        <label for="certCrlBaseUrl">Server address clients can reach</label>
+        <input type="url" id="certCrlBaseUrl" placeholder="http://pki.example.lan:5000" spellcheck="false">
+      </div>
+      <p class="form-hint full-span" id="crlDpHint"></p>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" data-action="hideModal" data-arg="issueCertModal">Cancel</button>
@@ -536,6 +552,43 @@
     <div class="modal-actions">
       <button class="btn btn-ghost" data-action="hideModal" data-arg="exportCertModal">Cancel</button>
       <button class="btn btn-primary" data-action="doExportCert">Download</button>
+    </div>
+  </div>
+</div>
+
+<div id="viewCertModal" class="modal-backdrop hidden">
+  <div class="modal cert-viewer">
+    <div class="eyebrow" id="certViewEyebrow"></div>
+    <h3 id="certViewTitle">Certificate</h3>
+    <div id="certViewBody"></div>
+    <label class="cert-crl-toggle">
+      <input type="checkbox" id="certViewShowCrl" data-change="toggleCertCrl"> Show the issuing CA's CRL
+    </label>
+    <div id="certViewCrl" class="hidden"></div>
+    <div class="card">
+      <h3>PEM</h3>
+      <textarea id="certViewPem" class="cert-pem" readonly rows="8" spellcheck="false"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" data-action="copyCertPem">Copy PEM</button>
+      <button class="btn btn-ghost" id="certViewExportBtn" data-action="exportFromCertView">Export…</button>
+      <button class="btn btn-primary" data-action="hideModal" data-arg="viewCertModal">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="viewCrlModal" class="modal-backdrop hidden">
+  <div class="modal cert-viewer">
+    <div class="eyebrow" id="crlViewEyebrow">Certificate revocation list</div>
+    <h3 id="crlViewTitle">CRL</h3>
+    <div id="crlViewBody"></div>
+    <div class="card" id="crlViewPemCard">
+      <h3>PEM</h3>
+      <textarea id="crlViewPem" class="cert-pem" readonly rows="6" spellcheck="false"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="crlViewCopyBtn" data-action="copyCrlPem">Copy PEM</button>
+      <button class="btn btn-primary" data-action="hideModal" data-arg="viewCrlModal">Close</button>
     </div>
   </div>
 </div>
@@ -797,15 +850,22 @@
     </div>
 
     <div class="guide-content hidden" id="guide-crl">
-      <h4>Offline CRL (Certificate Revocation List)</h4>
-      <p>This tool generates <strong>locally-signed CRL files</strong> to provide offline revocation status for issued certificates. This is not a live revocation service &mdash; it is a generated artifact that must be manually imported into the Windows certificate store on each endpoint.</p>
+      <h4>CRL (Certificate Revocation List)</h4>
+      <p>This tool generates <strong>CRL files signed by the CA</strong> that list the certificates you have revoked. Clients get the CRL one of two ways, chosen per certificate when you issue it: they fetch it from <strong>this server</strong>, or you <strong>import it</strong> on each machine and the certificate carries a placeholder address.</p>
 
       <h4>How It Works</h4>
       <ol>
-        <li>When issuing a certificate, check <strong>Include CRL Distribution Point</strong>. This embeds a CDP extension in the certificate with a placeholder URL (<code>http://pki.&lt;domain&gt;/crl/...</code>).</li>
-        <li>On the CA details page, click <strong>Export CRL</strong> to generate and download a <code>.crl</code> file. This file is cryptographically signed by the CA and lists any certificates you have revoked.</li>
-        <li>Import the <code>.crl</code> file into the Windows certificate store on the target endpoint. Windows caches the CRL locally and uses it for revocation checks &mdash; no network fetch needed.</li>
+        <li>When issuing a certificate, check <strong>Include CRL Distribution Point</strong> and choose where it points:
+          <ul>
+            <li><strong>This server</strong> (server mode only) &mdash; <code>&lt;address&gt;/crl/&lt;CA id&gt;.crl</code>, where the address is one your clients can reach. That path answers without signing in. This server signs that CRL itself: valid for 7 days, re-signed on every revocation, and renewed before it runs out.</li>
+            <li><strong>Placeholder URL</strong> &mdash; <code>http://pki.&lt;domain&gt;/crl/...</code>. Nothing answers there; clients rely on a CRL you import yourself.</li>
+          </ul>
+        </li>
+        <li>For a placeholder distribution point, click <strong>Export CRL</strong> on the CA details page to download a signed <code>.crl</code> file, and import it on each endpoint &mdash; Windows caches it locally and uses it for revocation checks without a network fetch. Exporting never changes the CRL this server serves.</li>
+        <li>After revoking a certificate: with <strong>this server</strong> there is nothing to do, and clients see the revocation once their cached copy expires (within 7 days). With a placeholder, the revoke dialog offers the updated CRL; import it on each endpoint.</li>
+        <li><strong>View CRL</strong> on the CA details page shows the CRL this server publishes, or, for a CA it doesn't publish for, the revocations an export would contain now.</li>
       </ol>
+      <div class="step-note">Deleting a revoked certificate keeps its serial on the CRL until the certificate would have expired, so deleting never un-revokes it. Deleting a certificate that isn't revoked does not stop clients trusting it: revoke it first.</div>
 
       <h4>Importing the CRL on Windows</h4>
       <ol>
@@ -815,17 +875,17 @@
         <li>Browse to the <code>.crl</code> file, select it, and finish the import.</li>
         <li>The CRL will appear under <strong>Certificate Revocation Lists</strong> within that store.</li>
       </ol>
-      <div class="step-note">The CRL is valid for 10 years by default. If you revoke a certificate after importing the CRL, you must re-export and re-import the updated CRL on each endpoint for the revocation to take effect.</div>
+      <div class="step-note">An exported CRL is valid for 10 years by default. If you revoke a certificate after importing the CRL, you must re-export and re-import the updated CRL on each endpoint for the revocation to take effect.</div>
 
-      <h4>Important: This Is a Generated CRL, Not a Live Service</h4>
-      <p>The CDP URL in the certificate (<code>http://pki.&lt;domain&gt;/crl/...</code>) is a <strong>placeholder</strong> &mdash; there is no server listening at that address. The revocation check works because Windows finds the CRL already cached in the local certificate store, so it never needs to fetch from the URL.</p>
-      <p>This approach is suitable for:</p>
+      <h4>Important: No OCSP, and Placeholders Are Files</h4>
+      <p>There is no OCSP responder, and the CRL is never signed per request. With a <strong>placeholder</strong> URL there is no server at that address &mdash; the revocation check works because Windows finds the imported CRL already cached in the local certificate store. With <strong>this server</strong>, clients must be able to reach the address in the certificate; expose only <code>/crl/</code> through your reverse proxy (see the README).</p>
+      <p>The placeholder approach is suitable for:</p>
       <ul>
         <li>Posture and security demos where certificates need to pass Windows validation</li>
         <li>Lab and test environments</li>
         <li>Scenarios where you control the endpoints and can import the CRL manually</li>
       </ul>
-      <div class="step-warn">This is <strong>not</strong> equivalent to a production PKI with a live CRL server or OCSP responder. The CRL is a static file that must be manually updated and redistributed when certificates are revoked.</div>
+      <div class="step-warn">This is <strong>not</strong> equivalent to a production PKI. With this server, a revocation reaches clients when their cached CRL expires (up to 7 days); with a placeholder URL, only after you re-import the CRL on each endpoint.</div>
 
       <h4>PowerShell Import (Alternative)</h4>
       <p>You can also import the CRL via PowerShell:</p>
@@ -835,6 +895,26 @@
 
     <div class="modal-actions">
       <button class="btn btn-ghost" data-action="hideModal" data-arg="guideModal">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="reauthModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>Confirm it's you</h3>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:16px">
+      Private keys and backups need your sign-in again. You won't be asked again for 5 minutes.
+    </p>
+    <div class="form-row full">
+      <div class="form-group">
+        <label for="reauthSecret" id="reauthLabel">Password</label>
+        <input type="password" id="reauthSecret" autocomplete="current-password" data-enter="submitReauth">
+      </div>
+    </div>
+    <div class="error-msg" id="reauthError" role="alert"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" data-action="cancelReauth">Cancel</button>
+      <button class="btn btn-primary" data-action="submitReauth">Confirm</button>
     </div>
   </div>
 </div>

@@ -6,6 +6,7 @@ scan:
     - vuln
 pkg:
   types:
-    - os          # the base image's packages; Python dependencies are covered by Dependabot and dependency review
+    - os          # the base image's packages
+    - library     # Python packages in the image, including any bundled by the base image that Dependabot never sees
 vulnerability:
   ignore-unfixed: true   # nothing to bump to yet

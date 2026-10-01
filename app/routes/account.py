@@ -7,11 +7,11 @@ import logging
 import pyotp
 import qrcode
 import qrcode.image.svg
-from flask import Blueprint, g, jsonify, session
+from flask import Blueprint, g, jsonify, request, session
 
 from .. import db
 from ..security import lockout_message, verify_totp
-from ..web import auth_limiter, error, json_body, login_required, str_field
+from ..web import auth_limiter, error, json_body, login_required, mark_reauthenticated, str_field
 
 log = logging.getLogger("cert-generator")
 
@@ -21,6 +21,39 @@ bp = Blueprint("account", __name__)
 def _revoke_other_sessions(user_id: int) -> None:
     """End every other session for the user while keeping the current one."""
     session["sv"] = db.bump_session_version(user_id)
+
+
+def _reauth_code_ok(user: dict, code: str) -> bool:
+    if not user.get("totp_enabled") or len(code) != 6 or not code.isdigit():
+        return False
+    secret = db.get_totp_secret(user["id"])
+    step = verify_totp(secret, code, user["totp_last_step"]) if secret else None
+    return step is not None and db.claim_totp_step(user["id"], step)
+
+
+@bp.post("/api/reauth")
+@login_required
+def reauth():
+    """Confirm the signed-in user before key material is released: their password, or a
+    current authenticator code when MFA is on. Shares the login lockout, so it adds no
+    password guesses beyond what the sign-in page allows."""
+    user = g.user
+    entered = str_field(json_body(), "secret")
+    if not entered.strip():
+        return error("Enter your password" + (" or authenticator code" if user.get("totp_enabled") else ""))
+
+    limit_key = f"login:{user['username'].lower()}"
+    wait = auth_limiter.retry_after(limit_key)
+    if wait:
+        return error(lockout_message(wait), 429)
+    if not (_reauth_code_ok(user, entered.strip()) or db.verify_user(user["username"], entered)):
+        auth_limiter.failure(limit_key)
+        log.warning("Failed re-authentication for %s from %s", user["username"], request.remote_addr)
+        return error("That password or code isn't right")
+    auth_limiter.success(limit_key)
+    mark_reauthenticated()
+    log.info("Re-authenticated: %s", user["username"])
+    return jsonify({"ok": True})
 
 
 @bp.post("/api/mfa/setup")

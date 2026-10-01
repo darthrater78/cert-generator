@@ -124,7 +124,7 @@ def login():
         session["mfa_trust"] = trust_device
         return redirect("/mfa")
 
-    start_session(user)
+    start_session(user, authenticated_now=True)
     log.info("User logged in: %s", username)
     resp = current_app.make_response(redirect("/"))
     if trust_device:
@@ -172,7 +172,7 @@ def setup():
         return redirect("/login")
     user = db.get_user(username)
     if user is not None:
-        start_session(user)
+        start_session(user, authenticated_now=True)
     log.info("Admin account created: %s", username)
     return redirect("/")
 
@@ -256,7 +256,7 @@ def mfa_verify():
     if enc_key is not None:
         db.set_master_key(enc_key)
         log.info("Database unlocked during MFA verification for user: %s", user["username"])
-    start_session(user)
+    start_session(user, authenticated_now=True)
     log.info("MFA verified for user: %s", user["username"])
     resp = current_app.make_response(redirect("/"))
     if trust_device:

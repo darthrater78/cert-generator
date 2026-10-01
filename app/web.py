@@ -6,6 +6,7 @@ import hashlib
 import io
 import os
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,9 @@ from .security import AttemptLimiter
 
 # Shared by login, MFA, and password re-entry endpoints.
 auth_limiter = AttemptLimiter()
+
+# How long a password or code entry unlocks key material for this session.
+REAUTH_WINDOW_SECONDS = 300
 
 
 # ── Request parsing ─────────────────────────────────────────────────
@@ -67,11 +71,43 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def start_session(user: dict[str, Any]) -> None:
+def start_session(user: dict[str, Any], *, authenticated_now: bool = False) -> None:
+    """``authenticated_now``: the user just typed a password or code (not a trusted-device
+    sign-in), which counts as the re-authentication that releasing key material needs."""
     session.clear()
     session["user"] = user["username"]
     session["sv"] = user["session_version"]
     session.permanent = True
+    if authenticated_now:
+        mark_reauthenticated()
+
+
+def mark_reauthenticated() -> None:
+    session["reauth_at"] = int(time.time())
+
+
+def reauth_rejection() -> tuple[Response, int] | None:
+    """None when this session may receive private keys or backups; otherwise a 403 that
+    tells the page to ask for the password (or an authenticator code) and retry.
+    Desktop mode has no accounts: the app token already limits it to this machine's window."""
+    if state.desktop_mode():
+        return None
+    reauth_at = session.get("reauth_at")
+    if isinstance(reauth_at, int) and 0 <= time.time() - reauth_at < REAUTH_WINDOW_SECONDS:
+        return None
+    user = g.get("user") or {}
+    return jsonify({"error": "Confirm it's you to continue", "reauth_required": True,
+                    "mfa": bool(user.get("totp_enabled"))}), 403
+
+
+def recent_auth_required(view: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(view)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        rejection = reauth_rejection()
+        if rejection is not None:
+            return rejection
+        return view(*args, **kwargs)
+    return wrapper
 
 
 # ── Exports ─────────────────────────────────────────────────────────

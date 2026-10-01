@@ -6,11 +6,13 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 
-from .. import crypto_engine, db
-from ..web import deliver_export, error, json_body, parse_int, str_field
+from .. import crl_publisher, crypto_engine, db, state
+from ..security import RateLimiter
+from ..web import deliver_export, error, json_body, parse_int, reauth_rejection, str_field
 
 log = logging.getLogger("cert-generator")
 
@@ -22,6 +24,13 @@ VALID_CERT_PARTS = ("both", "public", "private", "chain")
 DOMAIN_RE = re.compile(r"^[\w.*-]{1,253}$")
 MAX_LIFETIME_DAYS = 36500
 DEFAULT_CRL_DAYS = 3650
+CRL_DP_MODES = ("none", "placeholder", "server")
+# Clients cache a CRL until its next update, so real traffic is a trickle. Behind a
+# reverse proxy every client shares the proxy's address, hence the generous limit.
+CRL_RATE_LIMIT_PER_MINUTE = 300
+_crl_limiter = RateLimiter(CRL_RATE_LIMIT_PER_MINUTE)
+_CRL_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+MAX_BASE_URL_LEN = 200
 
 
 def _safe_name(value: str) -> str:
@@ -48,6 +57,23 @@ def parse_san_list(raw: str, common_name: str) -> list[str] | None:
     if not all(_is_valid_san(s) for s in entries):
         return None
     return entries
+
+
+def parse_crl_base_url(raw: str) -> str | None:
+    """'http(s)://host[:port][/prefix]' with no credentials, query or fragment; None if invalid."""
+    raw = raw.strip().rstrip("/")
+    if not raw or len(raw) > MAX_BASE_URL_LEN or any(c.isspace() for c in raw):
+        return None
+    try:
+        parts = urlsplit(raw)
+        parts.port  # noqa: B018 - raises ValueError on a malformed port
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return None
+    if parts.username or parts.password or parts.query or parts.fragment:
+        return None
+    return raw
 
 
 def _lifetime_error(lifetime_days: int | None) -> str | None:
@@ -121,7 +147,10 @@ def get_ca(ca_id: int):
     ca = db.get_ca(ca_id)
     if not ca:
         return error("CA not found", 404)
-    safe = {k: v for k, v in ca.items() if k not in ("cert_pem", "key_pem")}
+    safe = {k: v for k, v in ca.items() if k not in ("cert_pem", "key_pem", "crl_der")}
+    safe["crl_published"] = ca.get("crl_der") is not None
+    safe["crl_served"] = _crl_served(ca)
+    safe["crl_served_next_update"] = crypto_engine.crl_next_update(ca["crl_der"]) if safe["crl_served"] else None
     safe["child_cas"] = db.list_child_cas(ca_id)
     safe["is_root"] = ca.get("parent_ca_id") is None
     safe["can_issue_intermediate"] = crypto_engine.ca_allows_subordinate_ca(ca["cert_pem"])
@@ -172,7 +201,8 @@ class IssueRequest:
     template: str
     email: str | None
     upn: str | None
-    include_crl_dp: bool
+    crl_dp_mode: str
+    crl_base_url: str | None
     lifetime_days: int
 
 
@@ -195,6 +225,19 @@ def _parse_issue_request(data: dict[str, Any]) -> tuple[IssueRequest | None, str
     if san_list is None:
         return None, "Each SAN must be a valid DNS name or IP address"
 
+    # include_crl_dp (bool) predates the choice of distribution point and means the placeholder.
+    default_mode = "placeholder" if data.get("include_crl_dp") else "none"
+    crl_dp_mode = str_field(data, "crl_dp", default_mode)
+    crl_base_url = None
+    if crl_dp_mode not in CRL_DP_MODES:
+        return None, f"Invalid CRL distribution point. Choose from: {CRL_DP_MODES}"
+    if crl_dp_mode == "server":
+        if state.desktop_mode():
+            return None, "The desktop app can't serve CRLs; use the placeholder distribution point"
+        crl_base_url = parse_crl_base_url(str_field(data, "crl_base_url"))
+        if crl_base_url is None:
+            return None, "The CRL server address must be an http(s) URL such as http://pki.example.lan:5000"
+
     return IssueRequest(
         common_name=common_name,
         san_list=san_list,
@@ -202,9 +245,43 @@ def _parse_issue_request(data: dict[str, Any]) -> tuple[IssueRequest | None, str
         template=template,
         email=str_field(data, "email").strip() or None,
         upn=str_field(data, "upn").strip() or None,
-        include_crl_dp=bool(data.get("include_crl_dp", False)),
+        crl_dp_mode=crl_dp_mode,
+        crl_base_url=crl_base_url,
         lifetime_days=lifetime_days,
     ), None
+
+
+def _placeholder_crl_url(ca: dict[str, Any]) -> str:
+    return f"http://pki.{ca['domain']}/crl/{_safe_name(ca['name'])}.crl"
+
+
+def _crl_served(ca: dict[str, Any]) -> bool:
+    """/crl/<id>.crl answers for this CA: it opted in and has a published CRL."""
+    return bool(ca.get("crl_public")) and ca.get("crl_der") is not None
+
+
+def _crl_dp_url(ca: dict[str, Any], req: IssueRequest) -> str | None:
+    if req.crl_dp_mode == "server":
+        return f"{req.crl_base_url}/crl/{ca['id']}.crl"
+    if req.crl_dp_mode == "placeholder":
+        return _placeholder_crl_url(ca)
+    return None
+
+
+def crl_dp_kind(url: str | None, ca: dict[str, Any]) -> str:
+    """'none', 'placeholder' (nothing answers there), 'server' (this server's /crl/<id>.crl) or 'other'."""
+    if not url:
+        return "none"
+    if url == _placeholder_crl_url(ca):
+        return "placeholder"
+    if urlsplit(url).path.endswith(f"/crl/{ca['id']}.crl"):
+        return "server"
+    return "other"
+
+
+def _crl_dp_info(url: str | None, ca: dict[str, Any], published: bool) -> dict[str, Any]:
+    kind = crl_dp_kind(url, ca)
+    return {"kind": kind, "url": url or None, "published": kind == "server" and published}
 
 
 @bp.post("/api/ca/<int:ca_id>/certs")
@@ -216,7 +293,7 @@ def issue_cert(ca_id: int):
     if err:
         return error(err)
 
-    crl_dp_url = f"http://pki.{ca['domain']}/crl/{_safe_name(ca['name'])}.crl" if req.include_crl_dp else None
+    crl_dp_url = _crl_dp_url(ca, req)
     cert_pem, key_pem, serial, not_before, not_after = crypto_engine.issue_certificate(
         ca_cert_pem=ca["cert_pem"], ca_key_pem=ca["key_pem"],
         common_name=req.common_name, san_domains=req.san_list, algorithm=req.algorithm,
@@ -226,15 +303,24 @@ def issue_cert(ca_id: int):
     cert_id = db.save_cert(
         ca_id=ca_id, common_name=req.common_name, san_domains=",".join(req.san_list),
         algorithm=req.algorithm, template=req.template, not_before=not_before, not_after=not_after,
-        serial=serial, cert_pem=cert_pem, key_pem=key_pem,
+        serial=serial, cert_pem=cert_pem, key_pem=key_pem, crl_dp_url=crl_dp_url,
     )
+    if req.crl_dp_mode == "server":
+        db.set_crl_public(ca_id)
+        crl_publisher.publish(ca_id)
     log.info("Certificate issued: %s (ca=%d, template=%s, algo=%s)", req.common_name, ca_id, req.template, req.algorithm)
     return jsonify({"id": cert_id, "common_name": req.common_name, "serial": serial}), 201
 
 
 @bp.get("/api/ca/<int:ca_id>/certs")
 def list_certs_for_ca(ca_id: int):
-    return jsonify(db.list_certs(ca_id))
+    ca = next((c for c in db.list_cas() if c["id"] == ca_id), None)
+    certs = db.list_certs(ca_id)
+    if ca:
+        published = db.get_published_crl(ca_id) is not None  # only for CAs that opted in
+        for cert in certs:
+            cert["crl_dp"] = _crl_dp_info(cert.pop("crl_dp_url", None), ca, published)
+    return jsonify(certs)
 
 
 @bp.get("/api/certs")
@@ -250,12 +336,109 @@ def get_cert(cert_id: int):
     return jsonify({k: v for k, v in cert.items() if k not in ("cert_pem", "key_pem")})
 
 
+@bp.get("/api/certs/<int:cert_id>/details")
+def get_cert_details(cert_id: int):
+    """The parsed certificate (subject, extensions, fingerprints, PEM) for the viewer. Never the key."""
+    cert = db.get_cert(cert_id)
+    if not cert:
+        return error("Certificate not found", 404)
+    details = crypto_engine.describe_certificate(cert["cert_pem"])
+    details.update({k: cert.get(k) for k in ("id", "ca_id", "common_name", "template", "revoked", "revoked_at")})
+    ca = db.get_ca(cert["ca_id"])
+    if ca:
+        details["crl_dp"] = _crl_dp_info(cert.get("crl_dp_url"), ca, _crl_served(ca))
+    return jsonify(details)
+
+
+@bp.get("/api/certs/<int:cert_id>/crl")
+def get_cert_crl_status(cert_id: int):
+    """Read-only view of the issuing CA's CRL contents as they relate to this certificate."""
+    cert = db.get_cert(cert_id)
+    if not cert:
+        return error("Certificate not found", 404)
+    ca = db.get_ca(cert["ca_id"])
+    if not ca:
+        return error("CA not found", 404)
+    deleted = db.list_deleted_revocations(ca["id"])
+    revoked = [
+        {"serial": crypto_engine.format_serial(serial), "revoked_at": revoked_at,
+         "this": serial == cert["serial"], "deleted": serial in deleted}
+        for serial, revoked_at in db.list_revoked_serials(ca["id"])
+    ]
+    return jsonify({
+        "ca_id": ca["id"],
+        "ca_name": ca["name"],
+        "distribution_points": crypto_engine.crl_distribution_points(cert["cert_pem"]),
+        "next_update": ca.get("crl_next_update"),
+        "served_next_update": crypto_engine.crl_next_update(ca["crl_der"]) if _crl_served(ca) else None,
+        "published_path": f"/crl/{ca['id']}.crl" if _crl_served(ca) else None,
+        "served": bool(ca.get("crl_public")),
+        "revoked": revoked,
+        "cert_revoked": bool(cert["revoked"]),
+    })
+
+
+_REVOKE_NOTES = {
+    "server": "This server now serves an updated CRL. Clients see the revocation when their cached "
+              f"copy expires, within {crl_publisher.PUBLISHED_CRL_DAYS} days.",
+    "placeholder": "Its CRL distribution point is a placeholder, so clients only see the revocation "
+                   "once you import an updated CRL on each machine.",
+    "none": "It has no CRL distribution point, so clients don't check it. Import an updated CRL on "
+            "machines that should stop trusting it.",
+    "other": "Its CRL distribution point is an address this app doesn't manage. Publish an updated CRL there.",
+}
+
+
+@bp.get("/api/ca/<int:ca_id>/crl/view")
+def view_crl(ca_id: int):
+    """The CA's CRL for the CRL viewer: the one this server serves, or, for a CA that
+    doesn't serve one, the entries an export would contain now. Needs no CA key."""
+    ca = db.get_ca_summary(ca_id)
+    if not ca:
+        return error("CA not found", 404)
+    current = {int(serial, 16): revoked_at for serial, revoked_at in db.list_revoked_serials(ca_id)}
+    served = db.get_published_crl(ca_id)
+    if served is not None:
+        crl = crypto_engine.describe_crl(served)
+        entries = crl.pop("entries")
+    else:
+        crl = None
+        entries = [{"serial": crypto_engine.format_serial(hex(n)), "serial_hex": hex(n), "revoked_at": at}
+                   for n, at in current.items()]
+    certs = {int(c["serial"], 16): c for c in db.list_certs(ca_id)}
+    deleted = {int(s, 16) for s in db.list_deleted_revocations(ca_id)}
+    for entry in entries:
+        number = int(entry.pop("serial_hex"), 16)
+        cert = certs.get(number)
+        entry.update(cert_id=cert["id"] if cert else None, common_name=cert["common_name"] if cert else None,
+                     deleted=number in deleted)
+    return jsonify({
+        "ca_id": ca_id,
+        "ca_name": ca["name"],
+        "source": "served" if crl else "current",
+        "published_path": f"/crl/{ca_id}.crl" if crl else None,
+        "crl": crl,
+        "entries": entries,
+        # the served CRL should always match; a difference means it is waiting for an unlock
+        "out_of_date": crl is not None and {int(e["serial"].replace(":", ""), 16) for e in entries} != set(current),
+        "exported_next_update": ca.get("crl_next_update"),
+    })
+
+
 @bp.post("/api/certs/<int:cert_id>/revoke")
 def revoke_cert(cert_id: int):
-    if db.revoke_cert(cert_id):
-        log.info("Certificate revoked: id=%d", cert_id)
-        return jsonify({"ok": True, "note": "Re-export the CA's CRL to update revocation status on endpoints."})
-    return error("Certificate not found or already revoked", 404)
+    cert = db.get_cert_summary(cert_id)
+    ca = db.get_ca_summary(cert["ca_id"]) if cert else None
+    if not cert or not ca or cert["revoked"]:
+        return error("Certificate not found or already revoked", 404)
+    if ca.get("crl_public"):
+        db.require_unlocked()  # re-signing the served CRL needs the CA key: fail before revoking
+    db.revoke_cert(cert_id)
+    log.info("Certificate revoked: id=%d", cert_id)
+    crl_publisher.publish(ca["id"])
+    kind = crl_dp_kind(cert.get("crl_dp_url"), ca)
+    # served: nothing to do; otherwise the page offers the updated CRL for import
+    return jsonify({"ok": True, "crl_dp": kind, "note": _REVOKE_NOTES[kind], "download_crl": kind != "server"})
 
 
 @bp.delete("/api/certs/<int:cert_id>")
@@ -303,6 +486,10 @@ def export_ca(ca_id: int):
         return error(f"Invalid format. Choose from: {VALID_FORMATS}")
     if part not in VALID_CA_PARTS:
         return error(f"Invalid part. Choose from: {VALID_CA_PARTS}")
+    if part != "public":
+        rejection = reauth_rejection()
+        if rejection is not None:
+            return rejection
 
     try:
         if part == "public":
@@ -331,6 +518,10 @@ def export_cert(cert_id: int):
         return error(f"Invalid format. Choose from: {VALID_FORMATS}")
     if part not in VALID_CERT_PARTS:
         return error(f"Invalid part. Choose from: {VALID_CERT_PARTS}")
+    if part not in ("public", "chain"):  # the others carry the private key
+        rejection = reauth_rejection()
+        if rejection is not None:
+            return rejection
 
     ca_chain = db.get_ca_cert_chain(cert["ca_id"])
     issuer_pem = ca_chain[0] if ca_chain else None
@@ -350,3 +541,24 @@ def export_cert(cert_id: int):
     except ValueError as e:
         return error(str(e))
     return deliver_export(export_data, f"{cert['common_name']}-{filename}")
+
+
+@bp.route("/crl/<int:ca_id>.crl", methods=["GET", "HEAD"], provide_automatic_options=False)
+def published_crl(ca_id: int):
+    """Public and unauthenticated: the published CRL of a CA whose certificates name
+    this server as their distribution point. It is the one path meant to be exposed through
+    an ingress, so it reads nothing but that blob, never touches the session or a cookie,
+    answers 404 alike for unknown and unpublished CAs, and is rate limited per client."""
+    if not _crl_limiter.allow(request.remote_addr or "unknown"):
+        resp = Response("Too many requests", status=429, content_type="text/plain")
+        resp.headers["Retry-After"] = "60"
+        return resp
+    crl_der = db.get_published_crl(ca_id)
+    if crl_der is None:
+        return Response("Not found", status=404, content_type="text/plain")
+    resp = Response(crl_der, content_type="application/pkix-crl")
+    resp.headers["Content-Disposition"] = f'attachment; filename="{ca_id}.crl"'
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    resp.headers["Content-Security-Policy"] = _CRL_CSP
+    resp.add_etag()
+    return resp.make_conditional(request)
