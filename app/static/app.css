@@ -970,3 +970,17 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 }
 .guide-page .guide-subtitle { font: italic 14px var(--font-serif); color: var(--text-dim); margin-bottom: 14px; }
 .guide-page .guide-body { padding-bottom: 24px; }
+
+/* ================= Cloudflare CRL Worker ================= */
+.cf-panel { font-size: 13.5px; }
+.cf-panel > p { margin-bottom: 10px; }
+.cf-panel .cert-detail { margin-bottom: 12px; }
+.cf-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cf-test { margin-top: 12px; display: grid; gap: 8px; }
+.cf-test:empty { display: none; }
+.cf-test-line .mono, .cf-recommend .mono { overflow-wrap: anywhere; }
+.cf-test-line .dim { font: italic 12.5px var(--font-serif); margin-top: 2px; }
+.cf-recommend { padding: 8px 12px; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.cf-choice { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; font-size: 13.5px; cursor: pointer; }
+.cf-steps { margin: 0 0 12px 20px; font-size: 13.5px; line-height: 1.6; }
+.cf-steps li { margin-bottom: 4px; }

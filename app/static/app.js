@@ -84,6 +84,7 @@ function toggleAccentMenu(_arg, _el, open) {
 
 const SERVER_MODE = document.body.dataset.serverMode === 'true';
 let currentCAId = null;
+let currentCA = null;  // the open CA as /api/ca/<id> returned it
 let currentSSHKeyId = null;
 let exportCertId = null;
 
@@ -217,11 +218,27 @@ function showIssueCert() {
 }
 
 // The distribution point choice: this server (server mode only) or the offline placeholder.
-function updateCrlDpFields() {
+function updateCrlDpFields(_arg, el) {
   const include = document.getElementById('certIncludeCRL').checked;
   const select = document.getElementById('certCrlDp');
   select.querySelector('option[value="server"]').disabled = !SERVER_MODE;
   if (!SERVER_MODE) select.value = 'placeholder';
+  const worker = currentCA && currentCA.cloudflare && currentCA.cloudflare.deployed ? currentCA.cloudflare : null;
+  const cfOption = select.querySelector('option[value="cloudflare"]');
+  if (cfOption) {
+    cfOption.disabled = !worker;
+    cfOption.textContent = worker ? 'Cloudflare Worker (this CA)' : 'Cloudflare Worker (deploy one on the CA page)';
+    if (!worker && select.value === 'cloudflare') select.value = 'server';
+    // A CA with a Worker defaults to it, unless the user just picked something else.
+    if (worker && !(el && el.id === 'certCrlDp') && !include) select.value = 'cloudflare';
+  }
+  if (select.value === 'cloudflare') {
+    document.getElementById('crlDpRow').hidden = !include;
+    document.getElementById('crlBaseUrlGroup').hidden = true;
+    document.getElementById('crlDpHint').textContent = 'Clients fetch ' + worker.dp_url + ' from Cloudflare. ' +
+      'The app publishes a new CRL there on every revocation and renews it weekly.';
+    return;
+  }
   const server = select.value === 'server';
   const baseUrl = document.getElementById('certCrlBaseUrl');
   if (!baseUrl.value) baseUrl.value = window.location.origin;
@@ -287,6 +304,7 @@ async function selectCA(caId) {
   currentSSHKeyId = null;
   const res = await api('/api/ca/' + caId);
   const ca = await res.json();
+  currentCA = ca;
 
   document.getElementById('welcomeView').classList.add('hidden');
   document.getElementById('sshKeyView').classList.add('hidden');
@@ -323,6 +341,7 @@ async function selectCA(caId) {
       : '<span class="badge badge-active">Active</span>');
 
   updateCaPasswordVisibility();
+  renderCloudflarePanel(ca);
   loadCerts(caId);
   loadCAs();
 }
@@ -777,7 +796,10 @@ async function saveExport(url, body) {
 }
 
 async function revokeCert(certId) {
-  if (!confirm('Revoke this certificate?')) return;
+  const worker = currentCA && currentCA.cloudflare && currentCA.cloudflare.deployed;
+  if (!confirm(worker
+    ? 'Revoke this certificate?\n\nThe updated CRL is then published to this CA\'s Cloudflare Worker.'
+    : 'Revoke this certificate?')) return;
   let result;
   try {
     result = await (await api('/api/certs/' + certId + '/revoke', { method: 'POST' })).json();
@@ -786,8 +808,11 @@ async function revokeCert(certId) {
     return;
   }
   selectCA(currentCAId);
-  // Served CRLs are republished by the server; anything else needs a CRL imported by hand.
-  if (!result.download_crl) {
+  // Served and Worker CRLs are republished by the app; anything else needs a CRL imported by hand.
+  if (result.cloudflare && !result.cloudflare.pushed) {
+    toast('Certificate revoked, but the Cloudflare push failed: ' + (result.cloudflare.error || 'unknown error'), 'error');
+    if (result.download_crl && confirm(result.note + '\n\nDownload the updated CRL now?')) await exportCRL();
+  } else if (!result.download_crl) {
     toast('Certificate revoked. ' + result.note);
   } else if (confirm('Certificate revoked. ' + result.note + '\n\nDownload the updated CRL now?')) {
     await exportCRL();
@@ -807,30 +832,45 @@ function servedCrlBadge(nextUpdate) {
 async function viewCRL(caId) {
   const id = typeof caId === 'number' ? caId : currentCAId;
   if (!id) return;
-  let c;
   try {
-    c = await (await api('/api/ca/' + id + '/crl/view')).json();
+    renderCrlView(await (await api('/api/ca/' + id + '/crl/view')).json());
   } catch (e) {
     toast(e.message, 'error');
-    return;
   }
+}
+
+async function viewLiveCloudflareCrl() {
+  try {
+    renderCrlView(await (await api('/api/ca/' + currentCAId + '/cloudflare/crl/view')).json());
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function renderCrlView(c) {
   const crl = c.crl;
-  document.getElementById('crlViewEyebrow').textContent = crl ? 'Published CRL' : 'Revocations (not published here)';
+  const live = c.source === 'cloudflare';
+  document.getElementById('crlViewEyebrow').textContent = live
+    ? 'Live CRL from Cloudflare' : crl ? 'Published CRL' : 'Revocations (not published here)';
   document.getElementById('crlViewTitle').textContent = c.ca_name;
   const general = crl ? [
     ['Issuer', escapeHtml(crl.issuer.map(a => a.value).join(', '))],
     ['This update', escapeHtml(formatDateTime(crl.last_update))],
     ['Next update', servedCrlBadge(crl.next_update)],
     ['Signature', escapeHtml(crl.signature_algorithm)],
-    ['Served at', '<span class="mono">' + escapeHtml(window.location.origin + c.published_path) + '</span>'],
+    ['Served at', live
+      ? '<a class="mono" href="' + escapeHtml(c.public_url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(c.public_url) + '</a>'
+        + ' <span class="dim">(downloads the raw .crl)</span>'
+      : '<span class="mono">' + escapeHtml(window.location.origin + c.published_path) + '</span>'],
   ] : [
     ['Published', '<span class="dim">No. None of this CA\'s certificates use this server as their distribution point, ' +
       'so clients get revocations from a CRL you export and import.</span>'],
     ['Last export', crlStatusBadge(c.exported_next_update)],
   ];
   if (c.out_of_date) {
-    general.push(['Status', '<span class="badge badge-expired">Out of date</span> ' +
-      '<span class="dim">Revocations since this CRL was signed publish once the database is unlocked.</span>']);
+    general.push(['Status', '<span class="badge badge-expired">Out of date</span> ' + (live
+      ? '<span class="dim">The Worker doesn\'t list every revocation yet. Push now on the CA page, or wait a minute if you just pushed.</span>'
+      : '<span class="dim">Revocations since this CRL was signed publish once the database is unlocked.</span>')]);
   }
   const entries = c.entries.length
     ? c.entries.map(e => '<div class="crl-entry"><span class="mono">' + escapeHtml(e.serial) + '</span>' +
@@ -2076,6 +2116,254 @@ async function initApp() {
 }
 
 
+// ── Cloudflare CRL Workers (server mode) ────────────────────────────
+let cloudflareConnection = null;  // /api/cloudflare, cached while the page is open
+
+async function loadCloudflareConnection(force) {
+  if (!SERVER_MODE) return null;
+  if (cloudflareConnection && !force) return cloudflareConnection;
+  try {
+    cloudflareConnection = await (await api('/api/cloudflare')).json();
+  } catch (e) {
+    cloudflareConnection = null;
+  }
+  return cloudflareConnection;
+}
+
+function cfButton(action, label, kind) {
+  return '<button class="btn btn-' + (kind || 'ghost') + ' btn-sm" data-action="' + action + '">' + label + '</button>';
+}
+
+async function renderCloudflarePanel(ca) {
+  const panel = document.getElementById('cfPanel');
+  if (!panel) return;
+  const w = ca.cloudflare || { deployed: false };
+  const conn = await loadCloudflareConnection();
+  if (currentCAId !== ca.id) return;  // another CA opened meanwhile
+  if (!w.deployed) {
+    const connected = conn && conn.connected;
+    panel.innerHTML = '<p class="dim">Publish this CA\'s CRL from its own Cloudflare Worker, so clients anywhere can ' +
+      'check revocation without reaching this server.</p><div class="cf-actions">' +
+      (connected ? cfButton('showCloudflareDeploy', 'Deploy Worker', 'primary')
+                 : cfButton('showCloudflareSettings', 'Set up Cloudflare', 'primary')) + '</div>';
+    return;
+  }
+  const rows = [
+    ['Address in certificates', '<span class="mono">' + escapeHtml(w.dp_url) + '</span> ' +
+      '<button class="btn btn-ghost btn-sm" data-action="copyCloudflareUrl">Copy</button>'],
+    ['Worker', '<span class="mono">' + escapeHtml(w.worker) + '</span>' +
+      (w.custom_domain ? ' <span class="dim">on ' + escapeHtml(w.hostname) + '</span>' : '')],
+    ['Last push', w.push_error
+      ? '<span class="badge badge-expired">Failed</span> <span class="dim">' + escapeHtml(w.push_error) +
+        '. Retried every hour.</span>'
+      : '<span class="badge badge-active">Published</span> <span class="dim">' + escapeHtml(formatDateTime(w.pushed_at)) + '</span>'],
+    ['Certificates using it', String(w.certificates)],
+  ];
+  if (!w.account_matches) {
+    rows.push(['Account', '<span class="badge badge-expired">Not connected</span> <span class="dim">This Worker is in a ' +
+      'different Cloudflare account than the one connected (or none is). Connect that account to manage it.</span>']);
+  }
+  panel.innerHTML = '<dl class="cert-detail">' + rows.map(([k, v]) => '<dt>' + k + '</dt><dd>' + v + '</dd>').join('') +
+    '</dl><div class="cf-actions">' + cfButton('testCloudflareWorker', 'Test', 'primary') +
+    cfButton('viewLiveCloudflareCrl', 'View live CRL') + cfButton('pushCloudflareWorker', 'Push now') +
+    cfButton('teardownCloudflareWorker', 'Tear down', 'danger') + '</div><div id="cfTestResult" class="cf-test"></div>';
+}
+
+async function copyCloudflareUrl() {
+  try {
+    await navigator.clipboard.writeText(currentCA.cloudflare.dp_url);
+    toast('Address copied');
+  } catch (e) {
+    toast('Copy failed', 'error');
+  }
+}
+
+async function showCloudflareSettings() {
+  const conn = await loadCloudflareConnection(true);
+  if (!conn) { toast('Couldn\'t read the Cloudflare settings', 'error'); return; }
+  document.getElementById('cfNeedsEncryption').classList.toggle('hidden', conn.encryption_enabled);
+  document.getElementById('cfConnected').classList.toggle('hidden', !conn.connected);
+  document.getElementById('cfConnect').classList.toggle('hidden', conn.connected);
+  document.getElementById('cfConnectBtn').disabled = !conn.encryption_enabled;
+  document.getElementById('cfCheckResult').textContent = '';
+  document.getElementById('cfToken').value = '';
+  if (conn.connected) {
+    document.getElementById('cfAccountShown').textContent = conn.account_id;
+    document.getElementById('cfWorkerCount').textContent = conn.workers === 1
+      ? '1 CA has a Worker.' : conn.workers + ' CAs have a Worker.';
+  } else {
+    document.getElementById('cfAccountId').value = conn.account_id || '';
+  }
+  showModal('cloudflareModal');
+}
+
+function openEncryptionFromCloudflare() {
+  hideModal('cloudflareModal');
+  showEncryptionSettings();
+}
+
+async function connectCloudflare() {
+  const accountId = document.getElementById('cfAccountId').value.trim();
+  const tokenEl = document.getElementById('cfToken');
+  if (!accountId || !tokenEl.value.trim()) { toast('Enter the account ID and the API token', 'error'); return; }
+  const btn = document.getElementById('cfConnectBtn');
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  try {
+    const res = await api('/api/cloudflare/connect', {
+      method: 'POST',
+      body: JSON.stringify({ account_id: accountId, token: tokenEl.value.trim() }),
+    });
+    const found = await res.json();
+    tokenEl.value = '';
+    toast(found.workers_subdomain
+      ? 'Cloudflare connected. workers.dev addresses use ' + found.workers_subdomain + '.workers.dev'
+      : 'Cloudflare connected. This account has no workers.dev subdomain yet: use your own domain, or pick one in the Cloudflare dashboard');
+    hideModal('cloudflareModal');
+    await loadCloudflareConnection(true);
+    if (currentCA) renderCloudflarePanel(currentCA);
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Connect';
+  }
+}
+
+async function checkCloudflare() {
+  const out = document.getElementById('cfCheckResult');
+  out.textContent = 'Checking…';
+  try {
+    const found = await (await api('/api/cloudflare/check')).json();
+    out.textContent = 'The token works. workers.dev: ' + (found.workers_subdomain ? found.workers_subdomain + '.workers.dev' : 'none chosen yet') +
+      ' · domains it can read: ' + found.zones + (found.zones ? ' (only needed for a custom domain)' : '') + '.';
+  } catch (e) {
+    out.textContent = e.message;
+  }
+}
+
+async function disconnectCloudflare() {
+  if (!confirm('Disconnect Cloudflare? The stored API token is deleted. Delete the token in the Cloudflare dashboard too.')) return;
+  try {
+    await api('/api/cloudflare/disconnect', { method: 'POST' });
+    toast('Cloudflare disconnected');
+    hideModal('cloudflareModal');
+    await loadCloudflareConnection(true);
+    if (currentCA) renderCloudflarePanel(currentCA);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+let cfZones = [];
+
+async function showCloudflareDeploy() {
+  document.getElementById('cfDeployCaName').textContent = currentCA.name;
+  document.querySelector('input[name="cfDeployWhere"][value="workersdev"]').checked = true;
+  document.getElementById('cfWorkersDevHint').textContent = '(checking…)';
+  updateCfDeployFields();
+  showModal('cfDeployModal');
+  try {
+    const found = await (await api('/api/cloudflare/check')).json();
+    document.getElementById('cfWorkersDevHint').textContent = found.workers_subdomain
+      ? '(…' + found.workers_subdomain + '.workers.dev, free, nothing else to set up)'
+      : '(unavailable: choose a workers.dev subdomain in the Cloudflare dashboard first)';
+    cfZones = found.zones ? await (await api('/api/cloudflare/zones')).json() : [];
+  } catch (e) {
+    document.getElementById('cfWorkersDevHint').textContent = '';
+    toast(e.message, 'error');
+  }
+  const zone = document.getElementById('cfZone');
+  zone.innerHTML = cfZones.length
+    ? cfZones.map(z => '<option value="' + escapeHtml(z.id) + '">' + escapeHtml(z.name) + '</option>').join('')
+    : '<option value="">No domains visible to the token</option>';
+  updateCfDeployFields();
+}
+
+function updateCfDeployFields(_arg, el) {
+  const custom = document.querySelector('input[name="cfDeployWhere"]:checked').value === 'custom';
+  document.getElementById('cfCustomFields').classList.toggle('hidden', !custom);
+  const zone = cfZones.find(z => z.id === document.getElementById('cfZone').value);
+  const host = document.getElementById('cfHostname');
+  if (zone && (el && el.id === 'cfZone' || !host.value)) host.value = 'crl.' + zone.name;
+  document.getElementById('cfDeployBtn').disabled = custom && !zone;
+}
+
+async function deployCloudflareWorker() {
+  const custom = document.querySelector('input[name="cfDeployWhere"]:checked').value === 'custom';
+  const body = custom ? { zone_id: document.getElementById('cfZone').value, hostname: document.getElementById('cfHostname').value.trim() } : {};
+  const btn = document.getElementById('cfDeployBtn');
+  btn.disabled = true;
+  btn.textContent = 'Deploying…';
+  try {
+    await api('/api/ca/' + currentCAId + '/cloudflare/deploy', { method: 'POST', body: JSON.stringify(body) });
+    hideModal('cfDeployModal');
+    toast('Worker deployed. Testing it…');
+    await selectCA(currentCAId);
+    testCloudflareWorker();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Deploy';
+  }
+}
+
+async function testCloudflareWorker() {
+  const out = document.getElementById('cfTestResult');
+  if (!out) return;
+  out.textContent = 'Testing from this server…';
+  let r;
+  try {
+    r = await (await api('/api/ca/' + currentCAId + '/cloudflare/test', { method: 'POST' })).json();
+  } catch (e) {
+    out.textContent = e.message;
+    return;
+  }
+  const line = (res) => '<div class="cf-test-line"><span class="badge ' + (res.ok ? 'badge-active">Works' : 'badge-expired">Fails') +
+    '</span> <span class="mono">' + escapeHtml(res.url) + '</span>' +
+    (res.problems.length ? '<div class="dim">' + escapeHtml(res.problems.join('; ')) + '</div>' : '') + '</div>';
+  out.innerHTML = line(r.results.http) + line(r.results.https) +
+    '<p class="cf-recommend">' + (r.recommended
+      ? 'Recommended address: <span class="mono">' + escapeHtml(r.recommended) + '</span>. '
+      : '') + escapeHtml(r.note) + '</p>';
+  if (currentCA.cloudflare && r.dp_url !== currentCA.cloudflare.dp_url) {
+    currentCA.cloudflare.dp_url = r.dp_url;
+    const keep = out.innerHTML;
+    await renderCloudflarePanel(currentCA);
+    document.getElementById('cfTestResult').innerHTML = keep;
+  }
+}
+
+async function pushCloudflareWorker() {
+  try {
+    const w = await (await api('/api/ca/' + currentCAId + '/cloudflare/push', { method: 'POST' })).json();
+    if (w.push_error) toast('Push failed: ' + w.push_error, 'error');
+    else toast('CRL published to Cloudflare');
+    await selectCA(currentCAId);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function teardownCloudflareWorker() {
+  const w = currentCA.cloudflare;
+  const warning = w.certificates
+    ? w.certificates + (w.certificates === 1 ? ' certificate names' : ' certificates name') + ' this Worker\'s address. ' +
+      'Clients will no longer be able to check them for revocation, and a new Worker gets a different address.\n\n'
+    : '';
+  if (!confirm('Tear down this CA\'s Cloudflare Worker?\n\n' + warning + 'This deletes the Worker' +
+    (w.custom_domain ? ' and its custom domain' : '') + ' in Cloudflare.')) return;
+  try {
+    const r = await (await api('/api/ca/' + currentCAId + '/cloudflare', { method: 'DELETE' })).json();
+    toast('Worker removed' + (r.affected ? '; ' + r.affected + ' certificates lost their CRL address' : ''));
+    await loadCloudflareConnection(true);
+    await selectCA(currentCAId);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
 // ── Event delegation ────────────────────────────────────────────────
 // Markup declares handlers as data-action / data-change / data-enter instead of
 // inline on* attributes, so the Content-Security-Policy can forbid inline script.
@@ -2100,7 +2388,20 @@ const UI_ACTIONS = new Set([
   'deleteSSHKey',
   'downloadImportCA',
   'downloadRecoveryKey',
+  'checkCloudflare',
+  'connectCloudflare',
+  'copyCloudflareUrl',
+  'deployCloudflareWorker',
+  'disconnectCloudflare',
   'dismissEncryptionBanner',
+  'openEncryptionFromCloudflare',
+  'pushCloudflareWorker',
+  'showCloudflareDeploy',
+  'showCloudflareSettings',
+  'teardownCloudflareWorker',
+  'testCloudflareWorker',
+  'updateCfDeployFields',
+  'viewLiveCloudflareCrl',
   'doProtect',
   'popOutGuide',
   'skipProtect',

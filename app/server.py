@@ -12,7 +12,7 @@ from flask.sessions import SecureCookieSessionInterface
 from werkzeug.exceptions import HTTPException
 
 from . import __version__, db, state
-from .routes import account, auth, pki, settings, ssh
+from .routes import account, auth, cloudflare, pki, settings, ssh
 from .security import is_cross_site_request
 from .web import auth_limiter
 
@@ -62,7 +62,7 @@ class _SessionInterface(SecureCookieSessionInterface):
 
 app.session_interface = _SessionInterface()
 
-for blueprint in (auth.bp, account.bp, pki.bp, ssh.bp, settings.bp):
+for blueprint in (auth.bp, account.bp, pki.bp, ssh.bp, settings.bp, cloudflare.bp):
     app.register_blueprint(blueprint)
 
 with app.app_context():

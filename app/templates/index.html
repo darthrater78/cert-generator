@@ -112,6 +112,8 @@
       {% if server_mode %}
       <button type="button" class="tool-link" id="btnMFA" data-action="showMFASettings">Two-factor sign-in <em>MFA</em></button>
       <button type="button" class="tool-link" data-action="showAccountSettings">Account <em>password · devices</em></button>
+      <div class="tool-group">Publishing</div>
+      <button type="button" class="tool-link" data-action="showCloudflareSettings">Cloudflare <em>CRL Workers</em></button>
       {% endif %}
       <div class="tool-group">Help</div>
       <button type="button" class="tool-link" data-action="showGuide">Certificate guide <em>import help</em></button>
@@ -230,6 +232,10 @@
               </div>
             </div>
           </div>
+          {% if server_mode %}
+          <h4 class="card-subhead">Cloudflare Worker</h4>
+          <div class="cf-panel" id="cfPanel"></div>
+          {% endif %}
         </div>
 
         <div class="card">
@@ -493,6 +499,7 @@
         <label for="certCrlDp">Distribution point</label>
         <select id="certCrlDp" data-change="updateCrlDpFields">
           <option value="server">This server{% if not server_mode %} (Docker version only){% endif %}</option>
+          {% if server_mode %}<option value="cloudflare">Cloudflare Worker (this CA)</option>{% endif %}
           <option value="placeholder">Placeholder URL (offline import)</option>
         </select>
       </div>
@@ -862,6 +869,84 @@
     <div class="modal-actions">
       <button class="btn btn-ghost" data-action="skipProtect">Not now</button>
       <button class="btn btn-primary" data-action="doProtect">Protect</button>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if server_mode %}
+<div id="cloudflareModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>Cloudflare CRL Workers</h3>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">
+      Each CA can publish its CRL from its own Cloudflare Worker, so clients anywhere can check revocation without reaching this server. The app pushes a new CRL on every revocation and renews it weekly. Set it up once here, then deploy a Worker from a CA's page.
+    </p>
+    <div id="cfNeedsEncryption" class="step-warn hidden" style="margin-bottom:12px">
+      Turn on <strong>database encryption</strong> first: the API token can rewrite your CRL Workers, so it is only ever stored encrypted.
+      <div style="margin-top:8px"><button class="btn btn-primary btn-sm" data-action="openEncryptionFromCloudflare">Encryption settings</button></div>
+    </div>
+    <div id="cfConnected" class="hidden">
+      <p style="font-size:13px;margin-bottom:12px">Connected to account <code id="cfAccountShown"></code>. <span id="cfWorkerCount"></span></p>
+      <div id="cfCheckResult" class="form-hint" style="margin-bottom:12px"></div>
+      <div class="modal-actions">
+        <button class="btn btn-danger" data-action="disconnectCloudflare">Disconnect</button>
+        <button class="btn btn-ghost" data-action="checkCloudflare">Check connection</button>
+        <button class="btn btn-primary" data-action="hideModal" data-arg="cloudflareModal">Close</button>
+      </div>
+    </div>
+    <div id="cfConnect" class="hidden">
+      <h4>1. Create an API token</h4>
+      <ol class="cf-steps">
+        <li>Open <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener noreferrer">dash.cloudflare.com › My Profile › API Tokens</a> and choose <strong>Create Token › Create Custom Token</strong>.</li>
+        <li>Permissions: <strong>Account · Workers Scripts · Edit</strong>. That is all a <code>workers.dev</code> address needs.</li>
+        <li>For an address on your own domain, also add <strong>Zone · Zone · Read</strong>, <strong>Zone · Workers Routes · Edit</strong> and <strong>Zone · DNS · Edit</strong>, and under Zone Resources pick <strong>only that domain</strong>.</li>
+        <li>Account Resources: <strong>only your account</strong>. Optionally limit it to this server's public IP under Client IP Address Filtering.</li>
+        <li>Create it and copy the token. Cloudflare shows it once.</li>
+      </ol>
+      <h4>2. Connect</h4>
+      <div class="form-row full">
+        <div class="form-group">
+          <label for="cfAccountId">Account ID</label>
+          <input type="text" id="cfAccountId" placeholder="32 characters, on the Workers &amp; Pages overview page" spellcheck="false" autocomplete="off" maxlength="32">
+        </div>
+      </div>
+      <div class="form-row full">
+        <div class="form-group">
+          <label for="cfToken">API token</label>
+          <input type="password" id="cfToken" placeholder="Paste the token" autocomplete="off" spellcheck="false" data-enter="connectCloudflare">
+        </div>
+      </div>
+      <p class="form-hint">The token is checked with Cloudflare, then stored encrypted with your database key. It is never shown again, and the app can't use it while the database is locked.</p>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" data-action="hideModal" data-arg="cloudflareModal">Cancel</button>
+        <button class="btn btn-primary" id="cfConnectBtn" data-action="connectCloudflare">Connect</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="cfDeployModal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3>Deploy a CRL Worker</h3>
+    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Creates a Worker for <strong id="cfDeployCaName"></strong> that serves only its CRL, read-only. Choose the address certificates will carry.</p>
+    <label class="cf-choice"><input type="radio" name="cfDeployWhere" value="workersdev" checked data-change="updateCfDeployFields"> <span><strong>workers.dev</strong> <span class="dim" id="cfWorkersDevHint"></span></span></label>
+    <label class="cf-choice"><input type="radio" name="cfDeployWhere" value="custom" data-change="updateCfDeployFields"> <span><strong>My own domain</strong> <span class="dim">(Cloudflare creates the DNS record)</span></span></label>
+    <div id="cfCustomFields" class="hidden">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="cfZone">Domain</label>
+          <select id="cfZone" data-change="updateCfDeployFields"></select>
+        </div>
+        <div class="form-group">
+          <label for="cfHostname">Hostname</label>
+          <input type="text" id="cfHostname" spellcheck="false" autocomplete="off" placeholder="crl.example.com">
+        </div>
+      </div>
+    </div>
+    <p class="form-hint">The address is written into every certificate you issue with it, so pick one you'll keep. Tearing the Worker down later leaves those certificates without a working CRL.</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" data-action="hideModal" data-arg="cfDeployModal">Cancel</button>
+      <button class="btn btn-primary" id="cfDeployBtn" data-action="deployCloudflareWorker">Deploy</button>
     </div>
   </div>
 </div>
