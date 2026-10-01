@@ -110,9 +110,9 @@ const EXPIRY_WARNING_DAYS = 30;
 // Certificate authorities by id, from the last list load (for "issued by").
 const caIndex = new Map();
 
-// "0x7cff2c0d6fb3…" → "7C:FF:2C:0D:6F:B3", the leading bytes of a serial.
+// "0x7cff2c0d6fb3…" or "7C:FF:2C:…" → "7C:FF:2C:0D:6F:B3", the leading bytes of a serial.
 function shortSerial(serial) {
-  let hex = String(serial || '').replace(/^0x/i, '').toUpperCase();
+  let hex = String(serial || '').replace(/^0x/i, '').replace(/:/g, '').toUpperCase();
   if (hex.length % 2) hex = '0' + hex;
   return (hex.match(/../g) || []).slice(0, 6).join(':');
 }
@@ -184,9 +184,15 @@ async function loadCAs() {
   });
 
   document.getElementById('caCount').textContent = cas.length;
-  if (cas.length === 0 && !currentSSHKeyId) {
+  if (currentSSHKeyId) return;
+  if (currentCAId && !caIndex.has(currentCAId)) currentCAId = null;
+  if (cas.length === 0) {
     document.getElementById('welcomeView').classList.remove('hidden');
     document.getElementById('caView').classList.add('hidden');
+  } else if (!currentCAId) {
+    // Nothing selected yet (fresh sign-in, or the open CA was deleted): open the
+    // first authority instead of leaving the "No authorities yet" screen up.
+    selectCA((roots[0] || cas[0]).id);
   }
 }
 
@@ -253,22 +259,16 @@ async function loadCerts(caId) {
   document.getElementById('certTableContainer').querySelector('table').classList.remove('hidden');
 
   tbody.innerHTML = certs.map(c => {
-    const daysLeft = Math.ceil((new Date(c.not_after) - new Date()) / 86400000);
-    let status = '';
-    if (c.revoked) status = '<span class="badge badge-revoked">Revoked</span>';
-    else if (daysLeft < 0) status = '<span class="badge badge-expired">Expired</span>';
-    else if (daysLeft <= EXPIRY_WARNING_DAYS) status = '<span class="badge badge-expired">Expires in ' + daysLeft + 'd</span>';
-    else status = '<span class="badge badge-active">Active</span>';
-
     const tmplLabel = TEMPLATE_LABELS[c.template] || c.template || 'Web Server';
     return '<tr' + (c.revoked ? ' class="revoked"' : '') + '>' +
-      '<td>' + escapeHtml(c.common_name) + '</td>' +
+      '<td><button type="button" class="cert-link" data-action="viewCert" data-arg="' + c.id + '">' + escapeHtml(c.common_name) + '</button></td>' +
       '<td>' + escapeHtml(tmplLabel) + '</td>' +
       '<td class="sans" title="' + escapeHtml(c.san_domains) + '">' + escapeHtml(c.san_domains) + '</td>' +
       '<td>' + escapeHtml(algoShort(c.algorithm)) + '</td>' +
       '<td>' + formatDate(c.not_after) + '</td>' +
-      '<td>' + status + '</td>' +
+      '<td>' + certStatusBadge(c.not_after, c.revoked) + '</td>' +
       '<td>' +
+        '<button class="btn btn-ghost btn-sm" data-action="viewCert" data-arg="' + c.id + '\">View</button> ' +
         '<button class="btn btn-ghost btn-sm" data-action="showExportCert" data-arg="' + c.id + '\">Export</button> ' +
         (!c.revoked ? '<button class="btn btn-ghost btn-sm" data-action="revokeCert" data-arg="' + c.id + '\">Revoke</button> ' : '') +
         '<button class="btn btn-danger btn-sm" data-action="deleteCert" data-arg="' + c.id + '\">Delete</button>' +
@@ -408,6 +408,91 @@ function showExportCert(certId) {
   document.getElementById('certExportChain').checked = false;
   updateCertPasswordVisibility();
   showModal('exportCertModal');
+}
+
+let viewCertId = null;
+
+function certStatusBadge(notAfter, revoked) {
+  const daysLeft = Math.ceil((new Date(notAfter) - new Date()) / 86400000);
+  if (revoked) return '<span class="badge badge-revoked">Revoked</span>';
+  if (daysLeft < 0) return '<span class="badge badge-expired">Expired</span>';
+  if (daysLeft <= EXPIRY_WARNING_DAYS) return '<span class="badge badge-expired">Expires in ' + daysLeft + 'd</span>';
+  return '<span class="badge badge-active">Active</span>';
+}
+
+function formatDateTime(iso) {
+  if (!iso) return '-';
+  return new Date(iso).toLocaleString('en-US', {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+  });
+}
+
+function detailRows(rows) {
+  return '<dl class="cert-detail">' + rows.map(([label, value]) =>
+    '<dt>' + escapeHtml(label) + '</dt><dd>' + value + '</dd>').join('') + '</dl>';
+}
+
+function detailSection(title, rows) {
+  return rows.length ? '<div class="card"><h3>' + escapeHtml(title) + '</h3>' + detailRows(rows) + '</div>' : '';
+}
+
+async function viewCert(certId) {
+  try {
+    const res = await api('/api/certs/' + certId + '/details');
+    const d = await res.json();
+    viewCertId = certId;
+
+    const issuerCA = caIndex.get(d.ca_id);
+    document.getElementById('certViewEyebrow').textContent =
+      (TEMPLATE_LABELS[d.template] || d.template || 'Certificate') + ' · No. ' + shortSerial(d.serial);
+    document.getElementById('certViewTitle').textContent = d.common_name;
+
+    const nameRows = (attrs) => attrs.map(a => [a.name, escapeHtml(a.value)]);
+    const general = [
+      ['Status', certStatusBadge(d.not_after, d.revoked) +
+        (d.revoked && d.revoked_at ? ' <span class="dim">on ' + escapeHtml(formatDateTime(d.revoked_at)) + '</span>' : '')],
+      ['Issued by', escapeHtml(issuerCA ? issuerCA.name : d.issuer.map(a => a.value).join(', '))],
+      ['Valid from', escapeHtml(formatDateTime(d.not_before))],
+      ['Valid until', escapeHtml(formatDateTime(d.not_after))],
+      ['Serial number', '<span class="mono">' + escapeHtml(d.serial) + '</span>'],
+      ['Version', 'v' + d.version],
+      ['Public key', escapeHtml(d.public_key)],
+      ['Signature', escapeHtml(d.signature_algorithm)],
+    ];
+    const extensions = d.extensions.map(e => [
+      e.name + (e.critical ? ' (critical)' : ''),
+      e.values.length ? e.values.map(v => '<div>' + escapeHtml(v) + '</div>').join('') : '<span class="dim">—</span>',
+    ]);
+    const fingerprints = [
+      ['SHA-256', '<span class="mono">' + escapeHtml(d.fingerprints.sha256) + '</span>'],
+      ['SHA-1', '<span class="mono">' + escapeHtml(d.fingerprints.sha1) + '</span>'],
+    ];
+
+    document.getElementById('certViewBody').innerHTML =
+      detailSection('General', general) +
+      detailSection('Subject', nameRows(d.subject)) +
+      detailSection('Issuer', nameRows(d.issuer)) +
+      detailSection('Extensions', extensions) +
+      detailSection('Fingerprints', fingerprints);
+    document.getElementById('certViewPem').value = d.pem;
+    showModal('viewCertModal');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function copyCertPem() {
+  try {
+    await navigator.clipboard.writeText(document.getElementById('certViewPem').value);
+    toast('Certificate PEM copied');
+  } catch {
+    toast('Copy failed', 'error');
+  }
+}
+
+function exportFromCertView() {
+  hideModal('viewCertModal');
+  showExportCert(viewCertId);
 }
 
 async function doExportCert() {
@@ -1198,6 +1283,7 @@ const UI_ACTIONS = new Set([
   'deleteLegacyExports',
   'cancelMFASetup',
   'copyPrivateKey',
+  'copyCertPem',
   'copyPublicKey',
   'createBackup',
   'createCA',
@@ -1220,6 +1306,7 @@ const UI_ACTIONS = new Set([
   'doUnlock',
   'exportCA',
   'exportCRL',
+  'exportFromCertView',
   'exportSSHKey',
   'generateSSHKey',
   'hideModal',
@@ -1251,6 +1338,7 @@ const UI_ACTIONS = new Set([
   'toggleSection',
   'toggleSerial',
   'updateCaPasswordVisibility',
+  'viewCert',
 ]);
 
 function runAction(name, el, event) {

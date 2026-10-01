@@ -201,3 +201,35 @@ def test_mobile_menu_and_sign_out(page: Page, live_server, browser_errors, viewp
     expect(page.locator("#sidebar")).to_have_class("sidebar open")
     page.click(".signout-link")
     page.wait_for_url(live_server.url + "/login")
+
+
+def test_existing_ca_opens_on_load_instead_of_empty_state(signed_in: Page):
+    page = signed_in
+    _create_ca(page, "reload.test")
+    page.reload()
+    expect(page.locator("#caViewTitle")).to_have_text("reload.test Root CA")
+    expect(page.locator("#welcomeView")).to_be_hidden()
+
+
+def test_certificate_viewer(signed_in: Page):
+    page = signed_in
+    _create_ca(page, "viewer.test")
+    page.click("[data-action=showIssueCert]")
+    page.fill("#certCN", "www.viewer.test")
+    page.fill("#certSANs", "www.viewer.test, 10.0.0.5")
+    page.click("[data-action=issueCert]")
+    _toast(page, "issued")
+
+    page.click("#certTableContainer .cert-link")
+    modal = page.locator("#viewCertModal")
+    expect(modal).to_be_visible()
+    expect(page.locator("#certViewTitle")).to_have_text("www.viewer.test")
+    expect(modal).to_contain_text("DNS: www.viewer.test")
+    expect(modal).to_contain_text("IP: 10.0.0.5")
+    expect(modal).to_contain_text("Server Authentication")
+    expect(modal).to_contain_text("SHA-256")
+    assert page.input_value("#certViewPem").startswith("-----BEGIN CERTIFICATE-----")
+
+    page.click("[data-action=exportFromCertView]")
+    expect(modal).to_be_hidden()
+    expect(page.locator("#exportCertModal")).to_be_visible()

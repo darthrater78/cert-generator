@@ -540,6 +540,23 @@
   </div>
 </div>
 
+<div id="viewCertModal" class="modal-backdrop hidden">
+  <div class="modal cert-viewer">
+    <div class="eyebrow" id="certViewEyebrow"></div>
+    <h3 id="certViewTitle">Certificate</h3>
+    <div id="certViewBody"></div>
+    <div class="card">
+      <h3>PEM</h3>
+      <textarea id="certViewPem" class="cert-pem" readonly rows="8" spellcheck="false"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" data-action="copyCertPem">Copy PEM</button>
+      <button class="btn btn-ghost" id="certViewExportBtn" data-action="exportFromCertView">Export…</button>
+      <button class="btn btn-primary" data-action="hideModal" data-arg="viewCertModal">Close</button>
+    </div>
+  </div>
+</div>
+
 <div id="guideModal" class="modal-backdrop hidden">
   <div class="modal guide-modal">
     <h3>Certificate Import Guide</h3>

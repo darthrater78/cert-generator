@@ -386,6 +386,143 @@ def ca_allows_subordinate_ca(ca_cert_pem: bytes) -> bool:
     return constraints.ca and constraints.path_length != 0
 
 
+_NAME_LABELS = {
+    "commonName": "Common name", "emailAddress": "Email", "organizationName": "Organization",
+    "organizationalUnitName": "Organizational unit", "countryName": "Country",
+    "stateOrProvinceName": "State / province", "localityName": "Locality",
+}
+_OID_LABELS = {
+    SMARTCARD_LOGON_OID.dotted_string: "Smart Card Logon",
+    x509.oid.ExtendedKeyUsageOID.SERVER_AUTH.dotted_string: "Server Authentication",
+    x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH.dotted_string: "Client Authentication",
+    x509.oid.ExtendedKeyUsageOID.CODE_SIGNING.dotted_string: "Code Signing",
+    x509.oid.ExtendedKeyUsageOID.EMAIL_PROTECTION.dotted_string: "Email Protection",
+    x509.oid.ExtensionOID.BASIC_CONSTRAINTS.dotted_string: "Basic Constraints",
+    x509.oid.ExtensionOID.KEY_USAGE.dotted_string: "Key Usage",
+    x509.oid.ExtensionOID.EXTENDED_KEY_USAGE.dotted_string: "Extended Key Usage",
+    x509.oid.ExtensionOID.SUBJECT_KEY_IDENTIFIER.dotted_string: "Subject Key Identifier",
+    x509.oid.ExtensionOID.AUTHORITY_KEY_IDENTIFIER.dotted_string: "Authority Key Identifier",
+    x509.oid.ExtensionOID.SUBJECT_ALTERNATIVE_NAME.dotted_string: "Subject Alternative Name",
+    x509.oid.ExtensionOID.CRL_DISTRIBUTION_POINTS.dotted_string: "CRL Distribution Points",
+}
+
+
+def _oid_label(oid: x509.ObjectIdentifier) -> str:
+    return _OID_LABELS.get(oid.dotted_string) or getattr(oid, "_name", None) or oid.dotted_string
+
+
+def _colon_hex(data: bytes) -> str:
+    return data.hex(":").upper()
+
+
+def _describe_name(name: x509.Name) -> list[dict[str, str]]:
+    return [
+        {"name": _NAME_LABELS.get(_oid_label(attr.oid), _oid_label(attr.oid)), "value": str(attr.value)}
+        for attr in name
+    ]
+
+
+def _decode_utf8_string(der: bytes) -> str | None:
+    if not der or der[0] != 0x0C or len(der) < 2:
+        return None
+    if der[1] < 0x80:
+        start = 2
+    else:
+        start = 2 + (der[1] & 0x7F)
+    return der[start:].decode("utf-8", errors="replace")
+
+
+def _describe_general_name(gn: x509.GeneralName) -> str:
+    if isinstance(gn, x509.DNSName):
+        return f"DNS: {gn.value}"
+    if isinstance(gn, x509.IPAddress):
+        return f"IP: {gn.value}"
+    if isinstance(gn, x509.RFC822Name):
+        return f"Email: {gn.value}"
+    if isinstance(gn, x509.UniformResourceIdentifier):
+        return f"URI: {gn.value}"
+    if isinstance(gn, x509.OtherName) and gn.type_id == MS_UPN_OID:
+        return f"UPN: {_decode_utf8_string(gn.value) or gn.value.hex()}"
+    if isinstance(gn, x509.DirectoryName):
+        return f"DirName: {gn.value.rfc4514_string()}"
+    return str(gn.value)
+
+
+def _describe_key_usage(ku: x509.KeyUsage) -> list[str]:
+    labels = {
+        "digital_signature": "Digital Signature", "content_commitment": "Non-Repudiation",
+        "key_encipherment": "Key Encipherment", "data_encipherment": "Data Encipherment",
+        "key_agreement": "Key Agreement", "key_cert_sign": "Certificate Sign", "crl_sign": "CRL Sign",
+        "encipher_only": "Encipher Only", "decipher_only": "Decipher Only",
+    }
+    out = []
+    for attr, label in labels.items():
+        try:
+            if getattr(ku, attr):
+                out.append(label)
+        except ValueError:  # encipher/decipher_only are undefined without key_agreement
+            pass
+    return out
+
+
+def _describe_extension(ext: x509.Extension) -> list[str]:
+    value = ext.value
+    if isinstance(value, x509.SubjectAlternativeName):
+        return [_describe_general_name(gn) for gn in value]
+    if isinstance(value, x509.KeyUsage):
+        return _describe_key_usage(value)
+    if isinstance(value, x509.ExtendedKeyUsage):
+        return [_oid_label(oid) for oid in value]
+    if isinstance(value, x509.BasicConstraints):
+        out = ["CA: " + ("yes" if value.ca else "no")]
+        if value.path_length is not None:
+            out.append(f"Path length: {value.path_length}")
+        return out
+    if isinstance(value, x509.SubjectKeyIdentifier):
+        return [_colon_hex(value.digest)]
+    if isinstance(value, x509.AuthorityKeyIdentifier):
+        return [_colon_hex(value.key_identifier)] if value.key_identifier else []
+    if isinstance(value, x509.CRLDistributionPoints):
+        return [_describe_general_name(gn) for dp in value for gn in (dp.full_name or [])]
+    return [_colon_hex(value.public_bytes())] if hasattr(value, "public_bytes") else [str(value)]
+
+
+def _describe_public_key(key) -> str:
+    if isinstance(key, ed25519.Ed25519PublicKey):
+        return "Ed25519"
+    if isinstance(key, ec.EllipticCurvePublicKey):
+        return f"ECDSA {key.curve.name} ({key.key_size} bits)"
+    if isinstance(key, rsa.RSAPublicKey):
+        return f"RSA {key.key_size} bits (e={key.public_numbers().e})"
+    return type(key).__name__
+
+
+def describe_certificate(cert_pem: bytes) -> dict:
+    """A human-readable breakdown of a certificate, for the certificate viewer."""
+    cert = x509.load_pem_x509_certificate(cert_pem)
+    der = cert.public_bytes(serialization.Encoding.DER)
+    return {
+        "version": cert.version.value + 1,
+        "serial": _colon_hex(cert.serial_number.to_bytes((cert.serial_number.bit_length() + 7) // 8 or 1, "big")),
+        "subject": _describe_name(cert.subject),
+        "issuer": _describe_name(cert.issuer),
+        "self_signed": cert.subject == cert.issuer,
+        "not_before": cert.not_valid_before_utc.isoformat(),
+        "not_after": cert.not_valid_after_utc.isoformat(),
+        "public_key": _describe_public_key(cert.public_key()),
+        "signature_algorithm": _oid_label(cert.signature_algorithm_oid),
+        "extensions": [
+            {"name": _oid_label(ext.oid), "critical": ext.critical, "values": _describe_extension(ext)}
+            for ext in cert.extensions
+        ],
+        "fingerprints": {
+            "sha256": _colon_hex(hashlib.sha256(der).digest()),
+            "sha1": _colon_hex(hashlib.sha1(der, usedforsecurity=False).digest()),
+        },
+        "pem": cert_pem.decode("ascii"),
+    }
+
+
 def _parse_timestamp(value: str) -> datetime:
     try:
         return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)

@@ -250,6 +250,17 @@ def get_cert(cert_id: int):
     return jsonify({k: v for k, v in cert.items() if k not in ("cert_pem", "key_pem")})
 
 
+@bp.get("/api/certs/<int:cert_id>/details")
+def get_cert_details(cert_id: int):
+    """The parsed certificate (subject, extensions, fingerprints, PEM) for the viewer. Never the key."""
+    cert = db.get_cert(cert_id)
+    if not cert:
+        return error("Certificate not found", 404)
+    details = crypto_engine.describe_certificate(cert["cert_pem"])
+    details.update({k: cert.get(k) for k in ("id", "ca_id", "common_name", "template", "revoked", "revoked_at")})
+    return jsonify(details)
+
+
 @bp.post("/api/certs/<int:cert_id>/revoke")
 def revoke_cert(cert_id: int):
     if db.revoke_cert(cert_id):
