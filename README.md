@@ -26,6 +26,7 @@ Both modes have full feature parity — the same UI, database format, and capabi
 - **Password-protected exports** — optionally encrypt the private key (PEM); PKCS12 bundles always require a password (the export dialog pre-fills `changeit` for Windows compatibility)
 - **Optional CA chain inclusion** — choose whether to bundle the issuing CA certificate when exporting issued certs
 - **In-app import guide** — step-by-step instructions for importing certificates on Windows, macOS, and Linux for each template type
+- **Endpoint import** — on any certificate, **Endpoint import ▾** asks whether the CA chain is already on the machine, then gives the files to download and copy-paste commands for Windows, macOS or Linux, with Windows stores per Microsoft's layout (root → Trusted Root Certification Authorities, intermediate → Intermediate Certification Authorities, computer certificates → Local Computer › Personal, user certificates → Current User › Personal)
 - **Modern crypto algorithms** — Ed25519, ECDSA P-256, ECDSA P-384, RSA-2048, RSA-4096
 - **Revoke certificates** to mark them as no longer trusted
 - **CRL generation and publishing** — optionally embed a CRL Distribution Point in issued certificates. The distribution point is either **this server** (`<address>/crl/<CA id>.crl`, answered without sign-in; server mode only, see [Publishing the CRL](#publishing-the-crl)), where the app signs a 7-day CRL itself, re-signs it on every revocation and renews it before it runs out, or a **placeholder** URL for offline use, where you export a signed CRL file and import it into each Windows certificate store. Exported CRLs stay valid as long as you choose (7 days to 10 years, default 10 years); the CA page shows the published CRL and the exported one separately, and each certificate shows where its CRL comes from and whether it is published
@@ -44,11 +45,13 @@ Both modes have full feature parity — the same UI, database format, and capabi
 - **Structured logging** — request and operation logging with timestamps, configurable via `LOG_LEVEL` environment variable
 - **Themes and accent colour** — six themes (Slate by default, Flashbang, Graphite, Umber, Ink and OLED) and an accent colour picker (twelve presets, a colour picker or a typed hex value; brass by default), chosen from the Appearance menu and saved per browser; the sign-in pages follow the same choice
 
-<img width="1440" alt="The dashboard on the Slate theme: an intermediate CA's particulars and its register of issued certificates" src="docs/screenshots/dashboard.png" />
+<img width="1440" alt="The dashboard on the Slate theme: an intermediate CA's particulars, its Export CA certificate and Revocation list sections, and its register of issued certificates with Endpoint import on each; the sidebar groups Tools into Create, Data, Security and Help" src="docs/screenshots/dashboard.png" />
+
+<img width="49%" alt="Endpoint import for a computer certificate on Windows: the question whether the CA chain is already on the machine, Download buttons for the root and intermediate CA files, and the PowerShell commands for each store" src="docs/screenshots/endpoint-import.png" /> <img width="49%" alt="The one-time recovery key shown when database encryption is enabled, with Copy, Download .txt and an I've stored it confirmation" src="docs/screenshots/recovery-key.png" />
 
 <img width="49%" alt="The sign-in page, set as an engraved certificate over a faint openssl readout" src="docs/screenshots/sign-in.png" /> <img width="49%" alt="The Issue Certificate dialog" src="docs/screenshots/issue-certificate.png" />
 
-<img width="49%" alt="The certificate viewer: a web server certificate's general fields, subject, issuer, extensions, fingerprints and the issuing CA's CRL" src="docs/screenshots/cert-viewer.png" /> <img width="49%" alt="The CRL viewer: the intermediate CA's published CRL with one revoked serial linked to its certificate" src="docs/screenshots/crl-viewer.png" />
+<img width="49%" alt="The certificate viewer: a web server certificate's general fields, subject, issuer, extensions, fingerprints and the issuing CA's CRL" src="docs/screenshots/cert-viewer.png" /> <img width="49%" alt="The CRL viewer: the intermediate CA's published CRL with its revoked serials, one linked to its certificate" src="docs/screenshots/crl-viewer.png" />
 
 <img width="49%" alt="An SSH key's particulars, public key and export options" src="docs/screenshots/ssh-key.png" /> <img width="49%" alt="The Umber theme with the Appearance menu open: six themes and the accent colour picker" src="docs/screenshots/themes.png" />
 
@@ -341,11 +344,12 @@ This works the same in Docker and the Windows EXE.
 
 1. Launch the app (Docker: `docker compose up -d`, Desktop: run `CertGenerator.exe`)
 2. Server mode: create your admin account on first launch, then sign in
-3. Click **+ CA** and enter a domain name (e.g. `example.com`) and lifetime
+3. Click **+ New** next to **Authorities** (or **Tools › Create › New certificate authority**) and enter a domain name (e.g. `example.com`) and lifetime
 4. Select your CA in the sidebar
-5. Click **+ Issue Certificate** to generate leaf certs
-6. Use **Export** to download certificates in your preferred format
-7. Click **+ SSH Key** to generate an SSH key pair, or **Import SSH Key** to add an existing key
+5. Click **Issue certificate** to generate leaf certs
+6. To trust the CA on a machine, **Download** it from the CA page: the default, **DER · Certificate Only**, is the file an endpoint needs
+7. Click **Endpoint import ▾** on a certificate for step-by-step install commands, or use **Export** to download it in the format you choose
+8. Click **+ New** next to **SSH keys** to generate an SSH key pair, or **Tools › Create › Import SSH key** to add an existing key
 
 ## Supported algorithms
 
@@ -371,6 +375,8 @@ Export options per certificate:
 - **Certificate Only** — public certificate
 - **Private Key Only** — private key
 - **Full Chain** — leaf cert + issuing CA cert + root CA cert (PEM only, for leaf certs)
+
+A CA's export defaults to **DER · Certificate Only**, which is all an endpoint needs to trust the CA. Export a CA's **Certificate + Key** only for a device that issues certificates with it, such as a firewall or proxy doing TLS inspection, or to move the CA to another server; never install it on endpoints. CA files are named after the CA (`ca-<CA name>-certificate.der`), certificate files after the common name (`<common name>-certificate.pfx`).
 
 ## Data storage
 
@@ -401,6 +407,8 @@ Each entry lists its changes per deliverable: a `#### Docker` section means the 
 - **The CA's Export defaults to DER · Certificate Only**, the file an endpoint needs to trust the CA. A note under it explains the two cases: **Trusted Endpoint** (Certificate Only, no key) and **TLS Inspection / CA Move** (Certificate + Key, only for a device that issues certificates with this CA, never on endpoints).
 - The CA page groups its controls under **Export CA certificate** and **Revocation list (CRL)**, and the Import Guide's Quick Start points to Endpoint import
 - **Export CRL** now says on the page that it's for the placeholder distribution point only and never changes the CRL this server publishes
+- The issued-certificates table fits narrower windows: below 1700px the row actions take two rows, and below 1400px the Algorithm column (shown in the viewer) steps aside, so Revoke and Delete are never pushed out of view
+- README screenshots retaken for this version, with new ones for Endpoint import and the recovery key
 - Dialog buttons (Close, Export…, Copy PEM and the rest) stay pinned at the bottom of the dialog while long content, such as the certificate viewer, scrolls
 - The sidebar's **Tools** stand out and are grouped by use: Create, Data, Security, Help; the sidebar is more compact, so more of it fits without scrolling
 - On phones, warning banners show one line with **More**, so they no longer fill the screen

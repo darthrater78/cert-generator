@@ -470,7 +470,20 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .cert-table tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--surface-hover) 45%, transparent); }
 .cert-table tbody tr:hover td { background: var(--surface-hover); }
 .cert-table tr.revoked td:first-child { text-decoration: line-through; text-decoration-color: var(--danger); color: var(--text-dim); }
-.cert-table td.sans { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+.cert-table td.sans { max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+.row-actions { display: flex; justify-content: flex-end; align-items: baseline; gap: 6px 12px; }
+.row-actions .btn { margin-left: 0; }
+.row-actions .import-chip { white-space: nowrap; }
+/* Narrower windows: actions take two rows (View · Export · Endpoint import, then
+   Revoke · Delete) and Algorithm, which the viewer shows, steps aside, so nothing
+   runs past the table's edge. */
+@media (max-width: 1700px) {
+  .row-actions { flex-wrap: wrap; width: 260px; margin-left: auto; }
+}
+@media (max-width: 1400px) {
+  .cert-table th:nth-child(4), .cert-table td:nth-child(4) { display: none; }
+  .row-actions { width: 150px; }
+}
 /* row actions read as ledger links, not buttons */
 .cert-table .btn {
   padding: 0; margin-left: 12px;
