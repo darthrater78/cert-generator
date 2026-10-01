@@ -1271,9 +1271,13 @@ function popOutGuide(kind) {
   const modal = kind === 'ssh' ? 'sshGuideModal' : 'guideModal';
   if (window.pywebview && window.pywebview.api && window.pywebview.api.open_guide) {
     window.pywebview.api.open_guide(kind);
-  } else if (!window.open('/guide/' + kind, 'cert-generator-guide-' + kind, 'width=960,height=760')) {
-    toast('Allow pop-ups for this site to open the guide in its own window', 'error');
-    return;
+  } else {
+    const win = window.open('/guide/' + kind, 'cert-generator-guide-' + kind, 'width=960,height=760');
+    if (!win) {
+      toast('Allow pop-ups for this site to open the guide in its own window', 'error');
+      return;
+    }
+    win.opener = null;  // the guide never needs a handle back to the app window
   }
   hideModal(modal);
 }

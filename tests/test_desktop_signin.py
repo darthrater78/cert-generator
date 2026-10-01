@@ -95,6 +95,25 @@ def test_guide_pages_need_sign_in(admin_client, fresh_app):
     assert fresh_app.test_client().get("/guide/cert").status_code == 302
 
 
+def test_guide_pages_carry_the_security_headers(admin_client):
+    resp = admin_client.get("/guide/cert")
+    assert "script-src 'self'" in resp.headers["Content-Security-Policy"]
+    assert "frame-ancestors 'none'" in resp.headers["Content-Security-Policy"]
+    assert resp.headers["X-Frame-Options"] == "DENY"
+    assert resp.headers["Referrer-Policy"] == "same-origin"
+    for path in ("/guide/..%2f..%2fetc", "/guide/_guide_cert.html", "/guide/index"):
+        assert admin_client.get(path).status_code == 404
+
+
+def test_desktop_guide_pages_need_the_app_token(fresh_app):
+    server.set_app_token("desktop-token")
+    assert fresh_app.test_client().get("/guide/cert").status_code == 403
+    client = fresh_app.test_client()
+    assert client.get("/_auth?token=wrong&next=/guide/cert").status_code == 403
+    client.get("/_auth?token=desktop-token&next=/guide/cert")
+    assert client.get("/guide/cert").status_code == 200
+
+
 def test_desktop_auth_redirects_only_to_known_pages(fresh_app):
     server.set_app_token("desktop-token")
     client = fresh_app.test_client()
