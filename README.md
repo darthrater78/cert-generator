@@ -1,6 +1,6 @@
 # Cert Generator
 
-**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.6.0 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.6.0)**
+**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.7.0 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.7.0)**
 
 A tool for creating Certificate Authorities and issuing self-signed certificates for posture demos. Runs as a **Docker web app** or a **Windows desktop app** — both use the same interface and database format, and backups created in one mode can be restored in the other.
 
@@ -37,10 +37,11 @@ For a CRL that clients fetch over the network, you need the Docker version.
 - **Password-protected exports** — optionally encrypt the private key (PEM); PKCS12 bundles always require a password you choose: there is no default, and the old pre-filled `changeit` is refused
 - **Optional CA chain inclusion** — choose whether to bundle the issuing CA certificate when exporting issued certs
 - **In-app import guide** — step-by-step instructions for importing certificates on Windows, macOS, and Linux for each template type
-- **Endpoint import** — on any certificate, **Endpoint import ▾** asks whether the CA chain is already on the machine, then gives the files to download and copy-paste commands for Windows, macOS or Linux, with Windows stores per Microsoft's layout (root → Trusted Root Certification Authorities, intermediate → Intermediate Certification Authorities, computer certificates → Local Computer › Personal, user certificates → Current User › Personal)
+- **Export / install** — on any certificate, **Export / install ▾** asks whether the CA chain is already on the machine, then gives the files to download and copy-paste commands for Windows, macOS or Linux in one block with **Copy code**, with Windows stores per Microsoft's layout (root → Trusted Root Certification Authorities, intermediate → Intermediate Certification Authorities, computer certificates → Local Computer › Personal, user certificates → Current User › Personal) and a notice when PowerShell must run as Administrator. **Download .zip** packs the certificate, the CA chain if needed, the CRL for an endpoint-hosted certificate, and install / uninstall scripts (`install.cmd` / `uninstall.cmd` on Windows). The **Export file** tab downloads the certificate in any format
 - **Modern crypto algorithms** — Ed25519, ECDSA P-256, ECDSA P-384, RSA-2048, RSA-4096
 - **Revoke certificates** to mark them as no longer trusted
 - **CRL generation and publishing** — optionally embed a CRL Distribution Point in issued certificates. The distribution point is either **this server** (`<address>/crl/<CA id>.crl`, answered without sign-in; server mode only, see [Publishing the CRL](#publishing-the-crl)), where the app signs a 7-day CRL itself, re-signs it on every revocation and renews it before it runs out, a **Cloudflare Worker** per CA (server mode), or **endpoint-hosted** (`http://pki.<domain>/crl/<CA>.crl`, which no server answers): each machine gets the CRL from the certificate's install .zip, which on Windows also answers that address locally, or from an exported CRL you import (see [Endpoint-hosted CRL](#endpoint-hosted-crl-for-endpoints-that-cant-reach-docker-or-cloudflare-windows)). Exported CRLs stay valid as long as you choose (7 days to 10 years, default 10 years); the CA page shows the published CRL and the exported one separately, and each certificate shows where its CRL comes from and whether it is published
+- **Cloudflare Worker CRL distribution point** (Docker only) — each CA can publish its CRL from its own Cloudflare Worker, set up entirely from the app: connect an API token under **Tools › Cloudflare**, then **Deploy**, **Test**, **Push now**, **View live CRL** and **Tear down** on the CA page. Revoking a certificate pushes the new CRL to the Worker, and the hourly renewal keeps it current. See [Cloudflare Worker CRL](#cloudflare-worker-crl)
 - **CRL viewer** — **View CRL** on the CA page (or **Open in CRL viewer** from a certificate) shows the CRL this server publishes: issuer, this and next update, signature, every revoked serial linked to its certificate, fingerprints and the PEM. For a CA it doesn't publish for, it lists the revocations an export would contain now
 - **Step-up confirmation for key material** — downloading a private key (CA, certificate or SSH), copying an SSH private key, backing up and restoring all ask for your password, or an authenticator code when MFA is on, unless you signed in within the last 5 minutes
 - **Revocation survives deletion** — deleting a revoked certificate keeps its serial on the CA's CRL until the certificate would have expired, and deleting a certificate that isn't revoked warns that clients keep trusting it
@@ -56,15 +57,19 @@ For a CRL that clients fetch over the network, you need the Docker version.
 - **Structured logging** — request and operation logging with timestamps, configurable via `LOG_LEVEL` environment variable
 - **Themes and accent colour** — six themes (Slate by default, Flashbang, Graphite, Umber, Ink and OLED) and an accent colour picker (twelve presets, a colour picker or a typed hex value; brass by default), chosen from the Appearance menu and saved per browser; the sign-in pages follow the same choice
 
-<img width="1440" alt="The dashboard on the Slate theme: an intermediate CA's particulars, its Export CA certificate and Revocation list sections, and its register of issued certificates with Endpoint import on each; the sidebar groups Tools into Create, Data, Security and Help" src="docs/screenshots/dashboard.png" />
+<img width="1440" alt="The dashboard on the Slate theme: an intermediate CA's particulars, its Export CA certificate and Revocation list sections, and its Cloudflare Worker card, and its register of issued certificates with Export / install on each; the sidebar groups Tools into Create, Data, Security, Publishing and Help" src="docs/screenshots/dashboard.png" />
 
-<img width="49%" alt="Endpoint import for a computer certificate on Windows: the question whether the CA chain is already on the machine, Download buttons for the root and intermediate CA files, and the PowerShell commands for each store" src="docs/screenshots/endpoint-import.png" /> <img width="49%" alt="The one-time recovery key shown when database encryption is enabled, with Copy, Download .txt and an I've stored it confirmation" src="docs/screenshots/recovery-key.png" />
+<img width="49%" alt="Export / install for a computer certificate on Windows: the question whether the CA chain is already on the machine, the Administrator notice, Download .zip, Download buttons for the CA files and the CRL, and the PowerShell commands with Copy code" src="docs/screenshots/export-install.png" /> <img width="49%" alt="The one-time recovery key shown when database encryption is enabled, with Copy, Download .txt and an I've stored it confirmation" src="docs/screenshots/recovery-key.png" />
 
-<img width="49%" alt="The sign-in page, set as an engraved certificate over a faint openssl readout" src="docs/screenshots/sign-in.png" /> <img width="49%" alt="The Issue Certificate dialog" src="docs/screenshots/issue-certificate.png" />
+<img width="1440" alt="A root CA's Cloudflare Worker for CRL card after Test: the address certificates carry, the Worker name, the last push, and the plain HTTP and HTTPS results with the recommended address" src="docs/screenshots/cloudflare-worker.png" />
 
-<img width="49%" alt="The certificate viewer: a web server certificate's general fields, subject, issuer, extensions, fingerprints and the issuing CA's CRL" src="docs/screenshots/cert-viewer.png" /> <img width="49%" alt="The CRL viewer: the intermediate CA's published CRL with its revoked serials, one linked to its certificate" src="docs/screenshots/crl-viewer.png" />
+<img width="49%" alt="Tools › Cloudflare: the connected account and the Workers this app created, each with its CA and state" src="docs/screenshots/cloudflare-settings.png" /> <img width="49%" alt="The CRL viewer: the intermediate CA's published CRL with its revoked serials, one linked to its certificate" src="docs/screenshots/crl-viewer.png" />
 
-<img width="49%" alt="An SSH key's particulars, public key and export options" src="docs/screenshots/ssh-key.png" /> <img width="49%" alt="The Umber theme with the Appearance menu open: six themes and the accent colour picker" src="docs/screenshots/themes.png" />
+<img width="49%" alt="The sign-in page, set as an engraved certificate over a faint openssl readout" src="docs/screenshots/sign-in.png" /> <img width="49%" alt="The Issue Certificate dialog with Include CRL Distribution Point ticked: the distribution point choice and the address clients fetch the CRL from" src="docs/screenshots/issue-certificate.png" />
+
+<img width="49%" alt="The certificate viewer: a web server certificate's general fields, subject, issuer, extensions, fingerprints and the issuing CA's CRL" src="docs/screenshots/cert-viewer.png" /> <img width="49%" alt="An SSH key's particulars, public key and export options" src="docs/screenshots/ssh-key.png" />
+
+<img width="1440" alt="The Umber theme with the Appearance menu open: six themes and the accent colour picker" src="docs/screenshots/themes.png" />
 
 
 ## Requirements
@@ -99,7 +104,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.6.0
+    image: ghcr.io/darthrater78/cert-generator:2.7.0
     container_name: cert-generator
     restart: unless-stopped
     security_opt:
@@ -179,6 +184,22 @@ labels:
 
 The desktop app can't serve CRLs (it listens on loopback only), so it offers the endpoint-hosted distribution point alone.
 
+#### Cloudflare Worker CRL
+
+For clients that can't reach this server, each CA can publish its CRL from its own [Cloudflare Worker](https://developers.cloudflare.com/workers/), on Cloudflare's free plan. Everything happens in the app; there is no `wrangler` or command line. Docker only: the EXE never stores a Cloudflare token.
+
+**1. Connect (once).** Turn on database encryption first: the API token can rewrite your CRL Workers, so it is only ever stored encrypted with the database key, and the app can't use it while the database is locked (encryption can't be turned off while Cloudflare is connected). Then open **Tools › Cloudflare** and follow its steps: create a custom API token in the Cloudflare dashboard with **Account · Workers Scripts · Edit** on your account only (for an address on your own domain, add **Zone · Zone · Read**, **Zone · Workers Routes · Edit** and **Zone · DNS · Edit** for that one zone), and paste it with your account ID. The token is checked with Cloudflare and never shown again.
+
+**2. Deploy per CA.** On the CA page, the **Cloudflare Worker for CRL** card deploys a Worker for that CA at `certgen-crl-<CA>-<random>.<your subdomain>.workers.dev`, or at a hostname on one of your Cloudflare domains (Cloudflare creates the DNS record). Pick an address you'll keep: it is written into every certificate issued with it. Then issue certificates with **Include CRL Distribution Point › Cloudflare Worker (this CA)**.
+
+**3. Test.** **Test** fetches the CRL from the Worker over plain HTTP and HTTPS, from this server, and checks that it parses, is signed by the CA, is current and matches what the app last pushed. It recommends the address to put in certificates: plain HTTP with no redirect where that works, since Windows and most clients fetch CRLs over HTTP. **View live CRL** opens the CRL the Worker is serving in the CRL viewer, and **Copy** gives the address for your own testing (`certutil -url`, `openssl crl`).
+
+**Keeping it current.** The CRL is built into the Worker, so publishing is a redeploy. Revoking a certificate asks to confirm and pushes the new CRL; the hourly renewal re-signs and pushes it before it runs out (7-day CRLs, renewed at half-life); **Push now** does it by hand. A failed push shows **not published** on the CA page and in the log, and is retried hourly. **Refresh** re-reads the Worker and checks it still exists in Cloudflare.
+
+**Tear down** deletes the CA's Worker (and its custom domain) after a confirmation that says how many certificates carry its address, since they lose their working CRL. **Tools › Cloudflare** lists every `certgen-crl-*` Worker in the account as **in use**, **unlinked** (in Cloudflare, but no CA here uses it: a deleted CA, a failed setup, a restore or another install of the app) or **missing** (a CA here names a Worker Cloudflare no longer has), with **Delete** and **Delete unlinked**. **Disconnect** deletes the stored token (delete it in the Cloudflare dashboard too); it needs a recent sign-in and is refused while any CA still has a Worker, since the app could no longer update or remove it.
+
+**Security.** The Worker's code is fixed and contains no secrets: it answers `GET` and `HEAD` on its one CRL path, `404`/`405` for anything else, sets no cookies and no CORS headers, and sends `nosniff` and a `default-src 'none'; sandbox` CSP. Nothing on it can write; changing the CRL takes the API token, which stays encrypted in this app's database. A CRL is public by design and signed by the CA, so a Worker can't forge one.
+
 #### Endpoint-hosted CRL, for endpoints that can't reach Docker or Cloudflare (Windows)
 
 A certificate with the **endpoint-hosted** distribution point names `http://pki.<domain>/crl/<CA name>.crl`, an address no server on the network answers. (Older versions called it *placeholder*; the API value is still `placeholder`.) Windows' own revocation check can still use a CRL imported into the certificate store, but programs that download the CRL from that address (some agents, browsers, Java, OpenSSL-based tools) get nothing. For endpoints that can reach neither this server nor a Cloudflare Worker, the Windows install bundle makes the endpoint answer that address itself.
@@ -215,7 +236,7 @@ It removes the certificate, the imported CRL, the hosts line, the URL reservatio
 **Security notes**
 
 - **Exposure:** HTTP.sys accepts the request on any interface, but Windows Firewall blocks inbound port 80 unless you open it, and the only thing served is the CRL, which is public by design.
-- **Tampering:** a CRL is signed, so it can't be forged, but an older valid copy could hide a revocation. That's why the folder is admin-only. The listener runs as LOCAL SERVICE, not SYSTEM, and may use only the reserved path.
+- **Tampering:** a CRL is signed, so it can't be forged, but an older valid copy could hide a revocation. That's why the folder is admin-only. If it already exists and isn't owned by Administrators (any user can create folders in `C:\ProgramData`), or is a link, the install moves it aside as `CertGenerator.untrusted-<time>` and starts fresh, so nobody else can swap the script the listener runs. The listener runs as LOCAL SERVICE, not SYSTEM, and may use only the reserved path.
 - **Freshness** is the real weakness: an endpoint that isn't given the new CRL keeps trusting a revoked certificate until the old CRL expires.
 - **Security tools** may flag the hosts-file edit and the new startup task. That is this install; undo it with `uninstall.cmd`.
 - **Port 80** taken by a program that doesn't use HTTP.sys (Apache, nginx, some Docker setups) stops the listener. `install.cmd` reports it.
@@ -347,6 +368,7 @@ The embedded web server is hardened for both desktop and server use:
 - **Session cookies** — httpOnly, `SameSite=Lax`, signed with `SECRET_KEY`; `Secure` when `COOKIE_SECURE=true`
 - **Cross-site request protection** — state-changing requests from other sites are rejected (using `Sec-Fetch-Site`, falling back to `Origin`)
 - **Internal API** — the routes under `/api/` are the page's own API, authenticated by the session cookie. They are not a stable public interface and can change between releases
+- **Cloudflare token** — stored only encrypted with the database key (connecting requires encryption), never returned by the API, unusable while the database is locked, and scoped by you to Workers Scripts (plus one zone for a custom domain). Cloudflare calls go only to `api.cloudflare.com` with certificate verification
 - **Public CRL path** — `/crl/<id>.crl` is the one unauthenticated route. It accepts only `GET` and `HEAD`, serves only CAs that opted in by issuing a certificate pointing at this server, answers unknown and unpublished CAs with the same `404`, never reads or sets a session cookie, sends the CRL as an attachment under `Content-Security-Policy: default-src 'none'` with an `ETag`, and is rate limited to 300 requests a minute per client address
 - **Security headers** — a Content-Security-Policy that allows no inline script (`script-src 'self'`), `X-Frame-Options: DENY`, `nosniff`, and `Cache-Control: no-store` on API responses
 - **No key material on the server's disk** — exports and backups stream to the browser instead of being written to an export folder. If an older version left export files in `EXPORT_DIR`, a banner offers to review and delete them (only files matching the old export names are touched)
@@ -408,8 +430,9 @@ This works the same in Docker and the Windows EXE. In the EXE, if you set a user
 5. Select your CA in the sidebar
 6. Click **Issue certificate** to generate leaf certs
 7. To trust the CA on a machine, **Download** it from the CA page: the default, **DER · Certificate Only**, is the file an endpoint needs
-8. Click **Endpoint import ▾** on a certificate for step-by-step install commands, or use **Export** to download it in the format you choose
-9. Click **+ New** next to **SSH keys** to generate an SSH key pair, or **Tools › Create › Import SSH key** to add an existing key
+8. Click **Export / install ▾** on a certificate for step-by-step install commands or a .zip with install scripts, or its **Export file** tab to download it in the format you choose
+9. Docker: to publish a CA's CRL on the internet, connect **Tools › Cloudflare** and deploy a Worker from the CA page (see [Cloudflare Worker CRL](#cloudflare-worker-crl))
+10. Click **+ New** next to **SSH keys** to generate an SSH key pair, or **Tools › Create › Import SSH key** to add an existing key
 
 ## Supported algorithms
 
@@ -452,6 +475,34 @@ The database format is identical in both modes. Use **Backup** to create an encr
 ## Version history
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
+
+### v2.7.0 — 2026-10-01
+
+#### Docker
+- **Cloudflare Worker CRL distribution point.** Each CA can publish its CRL from its own Cloudflare Worker, set up entirely in the app: **Tools › Cloudflare** connects an API token (stored encrypted, so database encryption must be on), and the CA page's **Cloudflare Worker for CRL** card deploys the Worker on `workers.dev` or your own domain, then offers **Test**, **Refresh**, **Push now**, **View live CRL**, **Copy** and **Tear down**. Issue certificates with **Distribution point › Cloudflare Worker (this CA)**. See [Cloudflare Worker CRL](https://github.com/darthrater78/cert-generator#cloudflare-worker-crl)
+- **Test** fetches the Worker's CRL over plain HTTP and HTTPS from this server, checks its signature, freshness and that it matches the last push, and recommends the address for certificates
+- Revoking a certificate of a CA with a Worker says the new CRL will be published there and pushes it; the hourly renewal pushes too. A failed push shows **not published** on the CA page and in the log, and is retried hourly
+- **Tools › Cloudflare** lists every Worker the app created in the account as in use, unlinked or missing, with **Delete** and **Delete unlinked**. Tear down and Disconnect say what they affect before they run
+- The Worker is fixed, read-only code: `GET`/`HEAD` on its one CRL path, nothing else, no secrets, cookies or CORS
+- **Export / install ▾** replaces Endpoint import: one panel per certificate with **Windows**, **macOS**, **Linux** and an **Export file** tab (the old Export dialog). All commands sit in one block with **Copy code**, and Windows says when PowerShell must run as Administrator
+- **Download .zip** per OS: the certificate, the CA chain if the machine doesn't have it, the CRL for an endpoint-hosted certificate, and install / uninstall scripts that find their own folder, show each command and explain failures. On Windows, `install.cmd` / `uninstall.cmd` ask for administrator rights, get past the unsigned-script block for that one run, and wait for Enter before closing
+- **Endpoint-hosted** is the new name of the *placeholder* distribution point, and it is for demos and testing only. On Windows, its .zip also makes the endpoint answer the CRL address itself (a hosts entry and a small HTTP.sys listener running as LOCAL SERVICE), and `uninstall.cmd` backs it all out. See [Endpoint-hosted CRL](https://github.com/darthrater78/cert-generator#endpoint-hosted-crl-for-endpoints-that-cant-reach-docker-or-cloudflare-windows)
+- **No default export passwords.** The pre-filled `changeit` is gone and refused by the server; a PKCS12 export needs a password you choose
+- The CA page's **Export CA certificate** and **Cloudflare Worker for CRL** are cards you can fold away, remembered per browser; the CRL note points to the certificate's Export / install as the usual way to get a CRL onto a machine
+- The certificate guides fit the window, their tabs wrap instead of scrolling, and **Open in new window** pops a guide out beside the app. The Quick Start opens by itself while there are no CAs yet
+- Fixed: the password confirmation opened behind the Encryption dialog when creating a recovery key from **Encryption** settings
+- The Windows local CRL server won't reuse a `C:\ProgramData\CertGenerator` folder that someone else created (or a link): it moves it aside, so a non-admin user can't swap the script that runs at boot
+- Fixed: the issued-certificates table ran past its card between about 1400 and 1500px wide, hiding Delete; and on phones a long CRL address pushed a Download button off the Export / install panel
+- README screenshots retaken, with new ones for Export / install and the Cloudflare Worker
+
+#### Windows EXE
+- **Optional sign-in.** On first run the app offers to protect it with a username and password, which become the database encryption password, followed by a one-time recovery key that resets the password and shows the username. **Not now** and **Don't ask again** skip it
+- The window opens maximized, so the whole layout fits on scaled (125–150%) displays
+- The same Export / install panel, .zip bundles, endpoint-hosted rename and Windows local CRL server, no default export passwords, foldable CA cards, adaptive and pop-out guides, Quick Start on first run and the fixes above as Docker. The CRL options say the served distribution point and Cloudflare need the Docker version
+
+#### Internal
+- The browser tests close the Quick Start that now opens on an empty database; a new test covers it. The pop-out guide drops its handle on the app window, with tests for the guide page's headers, path allowlist and the desktop app token
+- Tests run the Cloudflare flow against a fake Cloudflare API, and CI's Windows job parses the generated PowerShell scripts
 
 ### v2.6.0 — 2026-10-01
 
