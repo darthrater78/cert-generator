@@ -979,8 +979,25 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .cf-test { margin-top: 12px; display: grid; gap: 8px; }
 .cf-test:empty { display: none; }
 .cf-test-line .mono, .cf-recommend .mono { overflow-wrap: anywhere; }
-.cf-test-line .dim { font: italic 12.5px var(--font-serif); margin-top: 2px; }
+.cf-panel .dim { color: var(--text-dim); }
+/* Problems hold URLs: mono, so slashes read as slashes */
+.cf-test-line .dim { font: 12px var(--font-mono); margin-top: 2px; overflow-wrap: anywhere; }
 .cf-recommend { padding: 8px 12px; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .cf-choice { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; font-size: 13.5px; cursor: pointer; }
 .cf-steps { margin: 0 0 12px 20px; font-size: 13.5px; line-height: 1.6; }
 .cf-steps li { margin-bottom: 4px; }
+.cf-test-label { display: block; font: 600 11px var(--font-ui); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 2px; }
+.cf-workers { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cf-workers th { text-align: left; font: italic 12.5px var(--font-serif); color: var(--text-dim); padding: 4px 6px; border-bottom: 1px solid var(--border); }
+.cf-workers td { padding: 6px; border-bottom: 1px solid var(--border); vertical-align: top; overflow-wrap: anywhere; }
+.cf-workers td:last-child { text-align: right; white-space: nowrap; }
+.cf-modal { width: 680px; }
+.cf-workers .badge { white-space: nowrap; }
+.cf-modal .modal-actions { flex-wrap: wrap; }
+.card-toggle {
+  display: inline-flex; align-items: baseline; gap: 10px;
+  background: none; border: 0; padding: 0; color: inherit; font: inherit; cursor: pointer; text-align: left;
+}
+.card-toggle:hover { color: var(--accent-text); }
+.collapsible-card.collapsed { padding-bottom: 0; }
+.collapsible-card.collapsed > h3 { margin-bottom: 0; border-bottom: 0; }

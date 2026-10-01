@@ -626,6 +626,16 @@ def clear_ca_worker(ca_id: int) -> None:
     update_ca_worker(ca_id, **dict.fromkeys(CF_COLUMNS))
 
 
+def list_ca_workers() -> list[dict[str, Any]]:
+    """Every CA with a Worker: id, name and its cf_* columns."""
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT id, name, {', '.join(CF_COLUMNS)} FROM certificate_authorities "  # nosec B608
+            "WHERE cf_worker IS NOT NULL ORDER BY id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def count_ca_workers(ca_ids: list[int] | None = None) -> int:
     with _connect() as conn:
         if ca_ids is None:

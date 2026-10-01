@@ -36,7 +36,9 @@ class FakeCloudflare:
         if path in (f"{base}/tokens/verify", "/user/tokens/verify"):
             return {"status": "active"}
         if path == f"{base}/workers/scripts" and method == "GET":
-            return []
+            return [{"id": n, "modified_on": "2026-10-01T00:00:00Z"} for n in self.scripts] + [{"id": "someone-elses-worker"}]
+        if path == f"{base}/workers/domains" and method == "GET":
+            return [{"id": i, "hostname": "crl.example.com", "service": n} for i, n in self.domains.items()]
         if path == f"{base}/workers/subdomain":
             if self.subdomain is None:
                 raise cloudflare.CloudflareError("Cloudflare returned HTTP 404")
@@ -328,3 +330,46 @@ def test_worker_code_only_serves_its_crl():
     assert "url.pathname !== env.CRL_PATH" in js
     assert "access-control" not in js.lower() and "set-cookie" not in js.lower()
     assert hashlib.sha256(js.encode()).hexdigest()  # fixed code, no per-deploy templating
+
+
+# ── Inventory and cleanup ───────────────────────────────────────────
+
+def test_inventory_lists_only_app_workers_and_flags_unlinked_and_missing(connected, cf):
+    linked_ca = _create_ca(connected)
+    linked = _deploy(connected, linked_ca)["worker"]
+    gone_ca = _create_ca(connected, domain="gone.test")
+    gone = _deploy(connected, gone_ca)["worker"]
+    cf.scripts.pop(gone)  # deleted in the dashboard
+    cf.scripts["certgen-crl-left-over-abc123"] = {"crl": b"", "path": "/left-over.crl", "workers_dev": True}
+    cf.domains["e" * 32] = "certgen-crl-left-over-abc123"
+    workers = {w["name"]: w for w in connected.get("/api/cloudflare/workers").get_json()["workers"]}
+    assert set(workers) == {linked, gone, "certgen-crl-left-over-abc123"}  # never someone-elses-worker
+    assert workers[linked]["state"] == "linked" and workers[linked]["ca_id"] == linked_ca
+    assert workers[gone]["state"] == "missing"
+    assert workers["certgen-crl-left-over-abc123"]["state"] == "unlinked"
+    assert workers["certgen-crl-left-over-abc123"]["hostnames"] == ["crl.example.com"]
+    assert connected.get(f"/api/ca/{gone_ca}/cloudflare?refresh=1").get_json()["exists"] is False
+    assert connected.get(f"/api/ca/{linked_ca}/cloudflare?refresh=1").get_json()["exists"] is True
+
+
+def test_cleanup_deletes_unlinked_and_linked_workers(connected, cf):
+    ca_id = _create_ca(connected)
+    linked = _deploy(connected, ca_id)["worker"]
+    cf.scripts["certgen-crl-left-over-abc123"] = {"crl": b"", "path": "/left-over.crl", "workers_dev": True}
+    cf.domains["e" * 32] = "certgen-crl-left-over-abc123"
+    resp = connected.delete("/api/cloudflare/workers/certgen-crl-left-over-abc123")
+    assert resp.get_json() == {"ok": True, "ca_id": None, "affected": 0}
+    assert "certgen-crl-left-over-abc123" not in cf.scripts and cf.domains == {}
+    resp = connected.delete(f"/api/cloudflare/workers/{linked}")
+    assert resp.get_json()["ca_id"] == ca_id and db.get_ca_worker(ca_id) is None and cf.scripts == {}
+    for name in ("someone-elses-worker", "certgen-crl-does-not-exist"):
+        assert connected.delete(f"/api/cloudflare/workers/{name}").status_code == 404
+    assert not [path for method, path in cf.calls if method == "DELETE" and "someone-elses-worker" in path]
+
+
+def test_tear_down_a_worker_already_deleted_in_cloudflare(connected, cf):
+    ca_id = _create_ca(connected)
+    script = _deploy(connected, ca_id)["worker"]
+    cf.scripts.pop(script)
+    assert connected.delete(f"/api/ca/{ca_id}/cloudflare").status_code == 200
+    assert db.get_ca_worker(ca_id) is None

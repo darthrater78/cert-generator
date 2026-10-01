@@ -118,6 +118,61 @@ def teardown(ca_id: int) -> dict[str, Any]:
     return {"affected": len(affected)}
 
 
+def inventory() -> dict[str, Any]:
+    """Every Worker this app created in the connected account, matched to the CAs here.
+
+    ``unlinked``: in Cloudflare but no CA here uses it (a deleted CA, a failed setup, a
+    restore, or another install of the app). ``missing``: a CA here names a Worker that
+    isn't in Cloudflare any more.
+    """
+    creds = credentials()
+    remote = {w["name"]: w for w in cloudflare.list_app_workers(creds)}
+    local = {w["cf_worker"]: w for w in db.list_ca_workers() if w["cf_account_id"] == creds.account_id}
+    workers = []
+    for name in sorted(set(remote) | set(local)):
+        ca = local.get(name)
+        found = remote.get(name)
+        workers.append({
+            "name": name,
+            "ca_id": ca["id"] if ca else None,
+            "ca_name": ca["name"] if ca else None,
+            "hostnames": [d["hostname"] for d in found["domains"]] if found else [],
+            "address": ca["cf_dp_url"] if ca else None,
+            "modified_on": found["modified_on"] if found else None,
+            "state": "missing" if not found else "linked" if ca else "unlinked",
+        })
+    return {"workers": workers}
+
+
+def delete_by_name(name: str) -> dict[str, Any]:
+    """Remove a Worker this app created: a CA's own goes through teardown(), so the CA
+    forgets it; an unlinked one is deleted with its custom domains."""
+    if not cloudflare.SCRIPT_NAME_RE.match(name):
+        raise ValueError("Not a Worker this app created")
+    creds = credentials()
+    linked = next((w for w in db.list_ca_workers()
+                   if w["cf_worker"] == name and w["cf_account_id"] == creds.account_id), None)
+    if linked:
+        return {"ca_id": linked["id"], **teardown(linked["id"])}
+    found = next((w for w in cloudflare.list_app_workers(creds) if w["name"] == name), None)
+    if found is None:
+        raise ValueError("No such Worker in the connected account")
+    for domain in found["domains"]:
+        cloudflare.detach_domain(creds, domain["id"])
+    cloudflare.delete_worker(creds, name)
+    log.warning("Unlinked Cloudflare Worker %s deleted", name)
+    return {"ca_id": None, "affected": 0}
+
+
+def refresh(ca_id: int) -> dict[str, Any]:
+    """status() plus whether the Worker still exists in Cloudflare."""
+    result = status(ca_id)
+    if result.get("deployed") and result.get("account_matches"):
+        names = {w["name"] for w in cloudflare.list_app_workers(credentials())}
+        result["exists"] = result["worker"] in names
+    return result
+
+
 # ── Push ────────────────────────────────────────────────────────────
 
 def push(ca_id: int) -> bool:

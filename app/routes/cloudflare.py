@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 
 from .. import cloudflare, crl_worker, crypto_engine, db, state
 from ..cloudflare import CloudflareError, Credentials
@@ -84,6 +84,22 @@ def check():
     return jsonify(cloudflare.check_credentials(crl_worker.credentials()))
 
 
+@bp.get("/api/cloudflare/workers")
+@login_required
+def workers():
+    return jsonify(crl_worker.inventory())
+
+
+@bp.delete("/api/cloudflare/workers/<name>")
+@login_required
+@recent_auth_required
+def delete_worker(name: str):
+    try:
+        return jsonify({"ok": True, **crl_worker.delete_by_name(name)})
+    except ValueError as e:
+        return error(str(e), 404)
+
+
 # ── A CA's Worker ───────────────────────────────────────────────────
 
 def _ca_or_404(ca_id: int):
@@ -95,6 +111,8 @@ def _ca_or_404(ca_id: int):
 def worker_status(ca_id: int):
     if _ca_or_404(ca_id) is None:
         return error("CA not found", 404)
+    if request.args.get("refresh"):
+        return jsonify(crl_worker.refresh(ca_id))
     return jsonify(crl_worker.status(ca_id))
 
 

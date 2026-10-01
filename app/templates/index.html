@@ -186,34 +186,6 @@
         <div class="card">
           <h3>Particulars</h3>
           <div class="ca-info-grid" id="caInfo"></div>
-          <h4 class="card-subhead">Export CA certificate</h4>
-          <div class="export-section">
-            <span class="field-label">Export</span>
-            <select id="caExportFormat" data-change="updateCaPasswordVisibility">
-              <option value="pkcs12">PKCS12 (.pfx)</option>
-              <option value="pem">PEM</option>
-              <option value="der" selected>DER</option>
-              <option value="crt">CRT (.crt)</option>
-            </select>
-            <select id="caExportPart" data-change="updateCaPasswordVisibility">
-              <option value="both">Certificate + Key</option>
-              <option value="public" selected>Certificate Only</option>
-              <option value="private">Private Key Only</option>
-            </select>
-            <input type="password" id="caExportPassword" value="changeit" title="Default password: changeit" placeholder="Default: changeit" aria-label="Export password">
-            <span class="note" id="caExportPasswordNote" title="Default password is 'changeit'. Required for Windows certificate import.">default: changeit</span>
-            <button class="btn btn-ghost btn-sm" data-action="exportCA">Download</button>
-            <div class="ca-export-note" id="caExportNote">
-              <div class="ca-export-case ca-export-trust">
-                <span class="ca-export-label">Trusted Endpoint</span>
-                <span>Export <strong>Certificate Only</strong> (DER, or PEM for Linux) and import it as a trusted root. No private key is needed.</span>
-              </div>
-              <div class="ca-export-case ca-export-key">
-                <span class="ca-export-label">TLS Inspection / CA Move</span>
-                <span>Export <strong>Certificate + Key</strong> (PKCS12 .pfx) only for a device that issues certificates with this CA, such as a firewall or proxy doing TLS inspection, or to move the CA to another server. <strong>Never install it on endpoints:</strong> anyone holding the key can issue certificates every machine trusts.</span>
-              </div>
-            </div>
-          </div>
           <h4 class="card-subhead">Revocation list (CRL)</h4>
           <div class="export-section">
             <select id="crlLifetime" title="How long the CRL stays valid. Endpoints treat revocation data as stale after this, so re-export and re-import before it expires.">
@@ -232,11 +204,51 @@
               </div>
             </div>
           </div>
-          {% if server_mode %}
-          <h4 class="card-subhead">Cloudflare Worker</h4>
-          <div class="cf-panel" id="cfPanel"></div>
-          {% endif %}
         </div>
+
+        <div class="card collapsible-card" id="exportCard" data-card="export">
+          <h3><button type="button" class="card-toggle" data-action="toggleCard" data-arg="export"
+              aria-expanded="true" aria-controls="exportPanel"><span class="section-chevron open">&#9654;</span>
+              Export CA certificate</button></h3>
+          <div id="exportPanel">
+            <div class="export-section">
+              <span class="field-label">Export</span>
+              <select id="caExportFormat" data-change="updateCaPasswordVisibility">
+                <option value="pkcs12">PKCS12 (.pfx)</option>
+                <option value="pem">PEM</option>
+                <option value="der" selected>DER</option>
+                <option value="crt">CRT (.crt)</option>
+              </select>
+              <select id="caExportPart" data-change="updateCaPasswordVisibility">
+                <option value="both">Certificate + Key</option>
+                <option value="public" selected>Certificate Only</option>
+                <option value="private">Private Key Only</option>
+              </select>
+              <input type="password" id="caExportPassword" value="changeit" title="Default password: changeit" placeholder="Default: changeit" aria-label="Export password">
+              <span class="note" id="caExportPasswordNote" title="Default password is 'changeit'. Required for Windows certificate import.">default: changeit</span>
+              <button class="btn btn-ghost btn-sm" data-action="exportCA">Download</button>
+              <div class="ca-export-note" id="caExportNote">
+                <div class="ca-export-case ca-export-trust">
+                  <span class="ca-export-label">Trusted Endpoint</span>
+                  <span>Export <strong>Certificate Only</strong> (DER, or PEM for Linux) and import it as a trusted root. No private key is needed.</span>
+                </div>
+                <div class="ca-export-case ca-export-key">
+                  <span class="ca-export-label">TLS Inspection / CA Move</span>
+                  <span>Export <strong>Certificate + Key</strong> (PKCS12 .pfx) only for a device that issues certificates with this CA, such as a firewall or proxy doing TLS inspection, or to move the CA to another server. <strong>Never install it on endpoints:</strong> anyone holding the key can issue certificates every machine trusts.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {% if server_mode %}
+        <div class="card collapsible-card" id="cloudflareCard" data-card="cloudflare">
+          <h3><button type="button" class="card-toggle" data-action="toggleCard" data-arg="cloudflare"
+              aria-expanded="true" aria-controls="cloudflarePanel"><span class="section-chevron open">&#9654;</span>
+              Cloudflare Worker for CRL</button> <small id="cfCardSummary"></small></h3>
+          <div class="cf-panel" id="cloudflarePanel"></div>
+        </div>
+        {% endif %}
 
         <div class="card">
           <h3>Issued certificates <small id="certCountNote"></small></h3>
@@ -876,7 +888,7 @@
 
 {% if server_mode %}
 <div id="cloudflareModal" class="modal-backdrop hidden">
-  <div class="modal">
+  <div class="modal cf-modal">
     <h3>Cloudflare CRL Workers</h3>
     <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">
       Each CA can publish its CRL from its own Cloudflare Worker, so clients anywhere can check revocation without reaching this server. The app pushes a new CRL on every revocation and renews it weekly. Set it up once here, then deploy a Worker from a CA's page.
@@ -888,6 +900,12 @@
     <div id="cfConnected" class="hidden">
       <p style="font-size:13px;margin-bottom:12px">Connected to account <code id="cfAccountShown"></code>. <span id="cfWorkerCount"></span></p>
       <div id="cfCheckResult" class="form-hint" style="margin-bottom:12px"></div>
+      <h4>Workers this app created</h4>
+      <div id="cfWorkerList"></div>
+      <div class="cf-actions" style="margin-top:10px">
+        <button class="btn btn-ghost btn-sm" data-action="loadCloudflareWorkers">Refresh</button>
+        <button class="btn btn-danger btn-sm hidden" id="cfDeleteUnlinked" data-action="deleteUnlinkedCloudflareWorkers">Delete unlinked</button>
+      </div>
       <div class="modal-actions">
         <button class="btn btn-danger" data-action="disconnectCloudflare">Disconnect</button>
         <button class="btn btn-ghost" data-action="checkCloudflare">Check connection</button>

@@ -2102,6 +2102,7 @@ async function deleteLegacyExports() {
 }
 
 async function initApp() {
+  restoreCardStates();
   updateThemeSwitcherUI(document.documentElement.dataset.theme || 'oled');
   updateAccentUI();
   const ready = await checkEncryptionStatus();
@@ -2134,10 +2135,38 @@ function cfButton(action, label, kind) {
   return '<button class="btn btn-' + (kind || 'ghost') + ' btn-sm" data-action="' + action + '">' + label + '</button>';
 }
 
+// Cards with a fold-away title (.collapsible-card, data-card="<key>"; body id "<key>Panel").
+// Whether each is open is remembered in this browser only.
+function cardOpen(key) {
+  try { return localStorage.getItem('card:' + key) !== 'collapsed'; } catch (e) { return true; }
+}
+
+function applyCardState(key, open) {
+  const card = document.querySelector('.collapsible-card[data-card="' + key + '"]');
+  if (!card) return;
+  document.getElementById(key + 'Panel').hidden = !open;
+  card.classList.toggle('collapsed', !open);
+  card.querySelector('.section-chevron').classList.toggle('open', open);
+  card.querySelector('.card-toggle').setAttribute('aria-expanded', String(open));
+}
+
+function toggleCard(key) {
+  const open = document.getElementById(key + 'Panel').hidden;
+  try { localStorage.setItem('card:' + key, open ? 'open' : 'collapsed'); } catch (e) { /* not remembered */ }
+  applyCardState(key, open);
+}
+
+function restoreCardStates() {
+  document.querySelectorAll('.collapsible-card').forEach((card) => applyCardState(card.dataset.card, cardOpen(card.dataset.card)));
+}
+
 async function renderCloudflarePanel(ca) {
-  const panel = document.getElementById('cfPanel');
+  const panel = document.getElementById('cloudflarePanel');
   if (!panel) return;
   const w = ca.cloudflare || { deployed: false };
+  // Shown next to the title, so a folded card still says where things stand.
+  document.getElementById('cfCardSummary').textContent = !w.deployed ? 'not deployed'
+    : w.push_error ? 'last push failed' : w.exists === false ? 'missing in Cloudflare' : 'published';
   const conn = await loadCloudflareConnection();
   if (currentCAId !== ca.id) return;  // another CA opened meanwhile
   if (!w.deployed) {
@@ -2159,12 +2188,17 @@ async function renderCloudflarePanel(ca) {
       : '<span class="badge badge-active">Published</span> <span class="dim">' + escapeHtml(formatDateTime(w.pushed_at)) + '</span>'],
     ['Certificates using it', String(w.certificates)],
   ];
+  if (w.exists === false) {
+    rows.push(['In Cloudflare', '<span class="badge badge-expired">Not found</span> <span class="dim">The Worker was ' +
+      'deleted outside this app. Tear down to clear it here, then deploy a new one.</span>']);
+  }
   if (!w.account_matches) {
     rows.push(['Account', '<span class="badge badge-expired">Not connected</span> <span class="dim">This Worker is in a ' +
       'different Cloudflare account than the one connected (or none is). Connect that account to manage it.</span>']);
   }
   panel.innerHTML = '<dl class="cert-detail">' + rows.map(([k, v]) => '<dt>' + k + '</dt><dd>' + v + '</dd>').join('') +
     '</dl><div class="cf-actions">' + cfButton('testCloudflareWorker', 'Test', 'primary') +
+    cfButton('refreshCloudflarePanel', 'Refresh') +
     cfButton('viewLiveCloudflareCrl', 'View live CRL') + cfButton('pushCloudflareWorker', 'Push now') +
     cfButton('teardownCloudflareWorker', 'Tear down', 'danger') + '</div><div id="cfTestResult" class="cf-test"></div>';
 }
@@ -2191,6 +2225,7 @@ async function showCloudflareSettings() {
     document.getElementById('cfAccountShown').textContent = conn.account_id;
     document.getElementById('cfWorkerCount').textContent = conn.workers === 1
       ? '1 CA has a Worker.' : conn.workers + ' CAs have a Worker.';
+    loadCloudflareWorkers();
   } else {
     document.getElementById('cfAccountId').value = conn.account_id || '';
   }
@@ -2320,10 +2355,16 @@ async function testCloudflareWorker() {
     out.textContent = e.message;
     return;
   }
-  const line = (res) => '<div class="cf-test-line"><span class="badge ' + (res.ok ? 'badge-active">Works' : 'badge-expired">Fails') +
-    '</span> <span class="mono">' + escapeHtml(res.url) + '</span>' +
-    (res.problems.length ? '<div class="dim">' + escapeHtml(res.problems.join('; ')) + '</div>' : '') + '</div>';
-  out.innerHTML = line(r.results.http) + line(r.results.https) +
+  // One Worker, reached two ways: say which address certificates carry.
+  const line = (res, label) => {
+    const role = res.url === r.dp_url ? 'used in certificates' : res.ok ? 'also works' : 'not usable';
+    return '<div class="cf-test-line"><span class="cf-test-label">' + label + ' · ' + role + '</span>' +
+      '<span class="badge ' + (res.ok ? 'badge-active">Works' : 'badge-expired">Fails') + '</span> ' +
+      '<span class="mono">' + escapeHtml(res.url) + '</span>' +
+      (res.problems.length ? '<div class="dim">' + escapeHtml(res.problems.join('; ')) + '</div>' : '') + '</div>';
+  };
+  out.innerHTML = '<p class="dim">The same Worker, fetched from this server over both address types:</p>' +
+    line(r.results.http, 'Plain HTTP') + line(r.results.https, 'HTTPS') +
     '<p class="cf-recommend">' + (r.recommended
       ? 'Recommended address: <span class="mono">' + escapeHtml(r.recommended) + '</span>. '
       : '') + escapeHtml(r.note) + '</p>';
@@ -2333,6 +2374,90 @@ async function testCloudflareWorker() {
     await renderCloudflarePanel(currentCA);
     document.getElementById('cfTestResult').innerHTML = keep;
   }
+}
+
+async function refreshCloudflarePanel() {
+  try {
+    const w = await (await api('/api/ca/' + currentCAId + '/cloudflare?refresh=1')).json();
+    currentCA.cloudflare = w;
+    await renderCloudflarePanel(currentCA);
+    toast(w.exists === false ? 'This CA\'s Worker is no longer in Cloudflare' : 'Worker status refreshed',
+      w.exists === false ? 'error' : 'success');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+// Every Worker this app created in the connected account (Tools › Cloudflare).
+async function loadCloudflareWorkers() {
+  const box = document.getElementById('cfWorkerList');
+  box.innerHTML = '<p class="dim">Loading from Cloudflare…</p>';
+  let inv;
+  try {
+    inv = await (await api('/api/cloudflare/workers')).json();
+  } catch (e) {
+    box.innerHTML = '<p class="dim">' + escapeHtml(e.message) + '</p>';
+    return;
+  }
+  const states = {
+    linked: '<span class="badge badge-active">In use</span>',
+    unlinked: '<span class="badge badge-expired">Unlinked</span>',
+    missing: '<span class="badge badge-expired">Missing in Cloudflare</span>',
+  };
+  const unlinked = inv.workers.filter(w => w.state === 'unlinked');
+  box.innerHTML = inv.workers.length
+    ? '<table class="cf-workers"><thead><tr><th>Worker</th><th>CA</th><th>State</th><th></th></tr></thead><tbody>' +
+      inv.workers.map(w => '<tr><td class="mono">' + escapeHtml(w.name) +
+        (w.hostnames.length ? '<div class="dim">' + escapeHtml(w.hostnames.join(', ')) + '</div>' : '') + '</td>' +
+        '<td>' + (w.ca_name ? escapeHtml(w.ca_name) : '<span class="dim">none here</span>') + '</td>' +
+        '<td>' + states[w.state] + '</td>' +
+        '<td><button class="btn btn-danger btn-sm" data-action="deleteCloudflareWorker" data-arg="' + escapeHtml(w.name) + '">' +
+        (w.state === 'missing' ? 'Forget' : 'Delete') + '</button></td></tr>').join('') +
+      '</tbody></table>' +
+      (unlinked.length ? '<p class="form-hint">Unlinked Workers aren\'t used by any CA here: left over from a deleted CA, ' +
+        'an interrupted setup, a restore, or another install of this app on the same account. Delete them only if no other ' +
+        'install uses them.</p>' : '')
+    : '<p class="dim">This app hasn\'t created any Workers in this account.</p>';
+  document.getElementById('cfDeleteUnlinked').classList.toggle('hidden', unlinked.length === 0);
+  document.getElementById('cfDeleteUnlinked').textContent = 'Delete ' + unlinked.length + ' unlinked';
+}
+
+async function deleteCloudflareWorker(name) {
+  const row = (await (await api('/api/cloudflare/workers')).json()).workers.find(w => w.name === name);
+  if (!row) { loadCloudflareWorkers(); return; }
+  const question = row.ca_name
+    ? 'Delete ' + name + '? It publishes the CRL of ' + row.ca_name + '. Certificates that name its address can no longer be checked for revocation.'
+    : row.state === 'missing'
+      ? 'Forget ' + name + '? It is already gone from Cloudflare; this clears it from ' + row.ca_name + '.'
+      : 'Delete ' + name + ' from Cloudflare? No CA here uses it; make sure no other install of this app does.';
+  if (!confirm(question)) return;
+  try {
+    await api('/api/cloudflare/workers/' + encodeURIComponent(name), { method: 'DELETE' });
+    toast('Deleted ' + name);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+  await loadCloudflareWorkers();
+  await loadCloudflareConnection(true);
+  if (currentCA) selectCA(currentCAId);
+}
+
+async function deleteUnlinkedCloudflareWorkers() {
+  const inv = await (await api('/api/cloudflare/workers')).json();
+  const names = inv.workers.filter(w => w.state === 'unlinked').map(w => w.name);
+  if (!names.length || !confirm('Delete ' + names.length + ' unlinked Workers from Cloudflare?\n\n' + names.join('\n') +
+    '\n\nNo CA here uses them; make sure no other install of this app does.')) return;
+  let failed = 0;
+  for (const name of names) {
+    try {
+      await api('/api/cloudflare/workers/' + encodeURIComponent(name), { method: 'DELETE' });
+    } catch (e) {
+      failed++;
+      toast(name + ': ' + e.message, 'error');
+    }
+  }
+  if (!failed) toast('Deleted ' + names.length + ' unlinked Workers');
+  loadCloudflareWorkers();
 }
 
 async function pushCloudflareWorker() {
@@ -2369,7 +2494,12 @@ async function teardownCloudflareWorker() {
 // inline on* attributes, so the Content-Security-Policy can forbid inline script.
 // Handlers receive (data-arg, element, event); numeric args become numbers.
 const UI_ACTIONS = new Set([
+  'deleteCloudflareWorker',
+  'toggleCard',
   'deleteLegacyExports',
+  'deleteUnlinkedCloudflareWorkers',
+  'loadCloudflareWorkers',
+  'refreshCloudflarePanel',
   'cancelMFASetup',
   'cancelReauth',
   'closeRecoveryKey',

@@ -220,8 +220,36 @@ def attach_domain(creds: Credentials, script_name: str, hostname: str, zone_id: 
     return domain_id
 
 
+DOMAIN_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+
+
 def detach_domain(creds: Credentials, domain_id: str) -> None:
-    _request(creds.token, "DELETE", f"/accounts/{creds.account_id}/workers/domains/{domain_id}")
+    if not DOMAIN_ID_RE.match(domain_id):
+        raise CloudflareError("Invalid custom domain id")
+    try:
+        _request(creds.token, "DELETE", f"/accounts/{creds.account_id}/workers/domains/{domain_id}")
+    except CloudflareError as e:
+        if "HTTP 404" not in str(e):  # already gone is fine
+            raise
+
+
+def list_app_workers(creds: Credentials) -> list[dict[str, Any]]:
+    """Workers in the account that this app created (named certgen-crl-…), with the custom
+    domains that serve each one."""
+    result = _request(creds.token, "GET", f"/accounts/{creds.account_id}/workers/scripts")
+    workers = {}
+    for script in result if isinstance(result, list) else []:
+        name = script.get("id") if isinstance(script, dict) else None
+        if isinstance(name, str) and SCRIPT_NAME_RE.match(name):
+            workers[name] = {"name": name, "modified_on": str(script.get("modified_on") or ""), "domains": []}
+    try:
+        domains = _request(creds.token, "GET", f"/accounts/{creds.account_id}/workers/domains")
+    except CloudflareError:
+        domains = []  # a token without zone access can't list them; nothing is attached then either
+    for domain in domains if isinstance(domains, list) else []:
+        if isinstance(domain, dict) and domain.get("service") in workers and isinstance(domain.get("id"), str):
+            workers[domain["service"]]["domains"].append({"id": domain["id"], "hostname": str(domain.get("hostname", ""))})
+    return sorted(workers.values(), key=lambda w: w["name"])
 
 
 def delete_worker(creds: Credentials, script_name: str) -> None:
