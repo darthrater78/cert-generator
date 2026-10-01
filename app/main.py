@@ -10,7 +10,9 @@ from urllib.parse import urlparse
 
 ALLOWED_EXTERNAL_HOSTS = {"github.com"}
 
-WINDOW_OPTIONS = {"width": 1100, "height": 720, "min_size": (800, 500)}
+# Opens maximized: the layout needs more room than a fixed size gives on a scaled
+# (125-150%) display. width/height are the size it restores to.
+WINDOW_OPTIONS = {"width": 1100, "height": 720, "min_size": (800, 500), "maximized": True}
 
 
 GUIDE_WINDOW_OPTIONS = {"width": 960, "height": 760, "min_size": (480, 400)}
