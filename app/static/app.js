@@ -357,13 +357,13 @@ async function loadCerts(caId) {
       '<td>' + formatDate(c.not_after) + '</td>' +
       '<td>' + certStatusBadge(c.not_after, c.revoked) + '</td>' +
       '<td>' + crlDpBadge(c.crl_dp) + '</td>' +
-      '<td>' +
+      '<td><div class="row-actions">' +
         '<button class="btn btn-ghost btn-sm" data-action="viewCert" data-arg="' + c.id + '\">View</button> ' +
         '<button class="btn btn-ghost btn-sm" data-action="showExportCert" data-arg="' + c.id + '\">Export</button> ' +
         (!c.revoked ? '<button type="button" class="import-chip" data-action="toggleImportHelp" data-arg="' + c.id + '" aria-haspopup="dialog" aria-expanded="false">Endpoint import ▾</button> ' : '') +
         (!c.revoked ? '<button class="btn btn-ghost btn-sm" data-action="revokeCert" data-arg="' + c.id + '\">Revoke</button> ' : '') +
         '<button class="btn btn-danger btn-sm" data-action="deleteCert" data-arg="' + c.id + '\">Delete</button>' +
-      '</td></tr>';
+      '</div></td></tr>';
   }).join('');
 }
 
