@@ -33,13 +33,18 @@ def _download(page: Page, click_selector: str) -> tuple[str, bytes]:
     return download.suggested_filename, Path(download.path()).read_bytes()
 
 
+@pytest.mark.keep_quick_start
 def test_csp_blocks_inline_script(signed_in: Page, live_server):
     response = signed_in.request.get(live_server.url + "/")
     assert "script-src 'self';" in response.headers["content-security-policy"]
-    # Sidebar and delegated handlers work under that policy.
-    signed_in.click("[data-action=showGuide]")
+    # Delegated handlers work under that policy: the auto-opened Quick Start, then the sidebar.
+    expect(signed_in.locator("#guideModal .guide-modal")).to_be_visible()
     signed_in.click("[data-action=showGuideTab][data-arg=guide-crl]")
     expect(signed_in.locator("#guide-crl")).to_be_visible()
+    signed_in.click("#guideModal [data-action=hideModal]")
+    expect(signed_in.locator("#guideModal")).to_be_hidden()
+    signed_in.click("[data-action=showGuide]")
+    expect(signed_in.locator("#guide-general")).to_be_visible()
     signed_in.click("#guideModal [data-action=hideModal]")
     expect(signed_in.locator("#guideModal")).to_be_hidden()
 
@@ -434,3 +439,19 @@ def test_import_help_lists_commands_per_os(signed_in: Page):
     expect(steps).to_be_empty()  # asked again: the answer depends on the machine
     page.click(".sidebar h1")
     expect(pop).to_be_hidden()
+
+
+@pytest.mark.keep_quick_start
+def test_quick_start_opens_on_an_empty_database(signed_in, live_server):
+    page = signed_in
+    page.wait_for_selector("#guideModal .guide-modal", state="visible")
+    assert page.is_visible("#guide-general")
+    tabs = page.locator("#guideTabs")
+    assert tabs.evaluate("t => t.scrollWidth <= t.clientWidth")  # tabs wrap, never scroll sideways
+    page.click("#guideModal button[data-arg=guideModal]")
+    page.evaluate("""async () => { await api('/api/ca', {method: 'POST',
+        body: JSON.stringify({domain: 'qs.test', algorithm: 'ecdsa-p256'})}); }""")
+    page.reload()
+    page.wait_for_selector(".ca-item", state="attached")
+    page.wait_for_timeout(500)
+    assert not page.is_visible("#guideModal .guide-modal")

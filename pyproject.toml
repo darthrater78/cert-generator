@@ -26,4 +26,7 @@ cert-generator-server = "app.serve:main"
 testpaths = ["tests"]
 # Browser tests need Playwright browsers; run them with `-m e2e` (see README).
 addopts = "-m 'not e2e'"
-markers = ["e2e: end-to-end browser tests (Playwright)"]
+markers = [
+    "e2e: end-to-end browser tests (Playwright)",
+    "keep_quick_start: leave the auto-opened Quick Start guide alone (browser tests)",
+]
