@@ -123,6 +123,7 @@ services:
 # image: pinned to a release. To upgrade, change the tag and run: docker compose pull && docker compose up -d
 # no-new-privileges: the app never needs to gain privileges after it starts
 # ports: the web UI on port 5000. Behind a reverse proxy, use "127.0.0.1:5000:5000" (see below)
+#NOTE: this is only for scenarios where the proxy is on the same host as cert manager. 
 # volumes: the database and exports live in /opt/docker/cert-generator on the host
 # TZ: timezone for log timestamps
 # PORT: the port the app listens on inside the container
@@ -145,6 +146,7 @@ The server speaks plain HTTP. For anything beyond a trusted LAN, put it behind a
 
 - set `COOKIE_SECURE=true` so session and trusted-device cookies are only sent over HTTPS
 - publish the port on loopback only (`"127.0.0.1:5000:5000"` in `compose.yaml`) so the proxy is the only way in
+  NOTE: this is only for scenarios where the proxy is on the same host as cert manager. 
 - set `SETUP_TOKEN` before first launch if the instance is reachable before you create the admin account
 
 Proxies that rewrite the `Host` header should forward the original as `X-Forwarded-Host`; the cross-site request check accepts either.
