@@ -11,7 +11,18 @@ A tool for creating Certificate Authorities and issuing self-signed certificates
 | **Docker** (recommended) | Servers, shared access | Web app at `http://host:5000` with login authentication |
 | **Standalone EXE** | Individual workstations | Native Windows window, downloaded from the release — no install needed |
 
-Both modes have full feature parity — the same UI, database format, and capabilities. The only differences are how you access it (browser vs native window) and authentication (login vs automatic app token).
+**They are separate installs.** Each keeps its own database, and nothing syncs between them. To move your CAs, certificates and SSH keys from one to the other, use **Backup** in one to create an encrypted `.certbak` file and **Restore** it in the other (see [Data storage](#data-storage)). Backups go either way.
+
+Both use the same interface and database format. Where they differ:
+
+| | Docker | Standalone EXE |
+|---|---|---|
+| Access | Browser, from any machine that can reach it | Native window on one PC, no network port |
+| Sign-in | User accounts, optional TOTP 2FA, trusted devices | Optional username + master password (turns on encryption) |
+| CRL distribution point | **This server** (clients fetch a live CRL) or a placeholder | Placeholder only: import the exported CRL on each machine |
+| Encryption at rest + recovery key | Optional | Optional |
+
+For a CRL that clients fetch over the network, you need the Docker version.
 
 ## Features
 
@@ -170,7 +181,11 @@ The desktop app can't serve CRLs (it listens on loopback only), so it offers the
 
 ### Standalone EXE (Windows desktop)
 
-Download `CertGenerator.exe` from the [latest release](https://github.com/darthrater78/cert-generator/releases/latest). Double-click to run — no Python installation needed. The desktop app runs as a native window; no login is required, and no network port is exposed.
+Download `CertGenerator.exe` from the [latest release](https://github.com/darthrater78/cert-generator/releases/latest). Double-click to run — no Python installation needed. The desktop app runs as a native window, and no network port is exposed.
+
+On first run the app offers to **protect it with a username and password**. That turns on database encryption with the password as the master password, so the app asks for both at every start and a copied database file can't be read. Next it shows a one-time **recovery key**: if you forget the password, the sign-in screen takes the key, sets a new password and shows your username. You can skip it (**Not now**, or **Don't ask again**) and turn it on later in **Encryption** settings.
+
+The EXE offers only the placeholder CRL distribution point. To serve a CRL that clients fetch, run the Docker version and move your data across with Backup and Restore.
 
 The EXE is not code-signed, so Windows SmartScreen shows a warning on first run. To confirm the file is the one GitHub Actions built from this repository, compare it with the release's `CertGenerator.exe.sha256`, or verify its build attestation with the [GitHub CLI](https://cli.github.com/):
 
@@ -284,7 +299,7 @@ The embedded web server is hardened for both desktop and server use:
 - **TOTP MFA** — optional second factor via any authenticator app; enable per-user from MFA Settings. Each code is accepted only once
 - **Trusted devices** — "Trust this device" sets an httpOnly cookie with a SHA-256 hashed token; auto-login skips password and MFA for 30 days unless "Require password every visit" is enabled. Signing out forgets the device
 - **Session revocation** — password resets, MFA changes, "Revoke all devices", and backup restores end every other session
-- **Step-up confirmation** — private-key downloads (CA and certificate keys, any bundle that includes a key, SSH private keys in any format), backup and restore require a password or authenticator-code sign-in within the last 5 minutes; otherwise the page asks for one and retries. Confirmations share the sign-in lockout, and a trusted-device auto-login doesn't count as one. Desktop mode has no accounts and is exempt
+- **Step-up confirmation** — private-key downloads (CA and certificate keys, any bundle that includes a key, SSH private keys in any format), backup and restore require a password or authenticator-code sign-in within the last 5 minutes; otherwise the page asks for one and retries. Confirmations share the sign-in lockout, and a trusted-device auto-login doesn't count as one. Desktop mode has no accounts (its optional sign-in is the encryption password) and is exempt
 - **Session cookies** — httpOnly, `SameSite=Lax`, signed with `SECRET_KEY`; `Secure` when `COOKIE_SECURE=true`
 - **Cross-site request protection** — state-changing requests from other sites are rejected (using `Sec-Fetch-Site`, falling back to `Origin`)
 - **Internal API** — the routes under `/api/` are the page's own API, authenticated by the session cookie. They are not a stable public interface and can change between releases
@@ -338,18 +353,19 @@ The account-recovery variables can't help here: nobody can decrypt the keys with
 - **Databases encrypted before v2.6.0** have no recovery key. Their next unlock upgrades them to the new format, and a banner offers **Create recovery key**.
 - Changing the master password keeps the recovery key valid. Disabling encryption removes it.
 
-This works the same in Docker and the Windows EXE.
+This works the same in Docker and the Windows EXE. In the EXE, if you set a username, recovery also shows it.
 
 ### Quick start
 
 1. Launch the app (Docker: `docker compose up -d`, Desktop: run `CertGenerator.exe`)
-2. Server mode: create your admin account on first launch, then sign in
-3. Click **+ New** next to **Authorities** (or **Tools › Create › New certificate authority**) and enter a domain name (e.g. `example.com`) and lifetime
-4. Select your CA in the sidebar
-5. Click **Issue certificate** to generate leaf certs
-6. To trust the CA on a machine, **Download** it from the CA page: the default, **DER · Certificate Only**, is the file an endpoint needs
-7. Click **Endpoint import ▾** on a certificate for step-by-step install commands, or use **Export** to download it in the format you choose
-8. Click **+ New** next to **SSH keys** to generate an SSH key pair, or **Tools › Create › Import SSH key** to add an existing key
+2. Server mode: create your admin account on first launch, then sign in. Desktop: choose whether to protect the app with a username and password
+3. With no CA yet, the **Certificate Import Guide** opens on its Quick Start. **Open in new window** keeps it beside the app while you work
+4. Click **+ New** next to **Authorities** (or **Tools › Create › New certificate authority**) and enter a domain name (e.g. `example.com`) and lifetime
+5. Select your CA in the sidebar
+6. Click **Issue certificate** to generate leaf certs
+7. To trust the CA on a machine, **Download** it from the CA page: the default, **DER · Certificate Only**, is the file an endpoint needs
+8. Click **Endpoint import ▾** on a certificate for step-by-step install commands, or use **Export** to download it in the format you choose
+9. Click **+ New** next to **SSH keys** to generate an SSH key pair, or **Tools › Create › Import SSH key** to add an existing key
 
 ## Supported algorithms
 

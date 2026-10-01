@@ -182,6 +182,17 @@ def _auth_check() -> Response | None:
     return redirect("/login")
 
 
+_GUIDES = {"cert": "_guide_cert.html", "ssh": "_guide_ssh.html"}
+
+
+@app.get("/guide/<kind>")
+def guide(kind: str):
+    """A guide on its own page, for the pop-out window."""
+    if kind not in _GUIDES:
+        return Response("Not found", status=404, content_type="text/plain")
+    return render_template("guide.html", guide_template=_GUIDES[kind], server_mode=not state.desktop_mode())
+
+
 @app.get("/")
 def index():
     return render_template(

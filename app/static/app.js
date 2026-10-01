@@ -233,7 +233,9 @@ function updateCrlDpFields() {
     ? 'Clients fetch ' + baseUrl.value.replace(/\/+$/, '') + '/crl/' + currentCAId + '.crl without signing in. ' +
       'This server signs that CRL itself, republishes it on every revocation and renews it before it expires.'
     : 'Points at http://pki.' + (ca ? ca.domain : '<domain>') + '/crl/… — nothing answers there; ' +
-      'import the exported CRL on each machine (see Import Guide).';
+      'import the exported CRL on each machine (see Import Guide).' +
+      (SERVER_MODE ? '' : ' For a CRL clients fetch over the network, use the Docker version; ' +
+        'move your CAs there with Backup and Restore.');
 }
 
 async function loadCAs() {
@@ -266,7 +268,7 @@ async function loadCAs() {
   });
 
   document.getElementById('caCount').textContent = cas.length;
-  if (currentSSHKeyId) return;
+  if (currentSSHKeyId) return cas.length;
   if (currentCAId && !caIndex.has(currentCAId)) currentCAId = null;
   if (cas.length === 0) {
     document.getElementById('welcomeView').classList.remove('hidden');
@@ -276,6 +278,7 @@ async function loadCAs() {
     // first authority instead of leaving the "No authorities yet" screen up.
     selectCA((roots[0] || cas[0]).id);
   }
+  return cas.length;
 }
 
 async function selectCA(caId) {
@@ -1254,6 +1257,27 @@ function showGuide() {
   showModal('guideModal');
 }
 
+// The Quick Start guide opens by itself once when there are no authorities yet,
+// after any first-run dialog (sign-in prompt, recovery key) has been dealt with.
+let quickStartPending = false;
+
+function showQuickStartIfPending() {
+  if (!quickStartPending) return;
+  quickStartPending = false;
+  showGuide();
+}
+
+function popOutGuide(kind) {
+  const modal = kind === 'ssh' ? 'sshGuideModal' : 'guideModal';
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.open_guide) {
+    window.pywebview.api.open_guide(kind);
+  } else if (!window.open('/guide/' + kind, 'cert-generator-guide-' + kind, 'width=960,height=760')) {
+    toast('Allow pop-ups for this site to open the guide in its own window', 'error');
+    return;
+  }
+  hideModal(modal);
+}
+
 function openExternalLink(_arg, el, event) {
   return openExternal(event, el.href);
 }
@@ -1530,14 +1554,22 @@ function showSSHGuideTab(tabId, btn) {
   btn.classList.add('active');
 }
 
+let encryptionStatus = null;
+
 async function checkEncryptionStatus() {
   try {
     const res = await api('/api/settings/encryption');
     const status = await res.json();
+    encryptionStatus = status;
 
     if (status.enabled && !status.unlocked) {
+      const usernameEl = document.getElementById('unlockUsername');
+      usernameEl.classList.toggle('hidden', !status.username_required);
+      document.getElementById('unlockSubtitle').textContent = status.username_required
+        ? 'Sign in to decrypt your private keys'
+        : 'Enter your master password to decrypt private keys';
       document.getElementById('unlockOverlay').classList.remove('hidden');
-      document.getElementById('unlockPassword').focus();
+      (status.username_required ? usernameEl : document.getElementById('unlockPassword')).focus();
       return false;
     }
 
@@ -1553,19 +1585,24 @@ async function checkEncryptionStatus() {
 }
 
 async function doUnlock() {
+  const usernameEl = document.getElementById('unlockUsername');
+  const needsUsername = !usernameEl.classList.contains('hidden');
+  const username = usernameEl.value.trim();
   const pw = document.getElementById('unlockPassword').value;
+  if (needsUsername && !username) { document.getElementById('unlockError').textContent = 'Enter your username'; return; }
   if (!pw) { document.getElementById('unlockError').textContent = 'Enter your password'; return; }
   document.getElementById('unlockError').textContent = '';
   try {
     await api('/api/settings/encryption/unlock', {
       method: 'POST',
-      body: JSON.stringify({ password: pw }),
+      body: JSON.stringify({ username, password: pw }),
     });
     document.getElementById('unlockOverlay').classList.add('hidden');
     document.getElementById('unlockPassword').value = '';
-    loadCAs();
     loadSSHKeys();
     checkEncryptionStatus();
+    if (await loadCAs() === 0) quickStartPending = true;
+    showQuickStartIfPending();
   } catch (e) {
     document.getElementById('unlockError').textContent = e.message;
     document.getElementById('unlockPassword').value = '';
@@ -1574,12 +1611,13 @@ async function doUnlock() {
 }
 
 function showUnlockRecovery(useRecovery) {
+  const needsUsername = !document.getElementById('unlockUsername').classList.contains('hidden');
   document.getElementById('unlockByPassword').classList.toggle('hidden', !!useRecovery);
   document.getElementById('unlockByRecovery').classList.toggle('hidden', !useRecovery);
   document.getElementById('unlockSubtitle').textContent = useRecovery
     ? 'Enter your recovery key and choose a new master password'
-    : 'Enter your master password to decrypt private keys';
-  document.getElementById(useRecovery ? 'recoverKey' : 'unlockPassword').focus();
+    : needsUsername ? 'Sign in to decrypt your private keys' : 'Enter your master password to decrypt private keys';
+  document.getElementById(useRecovery ? 'recoverKey' : needsUsername ? 'unlockUsername' : 'unlockPassword').focus();
 }
 
 async function doRecover() {
@@ -1600,10 +1638,12 @@ async function doRecover() {
     ['recoverKey', 'recoverPassword', 'recoverConfirm'].forEach((id) => { document.getElementById(id).value = ''; });
     showUnlockRecovery(0);
     document.getElementById('unlockOverlay').classList.add('hidden');
-    loadCAs();
     loadSSHKeys();
+    if (await loadCAs() === 0) quickStartPending = true;
     showRecoveryKey(data.recovery_key,
-      'Your master password was reset and the database is unlocked. The recovery key you used no longer works; this one replaces it.');
+      'Your master password was reset and the database is unlocked. '
+      + (data.username ? 'Your username is ' + data.username + '. ' : '')
+      + 'The recovery key you used no longer works; this one replaces it.');
   } catch (e) {
     errorEl.textContent = e.message;
   }
@@ -1629,6 +1669,7 @@ function updateRecoveryKeyDone() {
 function closeRecoveryKey() {
   document.getElementById('recoveryKeyValue').textContent = '';
   hideModal('recoveryKeyModal');
+  showQuickStartIfPending();
 }
 
 async function copyRecoveryKey() {
@@ -1692,9 +1733,13 @@ async function showEncryptionSettings() {
         : 'No recovery key yet. Without one, a forgotten password means your private keys are lost.';
       document.getElementById('recoveryKeyPasswordRow').classList.toggle('hidden', !status.recovery_key);
       document.getElementById('recoveryKeyButton').textContent = status.recovery_key ? 'Replace recovery key' : 'Create recovery key';
+      document.getElementById('encUsernameNote').classList.toggle('hidden', !status.username);
+      document.getElementById('encUsernameValue').textContent = status.username || '';
     } else {
       document.getElementById('encryptionOff').classList.remove('hidden');
       document.getElementById('encryptionOn').classList.add('hidden');
+      const usernameEl = document.getElementById('encEnableUsername');
+      if (usernameEl) usernameEl.value = '';
       document.getElementById('encEnablePassword').value = '';
       document.getElementById('encEnableConfirm').value = '';
     }
@@ -1704,26 +1749,62 @@ async function showEncryptionSettings() {
   }
 }
 
-async function doEnableEncryption() {
-  const pw = document.getElementById('encEnablePassword').value;
-  const confirmPw = document.getElementById('encEnableConfirm').value;
-  if (!pw) { toast('Password is required', 'error'); return; }
-  if (pw !== confirmPw) { toast('Passwords do not match', 'error'); return; }
-  if (pw.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
+async function enableEncryption(username, pw, confirmPw) {
+  if (!pw) { toast('Password is required', 'error'); return false; }
+  if (pw !== confirmPw) { toast('Passwords do not match', 'error'); return false; }
+  if (pw.length < 8) { toast('Password must be at least 8 characters', 'error'); return false; }
   try {
     const res = await api('/api/settings/encryption/enable', {
       method: 'POST',
-      body: JSON.stringify({ password: pw, confirm: confirmPw }),
+      body: JSON.stringify({ username, password: pw, confirm: confirmPw }),
     });
     const data = await res.json();
-    hideModal('encryptionModal');
     document.getElementById('encryptionBanner').classList.add('hidden');
     toast('Encryption enabled — private keys are now encrypted at rest');
-    showRecoveryKey(data.recovery_key,
-      'Encryption is on. If you forget your master password, this key unlocks the database and lets you set a new one.');
+    showRecoveryKey(data.recovery_key, username
+      ? 'Sign-in is on: the app asks for ' + username + ' and your password at every start. '
+        + 'If you forget the password, this key resets it on the sign-in screen.'
+      : 'Encryption is on. If you forget your master password, this key unlocks the database and lets you set a new one.');
+    return true;
   } catch (e) {
     toast(e.message, 'error');
+    return false;
   }
+}
+
+async function doEnableEncryption() {
+  const usernameEl = document.getElementById('encEnableUsername');
+  const ok = await enableEncryption(usernameEl ? usernameEl.value.trim() : '',
+    document.getElementById('encEnablePassword').value, document.getElementById('encEnableConfirm').value);
+  if (ok) hideModal('encryptionModal');
+}
+
+// ── Desktop first run: offer a sign-in ──────────────────────────────
+
+function offerProtect() {
+  ['protectUsername', 'protectPassword', 'protectConfirm'].forEach((id) => { document.getElementById(id).value = ''; });
+  document.getElementById('protectDontAsk').checked = false;
+  showModal('protectModal');
+  document.getElementById('protectUsername').focus();
+}
+
+async function doProtect() {
+  const username = document.getElementById('protectUsername').value.trim();
+  if (!username) { toast('Choose a username', 'error'); return; }
+  const ok = await enableEncryption(username,
+    document.getElementById('protectPassword').value, document.getElementById('protectConfirm').value);
+  if (!ok) return;
+  ['protectPassword', 'protectConfirm'].forEach((id) => { document.getElementById(id).value = ''; });
+  hideModal('protectModal');
+}
+
+async function skipProtect() {
+  hideModal('protectModal');
+  if (document.getElementById('protectDontAsk').checked) {
+    document.getElementById('encryptionBanner').classList.add('hidden');
+    try { await api('/api/settings/encryption/dismiss', { method: 'POST' }); } catch (e) {}
+  }
+  showQuickStartIfPending();
 }
 
 async function doDisableEncryption() {
@@ -1981,8 +2062,11 @@ async function initApp() {
   updateAccentUI();
   const ready = await checkEncryptionStatus();
   if (ready) {
-    loadCAs();
     loadSSHKeys();
+    if (await loadCAs() === 0) quickStartPending = true;
+    const status = encryptionStatus;
+    if (!SERVER_MODE && status && !status.enabled && !status.dismissed) offerProtect();
+    else showQuickStartIfPending();
   }
   checkLegacyExports();
 }
@@ -2013,6 +2097,9 @@ const UI_ACTIONS = new Set([
   'downloadImportCA',
   'downloadRecoveryKey',
   'dismissEncryptionBanner',
+  'doProtect',
+  'popOutGuide',
+  'skipProtect',
   'doChangePassword',
   'doDisableEncryption',
   'doEnableEncryption',

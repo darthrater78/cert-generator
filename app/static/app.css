@@ -612,6 +612,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 }
 .modal h4 { font: 400 18px var(--font-display); margin: 16px 0 8px; }
 .modal p { font-size: 13.5px; }
+/* Password confirmation opens from inside other dialogs, so it sits above them. */
+#reauthModal { z-index: 150; }
 .modal-actions {
   display: flex; gap: 8px; justify-content: flex-end;
   margin-top: 22px; padding-top: 16px;
@@ -674,13 +676,23 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   border-bottom: 1px dotted var(--rule);
 }
 .cert-link:hover, .cert-link:focus-visible { color: var(--accent-text); }
-.guide-modal { width: 640px; }
+/* The guide grows with the window; its header and tabs stay put while the body scrolls. */
+.guide-modal {
+  width: clamp(640px, 72vw, 1080px);
+  height: min(860px, 90vh);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.guide-head { flex: none; }
+.guide-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 4px; scrollbar-width: thin; }
+.guide-modal .modal-actions { position: static; flex: none; margin: 16px -30px -24px; }
+.guide-popout { margin-right: auto; }
 .guide-modal h3 { margin-bottom: 6px; }
-.guide-modal .guide-subtitle { font: italic 14px var(--font-serif); color: var(--text-dim); margin-bottom: 18px; }
+.guide-modal .guide-subtitle { font: italic 14px var(--font-serif); color: var(--text-dim); margin-bottom: 14px; }
+/* Tabs wrap onto a second line rather than squeezing together or scrolling sideways. */
 .guide-tabs {
-  display: flex; flex-wrap: nowrap; justify-content: space-between; gap: 12px;
+  display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 0 22px;
   margin-bottom: 18px; border-bottom: 2px solid var(--rule);
-  overflow-x: auto; scrollbar-width: thin;
 }
 .guide-tab {
   padding: 10px 0;
@@ -852,7 +864,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   .export-section .sep { display: none; }
   .header-actions { width: 100%; justify-content: flex-start; }
   .empty-state { padding: 24px 16px; }
-  .guide-modal { width: 100%; }
+  .guide-modal { width: 100%; height: 92vh; }
+  .guide-modal .modal-actions { margin: 16px -18px -18px; }
   .cert-viewer { width: 100%; }
   .cert-detail { grid-template-columns: 1fr; gap: 0 0; }
   .cert-detail dd { margin-bottom: 8px; }
@@ -883,8 +896,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .ca-export-case strong { color: var(--text); }
 @media (max-width: 768px) {
   .ca-export-case { grid-template-columns: 1fr; gap: 2px; }
-  /* Narrow screens: tabs wrap rather than scroll out of sight. */
-  .guide-tabs { flex-wrap: wrap; justify-content: flex-start; overflow-x: visible; }
+  .guide-tabs { gap: 0 16px; }
   .recovery-key { font-size: clamp(13px, 4.2vw, 18px); letter-spacing: 0.02em; }
 }
 
@@ -944,3 +956,17 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .import-pop .import-file code { font: 11.5px var(--font-mono); overflow-wrap: anywhere; }
 .import-pop .import-file small { display: block; font: 11.5px var(--font-ui); color: var(--text-dim); margin-top: 2px; }
 .import-pop .import-file button { flex-shrink: 0; }
+
+/* ================= standalone guide window ================= */
+.guide-page { min-height: 100vh; background: var(--bg); color: var(--text); }
+.guide-page .guide-window {
+  max-width: 1080px; height: 100vh; margin: 0 auto;
+  display: flex; flex-direction: column;
+  padding: 22px clamp(16px, 4vw, 40px) 0;
+}
+.guide-page .guide-window h3 {
+  font: 400 27px/1.1 var(--font-display);
+  margin-bottom: 6px; padding-bottom: 10px; border-bottom: 3px double var(--rule);
+}
+.guide-page .guide-subtitle { font: italic 14px var(--font-serif); color: var(--text-dim); margin-bottom: 14px; }
+.guide-page .guide-body { padding-bottom: 24px; }

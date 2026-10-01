@@ -257,7 +257,7 @@ _VERIFY_PLAINTEXT = b"cert-generator-verify-token"
 # key, stored wrapped by the password and by the recovery key.
 _KEY_SETTINGS = (
     "encryption_salt", "encryption_verify", "encryption_wrapped_key",
-    "recovery_salt", "recovery_wrapped_key",
+    "recovery_salt", "recovery_wrapped_key", "login_username",
 )
 
 
@@ -356,8 +356,18 @@ def has_recovery_key() -> bool:
     return get_setting("recovery_wrapped_key") is not None
 
 
-def enable_encryption(password: str) -> str:
-    """Encrypt every sensitive column and return the recovery key, to be shown once."""
+def get_login_username() -> str | None:
+    """The desktop sign-in name set alongside the master password, if any."""
+    value = get_setting("login_username")
+    return value.decode("utf-8") if value else None
+
+
+def enable_encryption(password: str, username: str | None = None) -> str:
+    """Encrypt every sensitive column and return the recovery key, to be shown once.
+
+    ``username`` (desktop app) turns the startup unlock into a sign-in: the name is
+    asked for with the master password. It is not secret and is stored as is.
+    """
     if is_encryption_enabled():
         raise ValueError("Encryption is already enabled")
     data_key = crypto_engine.new_data_key()
@@ -367,6 +377,8 @@ def enable_encryption(password: str) -> str:
         _reencrypt_all(conn, None, data_key)
         _store_password_wrap(conn, password, data_key)
         recovery_key = _store_recovery_wrap(conn, data_key)
+        if username:
+            _set_setting(conn, "login_username", username.encode("utf-8"))
     set_master_key(data_key)
     return recovery_key
 
@@ -385,8 +397,16 @@ def disable_encryption(password: str) -> None:
 
 
 def unlock(password: str) -> bool:
+    return unlock_if(password, True)
+
+
+def unlock_if(password: str, allowed: bool) -> bool:
+    """Unlock with ``password`` only when ``allowed`` (a sign-in name matched).
+
+    The password is checked either way, so a wrong name takes as long as a wrong password.
+    """
     key = open_with_password(password)
-    if key is None:
+    if key is None or not allowed:
         return False
     set_master_key(key)
     return True

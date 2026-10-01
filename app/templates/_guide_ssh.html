@@ -1,0 +1,120 @@
+<div class="guide-head">
+  <h3>SSH Key Guide</h3>
+  <p class="guide-subtitle">How to generate, export, and use SSH key pairs.</p>
+  <div class="guide-tabs" id="sshGuideTabs">
+    <button class="guide-tab active" data-action="showSSHGuideTab" data-arg="sshguide-overview">Overview</button>
+    <button class="guide-tab" data-action="showSSHGuideTab" data-arg="sshguide-bitwarden">Bitwarden</button>
+    <button class="guide-tab" data-action="showSSHGuideTab" data-arg="sshguide-linux">Linux / macOS</button>
+    <button class="guide-tab" data-action="showSSHGuideTab" data-arg="sshguide-windows">Windows</button>
+    <button class="guide-tab" data-action="showSSHGuideTab" data-arg="sshguide-github">GitHub / GitLab</button>
+  </div>
+</div>
+<div class="guide-body">
+  <div class="guide-content" id="sshguide-overview">
+    <h4>What This Tool Does</h4>
+    <p>Generates SSH key pairs and stores them in an encrypted database. Keys are saved directly to disk on export, avoiding clipboard line-ending corruption that commonly breaks private keys on Windows.</p>
+
+    <h4>Supported Algorithms</h4>
+    <ul>
+      <li><strong>RSA 4096</strong> (default) &mdash; broadest compatibility with legacy systems, firewalls, network gear, and older SSH servers. Works with Bitwarden SSH agent.</li>
+      <li><strong>Ed25519</strong> &mdash; modern, fast, small keys. Works with Bitwarden SSH agent. Preferred for new deployments.</li>
+      <li><strong>ECDSA P-256 / P-384</strong> &mdash; good performance and security. <strong>Not compatible</strong> with Bitwarden's SSH agent.</li>
+      <li><strong>RSA 2048</strong> &mdash; legacy fallback only. Use RSA 4096 instead.</li>
+    </ul>
+
+    <h4>Export Formats</h4>
+    <ul>
+      <li><strong>OpenSSH</strong> (default) &mdash; <code>-----BEGIN OPENSSH PRIVATE KEY-----</code> format. Used by OpenSSH, Git, and most modern tools. Compatible with Bitwarden.</li>
+      <li><strong>PEM (PKCS#8)</strong> &mdash; <code>-----BEGIN PRIVATE KEY-----</code> format. Used by older tools, Java, and some enterprise software. Also compatible with Bitwarden.</li>
+    </ul>
+
+    <h4>Passphrase Protection</h4>
+    <p>Optionally encrypt the private key with a passphrase at generation time. You will be prompted for it each time the key is used. You can also add a passphrase during export without having set one at generation.</p>
+    <div class="step-note">Keys without a passphrase grant access to anyone who obtains the file. Use a passphrase for production keys.</div>
+  </div>
+
+  <div class="guide-content hidden" id="sshguide-bitwarden">
+    <h4>Importing into Bitwarden</h4>
+    <p>Bitwarden can store SSH keys and use them via its SSH agent, so you never need the private key file on disk.</p>
+    <ol>
+      <li>Select your SSH key in the sidebar.</li>
+      <li>Click <strong>Copy Private Key (Bitwarden)</strong> &mdash; this copies the full PEM-formatted private key to your clipboard.</li>
+      <li>In Bitwarden, create a new <strong>SSH Key</strong> item.</li>
+      <li>Paste the private key into the <strong>Private Key</strong> field. Bitwarden will auto-detect the format and extract the public key and fingerprint.</li>
+    </ol>
+    <div class="step-note">Bitwarden's SSH agent supports <strong>RSA</strong> and <strong>Ed25519</strong> keys only. ECDSA keys cannot be used with the Bitwarden SSH agent.</div>
+
+    <h4>Using the Bitwarden SSH Agent</h4>
+    <ol>
+      <li>Enable the SSH agent in Bitwarden Settings &rarr; SSH Agent.</li>
+      <li>Configure your SSH client to use Bitwarden's agent socket (Bitwarden sets the <code>SSH_AUTH_SOCK</code> environment variable automatically on most platforms).</li>
+      <li>When you <code>ssh</code> to a server, Bitwarden prompts you to approve the key usage.</li>
+    </ol>
+    <div class="step-warn">The private key must include the full PEM header and footer (<code>-----BEGIN ... -----</code> / <code>-----END ... -----</code>). The Copy Private Key button includes these automatically.</div>
+  </div>
+
+  <div class="guide-content hidden" id="sshguide-linux">
+    <h4>Using on Linux / macOS</h4>
+    <ol>
+      <li>Export the private key: select <strong>Private Key</strong>, format <strong>OpenSSH</strong>, click <strong>Download</strong>.</li>
+      <li>Move the downloaded file to your SSH directory:<br><code>mv ~/Downloads/keyname-id_key ~/.ssh/id_rsa</code></li>
+      <li>Set correct permissions:<br><code>chmod 600 ~/.ssh/id_rsa</code></li>
+      <li>Export the public key separately, or click <strong>Copy Public Key</strong> and paste into <code>~/.ssh/id_rsa.pub</code>.</li>
+    </ol>
+
+    <h4>Adding to the SSH Agent</h4>
+    <p><code>ssh-add ~/.ssh/id_rsa</code></p>
+    <p>If the key has a passphrase, you will be prompted to enter it once.</p>
+
+    <h4>Deploying the Public Key</h4>
+    <p>Copy the public key to the target server:</p>
+    <p><code>ssh-copy-id -i ~/.ssh/id_rsa.pub user@hostname</code></p>
+    <p>Or manually append to <code>~/.ssh/authorized_keys</code> on the server.</p>
+    <div class="step-warn">The private key file <strong>must</strong> have <code>600</code> permissions. SSH refuses to use a key with permissions that are too open.</div>
+  </div>
+
+  <div class="guide-content hidden" id="sshguide-windows">
+    <h4>Using on Windows (OpenSSH)</h4>
+    <p>Windows 10/11 includes OpenSSH as a built-in optional feature.</p>
+    <ol>
+      <li>Export the private key in <strong>OpenSSH</strong> format.</li>
+      <li>Move the file to <code>C:\Users\&lt;you&gt;\.ssh\</code> (create the folder if it does not exist).</li>
+      <li>Rename it to match the expected name, e.g. <code>id_rsa</code> or <code>id_ed25519</code>.</li>
+    </ol>
+
+    <h4>Windows SSH Agent</h4>
+    <ol>
+      <li>Open <strong>Services</strong> (<code>services.msc</code>) and set <strong>OpenSSH Authentication Agent</strong> to <strong>Automatic</strong>, then start it.</li>
+      <li>Run: <code>ssh-add C:\Users\&lt;you&gt;\.ssh\id_rsa</code></li>
+    </ol>
+
+    <h4>Using with PuTTY</h4>
+    <p>PuTTY requires its own PPK format. To convert:</p>
+    <ol>
+      <li>Export the key in <strong>OpenSSH</strong> format.</li>
+      <li>Open PuTTYgen &rarr; <strong>Conversions</strong> &rarr; <strong>Import key</strong> &rarr; select the file.</li>
+      <li>Click <strong>Save private key</strong> to create a <code>.ppk</code> file.</li>
+    </ol>
+    <div class="step-note">Direct download avoids the line-ending corruption that happens when pasting private keys through Windows clipboard into text editors. Always use the Download button rather than copy-pasting key files.</div>
+  </div>
+
+  <div class="guide-content hidden" id="sshguide-github">
+    <h4>Adding to GitHub</h4>
+    <ol>
+      <li>Click <strong>Copy Public Key</strong> in the key detail view.</li>
+      <li>Go to GitHub &rarr; <strong>Settings</strong> &rarr; <strong>SSH and GPG keys</strong> &rarr; <strong>New SSH key</strong>.</li>
+      <li>Paste the public key and give it a descriptive title.</li>
+    </ol>
+
+    <h4>Adding to GitLab</h4>
+    <ol>
+      <li>Click <strong>Copy Public Key</strong>.</li>
+      <li>Go to GitLab &rarr; <strong>Preferences</strong> &rarr; <strong>SSH Keys</strong>.</li>
+      <li>Paste and optionally set an expiration date.</li>
+    </ol>
+
+    <h4>Deploy Keys (Read-Only)</h4>
+    <p>For CI/CD or read-only repo access, add the public key as a <strong>Deploy Key</strong> on the repository settings page instead of your user account.</p>
+    <div class="step-note">Use <strong>Ed25519</strong> for GitHub and GitLab &mdash; it is their recommended algorithm and produces the smallest keys.</div>
+  </div>
+</div>

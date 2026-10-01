@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hmac
 import json
 import logging
 from collections.abc import Callable
@@ -52,15 +53,40 @@ def _password_attempt(check: Callable[[], dict[str, Any] | None]):
     return jsonify({"ok": True, **(extra or {})})
 
 
+_USERNAME_MAX = 64
+
+
+def _desktop_username() -> str | None:
+    """The desktop sign-in name. Server mode has real accounts and never uses one."""
+    return db.get_login_username() if state.desktop_mode() else None
+
+
+def _username_error(username: str) -> str | None:
+    if len(username) > _USERNAME_MAX:
+        return f"Username must be at most {_USERNAME_MAX} characters"
+    if any(not ch.isprintable() for ch in username):
+        return "Username can't contain control characters"
+    return None
+
+
+def _same_username(given: str, expected: str) -> bool:
+    return hmac.compare_digest(given.casefold().encode("utf-8"), expected.casefold().encode("utf-8"))
+
+
 @bp.get("/api/settings/encryption")
 def get_encryption_status():
     enabled = db.is_encryption_enabled()
+    unlocked = db.is_unlocked() or not enabled
     dismissed = db.get_setting("encryption_dismissed") is not None
+    username = _desktop_username() if enabled else None
     return jsonify({
         "enabled": enabled,
-        "unlocked": db.is_unlocked() or not enabled,
+        "unlocked": unlocked,
         "dismissed": dismissed,
         "recovery_key": enabled and db.has_recovery_key(),
+        "username_required": username is not None,
+        # Shown in Settings once unlocked; the locked screen only learns that one is needed.
+        "username": username if unlocked else None,
     })
 
 
@@ -71,11 +97,15 @@ def enable_encryption():
     password_error = new_password_error(password, str_field(data, "confirm").strip(), "Password is required")
     if password_error:
         return error(password_error)
+    username = str_field(data, "username").strip() if state.desktop_mode() else ""
+    username_error = _username_error(username)
+    if username_error:
+        return error(username_error)
     try:
-        recovery_key = db.enable_encryption(password)
+        recovery_key = db.enable_encryption(password, username or None)
     except ValueError as e:
         return error(str(e))
-    log.info("Encryption enabled")
+    log.info("Encryption enabled%s", " with a sign-in name" if username else "")
     return jsonify({"ok": True, "recovery_key": recovery_key})
 
 
@@ -89,13 +119,20 @@ def disable_encryption():
 
 @bp.post("/api/settings/encryption/unlock")
 def unlock_encryption():
-    password = str_field(json_body(), "password").strip()
+    data = json_body()
+    password = str_field(data, "password").strip()
+    username = str_field(data, "username").strip()
+    expected_username = _desktop_username()
+    if expected_username is not None and not username:
+        return error("Username is required")
     if not password:
         return error("Password is required")
 
     def check() -> None:
-        if not db.unlock(password):
-            raise ValueError("Wrong password")
+        # Check both before answering, so the reply doesn't say which one was wrong.
+        name_ok = expected_username is None or _same_username(username, expected_username)
+        if not db.unlock_if(password, name_ok):
+            raise ValueError("Wrong username or password" if expected_username is not None else "Wrong password")
 
     return _password_attempt(check)
 
@@ -142,7 +179,8 @@ def recover_encryption():
     def recover() -> dict[str, Any]:
         replacement = db.recover_with_key(recovery_key, new_password)
         log.warning("Encryption password reset with the recovery key")
-        return {"recovery_key": replacement}
+        # The recovery key proves ownership, so remind a desktop user of a forgotten sign-in name too.
+        return {"recovery_key": replacement, "username": _desktop_username()}
 
     return _password_attempt(recover)
 
