@@ -1,6 +1,6 @@
 # Cert Generator
 
-**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.4.0 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.4.0)**
+**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.5.0 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.5.0)**
 
 A tool for creating Certificate Authorities and issuing self-signed certificates for posture demos. Runs as a **Docker web app** or a **Windows desktop app** — both use the same interface and database format, and backups created in one mode can be restored in the other.
 
@@ -20,6 +20,7 @@ Both modes have full feature parity — the same UI, database format, and capabi
 - **Issue leaf certificates** signed by any CA (root or intermediate), with SAN (Subject Alternative Name) support including wildcards and IP addresses
 - **Certificate templates** matching Windows CA templates — Web Server, Computer, Client Authentication, User (Smart Card Logon), Code Signing, Email (S/MIME) — each with the correct key usage and extended key usage extensions
 - **Track all certificates** — view status (active/revoked/expired), details, and metadata
+- **Certificate viewer** — click a certificate (or **View**) to read it like `openssl x509 -text`: subject, issuer, validity, key and signature algorithm, every extension (SANs including UPN, key usage, extended key usage, basic constraints, key identifiers, CRL distribution points), SHA-256/SHA-1 fingerprints and the PEM, with Copy PEM and Export. A **Show the issuing CA's CRL** checkbox adds the CA's revocation list: whether this certificate is on it, the distribution point it carries, the CRL's next update and every revoked serial. The private key is never sent to the viewer
 - **Export in multiple formats** — PEM, DER, CRT (.crt), PKCS12 (.pfx)
 - **Export parts individually** — full bundle, certificate only, private key only, or full chain (cert + every issuing CA up to the root)
 - **Password-protected exports** — optionally encrypt the private key (PEM); PKCS12 bundles always require a password (the export dialog pre-fills `changeit` for Windows compatibility)
@@ -78,7 +79,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.4.0
+    image: ghcr.io/darthrater78/cert-generator:2.5.0
     container_name: cert-generator
     restart: unless-stopped
     security_opt:
@@ -201,7 +202,7 @@ CI runs on every push and pull request to `master`:
 - the unit tests on Linux (Python 3.10 and 3.14) and Windows
 - the browser tests in Chromium, Firefox, and WebKit
 - a Windows EXE build and its `--self-test` / `--self-test-gui` checks (the EXE is kept as a workflow artifact for 7 days)
-- a Docker image build with a container smoke test, including a clean shutdown on `docker stop`, and a Trivy scan of the image (report only)
+- a Docker image build with a container smoke test, including a clean shutdown on `docker stop`, and a Trivy scan of the image's OS and Python packages (report only)
 - `actionlint` against `.github/workflows/**` (only runs when those files change)
 - dependency review on pull requests, which fails a PR that adds a dependency with a known high or critical advisory
 
@@ -210,7 +211,7 @@ A change that touches only documentation (`*.md`, `docs/**`, `LICENSE`) skips th
 ### Releases
 
 Pushing a `vX.Y.Z` tag on `master` runs `.github/workflows/release.yml`. Before building anything, it requires a passing CI run for the tagged commit — an in-progress run is waited on, but a missing or failed one stops the release. Both deliverables share one version line, and the changelog decides which of them a release publishes: the version's entry in this README's version history must carry a `#### Docker` section, a `#### Windows EXE` section, or both, and at least one is required.
-- **Docker image** — built once and pushed by digest; that digest is smoke-tested and scanned with Trivy (a fixable high or critical vulnerability stops the release, and the scan is uploaded to the Security tab), and only then tagged in `ghcr.io/darthrater78/cert-generator` as `X.Y.Z`, `X.Y`, and — only when the release includes Docker and is the newest — `latest`, with a build provenance attestation
+- **Docker image** — built once and pushed by digest; that digest is smoke-tested and scanned with Trivy (a fixable high or critical vulnerability in an OS or Python package stops the release, and the scan is uploaded to the Security tab), and only then tagged in `ghcr.io/darthrater78/cert-generator` as `X.Y.Z`, `X.Y`, and — only when the release includes Docker and is the newest — `latest`, with a build provenance attestation
 - **Windows EXE** — built and self-tested on Windows, attached to the GitHub release with a SHA-256 checksum and a build provenance attestation
 
 Whichever deliverable the entry lists is built, and the release is created only once those succeed. A deliverable with no section is not rebuilt: it stays at the version it last shipped, and the notes say so ("Docker image unchanged (2.1.0)"). GitHub's **Latest** release follows the newest release that includes the EXE, so `/releases/latest/download/CertGenerator.exe` always resolves to the current build.
@@ -236,6 +237,7 @@ The embedded web server is hardened for both desktop and server use:
 - **Security headers** — a Content-Security-Policy that allows no inline script (`script-src 'self'`), `X-Frame-Options: DENY`, `nosniff`, and `Cache-Control: no-store` on API responses
 - **No key material on the server's disk** — exports and backups stream to the browser instead of being written to an export folder. If an older version left export files in `EXPORT_DIR`, a banner offers to review and delete them (only files matching the old export names are touched)
 - **Clean shutdown** — `docker stop` ends the server immediately instead of waiting for its timeout
+- **Patched, minimal image** — the image applies Debian security updates at build time rather than waiting for the base image to be rebuilt, and drops `pip` (with the libraries it bundles) once the app's dependencies are installed
 
 **Both modes:**
 - **Encryption fails closed** — while an encrypted database is locked, anything that would store a private key is refused rather than written in plaintext
@@ -321,6 +323,22 @@ The database format is identical in both modes. Use **Backup** to create an encr
 ## Version history
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
+
+### v2.5.0 — 2026-09-30
+
+#### Docker
+- **Certificate viewer.** Click an issued certificate's name, or its new **View** button, to see what's inside it: subject and issuer, validity to the minute, serial, key type and signature algorithm, every extension (SANs including UPN, key usage, extended key usage, basic constraints, key identifiers, CRL distribution points), SHA-256 and SHA-1 fingerprints, and the PEM with a **Copy PEM** button. **Export…** opens the usual export dialog. The private key is never sent to the viewer
+- **Show the issuing CA's CRL** — a checkbox in the viewer adds the CA's revocation list: whether this certificate is revoked, the CRL distribution point it carries (or a note that it has none), the CRL's next update, and every revoked serial with this certificate's highlighted. It reads what's already there; CRL export is unchanged
+- After sign-in the first certificate authority opens right away. Previously the "No authorities yet" screen stayed up until you picked a CA, even when you had some, and it came back after deleting the open CA
+- Restoring a backup now keeps each CA's CRL next-update date instead of resetting it to "Not exported"
+- The image picks up Debian security updates at build time (fixes OpenSSL CVE-2026-75804 and CVE-2026-84782, and PCRE2 CVE-2026-103111, ahead of the upstream `python:3.14-slim` rebuild) and no longer ships `pip`, which removes the copies of urllib3, msgpack and setuptools it bundled
+
+#### Windows EXE
+- The same certificate viewer, CRL section, first-CA-on-load fix and restore fix as Docker
+
+#### Internal
+- The image's Trivy scans (CI and release) now cover Python packages as well as OS packages, so a library bundled by the base image can no longer slip past them
+- CI skips the tests, browser tests, EXE build and image build when a change touches only documentation
 
 ### v2.4.0 — 2026-09-29
 

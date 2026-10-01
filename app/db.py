@@ -593,11 +593,13 @@ def _restore_cas(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
         ca = _decode_blobs(ca)
         conn.execute(
             """INSERT INTO certificate_authorities
-               (id, parent_ca_id, name, domain, algorithm, not_before, not_after, serial, cert_pem, key_pem, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (id, parent_ca_id, name, domain, algorithm, not_before, not_after, serial, cert_pem, key_pem, created_at,
+                crl_next_update)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ca["id"], ca.get("parent_ca_id"), ca["name"], ca["domain"],
              ca["algorithm"], ca["not_before"], ca["not_after"], ca["serial"],
-             ca["cert_pem"], _maybe_encrypt(ca["key_pem"]), ca["created_at"]),
+             ca["cert_pem"], _maybe_encrypt(ca["key_pem"]), ca["created_at"],
+             ca.get("crl_next_update")),
         )
 
 

@@ -315,6 +315,18 @@ def test_backup_restore_round_trip_keeps_current_session(admin_client):
     assert admin_client.get(f"/api/ca/{ca_id}").status_code == 200
 
 
+def test_backup_restore_keeps_crl_next_update(admin_client):
+    ca_id = _create_ca(admin_client)
+    assert admin_client.get(f"/api/ca/{ca_id}/crl").status_code == 200
+    next_update = admin_client.get(f"/api/ca/{ca_id}").get_json()["crl_next_update"]
+    assert next_update
+    backup = admin_client.post("/api/backup", json={"password": "backup-password"}).data
+    resp = admin_client.post("/api/restore", json={
+        "password": "backup-password", "file_data": base64.b64encode(backup).decode()})
+    assert resp.status_code == 200
+    assert admin_client.get(f"/api/ca/{ca_id}").get_json()["crl_next_update"] == next_update
+
+
 def test_restore_rejects_malformed_backup_content(admin_client):
     bad = crypto_engine.encrypt_backup(b'{"version": 1, "certificate_authorities": [{"id": 1}]}', "pw")
     resp = admin_client.post("/api/restore", json={"password": "pw", "file_data": base64.b64encode(bad).decode()})

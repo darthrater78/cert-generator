@@ -436,44 +436,45 @@ function detailSection(title, rows) {
   return rows.length ? '<div class="card"><h3>' + escapeHtml(title) + '</h3>' + detailRows(rows) + '</div>' : '';
 }
 
+// The viewer's sections as HTML; every value from the certificate is escaped.
+function certDetailHtml(d) {
+  const issuerCA = caIndex.get(d.ca_id);
+  const nameRows = (attrs) => attrs.map(a => [a.name, escapeHtml(a.value)]);
+  const general = [
+    ['Status', certStatusBadge(d.not_after, d.revoked) +
+      (d.revoked && d.revoked_at ? ' <span class="dim">on ' + escapeHtml(formatDateTime(d.revoked_at)) + '</span>' : '')],
+    ['Issued by', escapeHtml(issuerCA ? issuerCA.name : d.issuer.map(a => a.value).join(', '))],
+    ['Valid from', escapeHtml(formatDateTime(d.not_before))],
+    ['Valid until', escapeHtml(formatDateTime(d.not_after))],
+    ['Serial number', '<span class="mono">' + escapeHtml(d.serial) + '</span>'],
+    ['Version', 'v' + escapeHtml(d.version)],
+    ['Public key', escapeHtml(d.public_key)],
+    ['Signature', escapeHtml(d.signature_algorithm)],
+  ];
+  const extensions = d.extensions.map(e => [
+    e.name + (e.critical ? ' (critical)' : ''),
+    e.values.length ? e.values.map(v => '<div>' + escapeHtml(v) + '</div>').join('') : '<span class="dim">—</span>',
+  ]);
+  const fingerprints = [
+    ['SHA-256', '<span class="mono">' + escapeHtml(d.fingerprints.sha256) + '</span>'],
+    ['SHA-1', '<span class="mono">' + escapeHtml(d.fingerprints.sha1) + '</span>'],
+  ];
+  return detailSection('General', general) +
+    detailSection('Subject', nameRows(d.subject)) +
+    detailSection('Issuer', nameRows(d.issuer)) +
+    detailSection('Extensions', extensions) +
+    detailSection('Fingerprints', fingerprints);
+}
+
 async function viewCert(certId) {
   try {
     const res = await api('/api/certs/' + certId + '/details');
     const d = await res.json();
     viewCertId = certId;
-
-    const issuerCA = caIndex.get(d.ca_id);
     document.getElementById('certViewEyebrow').textContent =
       (TEMPLATE_LABELS[d.template] || d.template || 'Certificate') + ' · No. ' + shortSerial(d.serial);
     document.getElementById('certViewTitle').textContent = d.common_name;
-
-    const nameRows = (attrs) => attrs.map(a => [a.name, escapeHtml(a.value)]);
-    const general = [
-      ['Status', certStatusBadge(d.not_after, d.revoked) +
-        (d.revoked && d.revoked_at ? ' <span class="dim">on ' + escapeHtml(formatDateTime(d.revoked_at)) + '</span>' : '')],
-      ['Issued by', escapeHtml(issuerCA ? issuerCA.name : d.issuer.map(a => a.value).join(', '))],
-      ['Valid from', escapeHtml(formatDateTime(d.not_before))],
-      ['Valid until', escapeHtml(formatDateTime(d.not_after))],
-      ['Serial number', '<span class="mono">' + escapeHtml(d.serial) + '</span>'],
-      ['Version', 'v' + d.version],
-      ['Public key', escapeHtml(d.public_key)],
-      ['Signature', escapeHtml(d.signature_algorithm)],
-    ];
-    const extensions = d.extensions.map(e => [
-      e.name + (e.critical ? ' (critical)' : ''),
-      e.values.length ? e.values.map(v => '<div>' + escapeHtml(v) + '</div>').join('') : '<span class="dim">—</span>',
-    ]);
-    const fingerprints = [
-      ['SHA-256', '<span class="mono">' + escapeHtml(d.fingerprints.sha256) + '</span>'],
-      ['SHA-1', '<span class="mono">' + escapeHtml(d.fingerprints.sha1) + '</span>'],
-    ];
-
-    document.getElementById('certViewBody').innerHTML =
-      detailSection('General', general) +
-      detailSection('Subject', nameRows(d.subject)) +
-      detailSection('Issuer', nameRows(d.issuer)) +
-      detailSection('Extensions', extensions) +
-      detailSection('Fingerprints', fingerprints);
+    document.getElementById('certViewBody').innerHTML = certDetailHtml(d);
     document.getElementById('certViewPem').value = d.pem;
     await renderCertCrl();
     showModal('viewCertModal');
