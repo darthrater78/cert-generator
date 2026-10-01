@@ -199,8 +199,8 @@
             <button class="btn btn-ghost btn-sm" data-action="exportCRL" title="Generate and download a CRL file signed by this CA. Import into Windows cert stores to provide offline revocation status.">Export CRL</button>
             <div class="ca-export-note">
               <div class="ca-export-case">
-                <span class="ca-export-label">Placeholder CRL</span>
-                <span><strong>Export CRL</strong> is for the placeholder distribution point only: it downloads a CRL to import by hand{% if server_mode %}. It never changes the CRL this server publishes, which updates itself.{% else %} on each machine.{% endif %}</span>
+                <span class="ca-export-label">Endpoint-hosted CRL</span>
+                <span>Endpoint-hosted CRLs are <strong>for demos and testing only</strong>. The usual way to get a certificate's CRL onto a machine is <strong>Export / install ▾</strong> on that certificate: its .zip carries the CRL and installs it. <strong>Export CRL</strong> here downloads this CA's CRL to import by hand{% if server_mode %}; it never changes the CRL this server publishes, which updates itself.{% else %}.{% endif %}</span>
               </div>
             </div>
           </div>
@@ -224,8 +224,8 @@
                 <option value="public" selected>Certificate Only</option>
                 <option value="private">Private Key Only</option>
               </select>
-              <input type="password" id="caExportPassword" value="changeit" title="Default password: changeit" placeholder="Default: changeit" aria-label="Export password">
-              <span class="note" id="caExportPasswordNote" title="Default password is 'changeit'. Required for Windows certificate import.">default: changeit</span>
+              <input type="password" id="caExportPassword" placeholder="Choose a password" autocomplete="new-password" aria-label="Export password">
+              <span class="note" id="caExportPasswordNote" title="Protects the key in the file; you need it to import the file.">required</span>
               <button class="btn btn-ghost btn-sm" data-action="exportCA">Download</button>
               <div class="ca-export-note" id="caExportNote">
                 <div class="ca-export-case ca-export-trust">
@@ -512,7 +512,7 @@
         <select id="certCrlDp" data-change="updateCrlDpFields">
           <option value="server">This server{% if not server_mode %} (Docker version only){% endif %}</option>
           {% if server_mode %}<option value="cloudflare">Cloudflare Worker (this CA)</option>{% endif %}
-          <option value="placeholder">Placeholder URL (offline import)</option>
+          <option value="placeholder">Endpoint-hosted (each machine gets a copy)</option>
         </select>
       </div>
       <div class="form-group" id="crlBaseUrlGroup">
@@ -574,48 +574,6 @@
     <div class="modal-actions">
       <button class="btn btn-ghost" data-action="hideModal" data-arg="createIntermediateModal">Cancel</button>
       <button class="btn btn-primary" data-action="createIntermediate">Create Intermediate CA</button>
-    </div>
-  </div>
-</div>
-
-<div id="exportCertModal" class="modal-backdrop hidden">
-  <div class="modal">
-    <h3>Export Certificate</h3>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Format</label>
-        <select id="certExportFormat">
-          <option value="pkcs12">PKCS12 (.pfx)</option>
-          <option value="pem">PEM</option>
-          <option value="der">DER</option>
-          <option value="crt">CRT (.crt)</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Include</label>
-        <select id="certExportPart">
-          <option value="both">Certificate + Key</option>
-          <option value="public">Certificate Only</option>
-          <option value="private">Private Key Only</option>
-          <option value="chain">Full Chain (cert + CA)</option>
-        </select>
-      </div>
-    </div>
-    <div class="form-row full" id="pfxPasswordRow">
-      <div class="form-group">
-        <label>PFX Password <span style="font-weight:normal;color:var(--text-dim)" title="Default password is 'changeit'. Required for Windows certificate import.">(default: changeit)</span></label>
-        <input type="password" id="certExportPassword" value="changeit" placeholder="Required for Windows import">
-      </div>
-    </div>
-    <div class="form-row full" id="chainRow">
-      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
-        <input type="checkbox" id="certExportChain"> Include CA chain in export
-        <span style="font-size:11px;color:var(--text-dim)">(bundles issuing CA cert into the file)</span>
-      </label>
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" data-action="hideModal" data-arg="exportCertModal">Cancel</button>
-      <button class="btn btn-primary" data-action="doExportCert">Download</button>
     </div>
   </div>
 </div>
@@ -976,6 +934,44 @@
     <button type="button" role="tab" data-action="setImportOs" data-arg="windows">Windows</button>
     <button type="button" role="tab" data-action="setImportOs" data-arg="macos">macOS</button>
     <button type="button" role="tab" data-action="setImportOs" data-arg="linux">Linux</button>
+    <button type="button" role="tab" data-action="setImportOs" data-arg="export" class="os-tab-export">Export file</button>
+  </div>
+  <div class="import-export hidden" id="importPopExport">
+    <div class="form-row">
+      <div class="form-group">
+        <label for="certExportFormat">Format</label>
+        <select id="certExportFormat">
+          <option value="pkcs12">PKCS12 (.pfx)</option>
+          <option value="pem">PEM</option>
+          <option value="der">DER</option>
+          <option value="crt">CRT (.crt)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="certExportPart">Include</label>
+        <select id="certExportPart">
+          <option value="both">Certificate + Key</option>
+          <option value="public">Certificate Only</option>
+          <option value="private">Private Key Only</option>
+          <option value="chain">Full Chain (cert + CA)</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row full" id="pfxPasswordRow">
+      <div class="form-group">
+        <label for="certExportPassword">Password <span class="dim" id="certExportPasswordNote">(required: protects the key, needed to import it)</span></label>
+        <input type="password" id="certExportPassword" placeholder="Choose a password" autocomplete="new-password">
+      </div>
+    </div>
+    <div class="form-row full" id="chainRow">
+      <label class="import-export-check">
+        <input type="checkbox" id="certExportChain"> Include the issuing CA in the file
+      </label>
+    </div>
+    <div class="import-bundle-row">
+      <button type="button" class="btn btn-primary btn-sm" data-action="doExportCert">Download</button>
+      <span class="hint">One file, in the format you pick. For a ready-to-run install, use a system tab.</span>
+    </div>
   </div>
   <div class="import-ask" id="importPopAsk">
     <p id="importPopQuestion"></p>
@@ -985,10 +981,10 @@
     </div>
   </div>
   <div class="where" id="importPopWhere"></div>
+  <div class="import-admin hidden" id="importPopAdmin"></div>
   <div id="importPopSteps"></div>
   <div class="pop-actions">
     <span class="hint" id="importPopHint"></span>
-    <button type="button" class="btn btn-primary btn-sm" id="importPopCopy" data-action="copyImportCommands">Copy commands</button>
   </div>
 </div>
 

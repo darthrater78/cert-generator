@@ -701,6 +701,24 @@ def get_published_crl(ca_id: int) -> bytes | None:
         return row["crl_der"] if row else None
 
 
+def get_ca_named_chain(ca_id: int, max_depth: int = 16) -> list[tuple[str, bytes]]:
+    """(name, certificate PEM) from ``ca_id`` up to its root, nearest first. No keys."""
+    chain: list[tuple[str, bytes]] = []
+    seen: set[int] = set()
+    current: int | None = ca_id
+    with _connect() as conn:
+        while current is not None and current not in seen and len(chain) < max_depth:
+            seen.add(current)
+            row = conn.execute(
+                "SELECT name, cert_pem, parent_ca_id FROM certificate_authorities WHERE id = ?", (current,)
+            ).fetchone()
+            if row is None:
+                break
+            chain.append((row["name"], row["cert_pem"]))
+            current = row["parent_ca_id"]
+    return chain
+
+
 def get_ca_cert_chain(ca_id: int, max_depth: int = 16) -> list[bytes]:
     """Certificates from ``ca_id`` up to its root, nearest first."""
     chain: list[bytes] = []

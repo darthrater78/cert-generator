@@ -956,6 +956,19 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .import-pop .import-file code { font: 11.5px var(--font-mono); overflow-wrap: anywhere; }
 .import-pop .import-file small { display: block; font: 11.5px var(--font-ui); color: var(--text-dim); margin-top: 2px; }
 .import-pop .import-file button { flex-shrink: 0; }
+.import-pop .import-admin {
+  font: 13px var(--font-serif); color: var(--text);
+  padding: 7px 12px; margin: 0 0 8px; border-left: 3px solid var(--border); background: var(--bg);
+}
+.import-pop .import-admin-warn { border-left-color: var(--warning); font-weight: 600; }
+.import-pop .import-bundle { border: 1px solid var(--border); padding: 4px 12px 10px; margin-bottom: 4px; }
+.import-pop .import-bundle p { font: 13px var(--font-serif); color: var(--text); margin: 0 0 8px; overflow-wrap: anywhere; }
+.import-pop .import-bundle p code { font: 12px var(--font-mono); background: var(--bg); padding: 1px 4px; }
+.import-pop .import-bundle-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.import-pop .import-bundle-row input { width: 170px; }
+.import-pop .code-box { position: relative; }
+.import-pop .code-box pre { padding-top: 36px; }
+.import-pop .code-copy { position: absolute; top: 6px; right: 6px; }
 
 /* ================= standalone guide window ================= */
 .guide-page { min-height: 100vh; background: var(--bg); color: var(--text); }
@@ -1001,3 +1014,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .card-toggle:hover { color: var(--accent-text); }
 .collapsible-card.collapsed { padding-bottom: 0; }
 .collapsible-card.collapsed > h3 { margin-bottom: 0; border-bottom: 0; }
+.import-pop .import-export .form-row { margin-bottom: 10px; }
+.import-pop .import-export-check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.import-pop .os-tabs .os-tab-export { margin-left: auto; }

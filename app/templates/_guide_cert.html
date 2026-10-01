@@ -18,7 +18,7 @@
     <ol>
       <li><strong>Create a Root CA</strong> &mdash; click <code>+ New CA</code>, enter your domain, and choose an algorithm. For maximum Windows compatibility use <code>RSA 4096</code> or <code>ECDSA P-384</code>.</li>
       <li><strong>Issue a certificate</strong> &mdash; select the CA, click <code>+ Issue Certificate</code>, pick a template, and fill in the common name.</li>
-      <li><strong>Export as PKCS12 (.pfx)</strong> &mdash; this is the default format. A PFX password is required for Windows import; it defaults to <code>changeit</code>.</li>
+      <li><strong>Export as PKCS12 (.pfx)</strong> &mdash; this is the default format. Choose a PFX password: it protects the key and you need it to import the file. There is no default.</li>
       <li><strong>Trust the CA on your machine</strong> &mdash; on the CA page, <strong>Download</strong> the CA certificate (the default, DER &middot; Certificate Only) and import it into <code>Trusted Root Certification Authorities</code>. Without this step, certificates will appear untrusted.</li>
       <li><strong>Or let the app walk you through it</strong> &mdash; <strong>Endpoint import &#9662;</strong> on any certificate gives the files to download and copy-paste commands for Windows, macOS and Linux.</li>
     </ol>
@@ -82,7 +82,7 @@
 
     <h4>Importing into Windows (Personal Store)</h4>
     <ol>
-      <li>Export as <code>PKCS12 (.pfx)</code>, include <code>Certificate + Key</code>, with a password (default: <code>changeit</code>).</li>
+      <li>Export as <code>PKCS12 (.pfx)</code>, include <code>Certificate + Key</code>, with a password you choose.</li>
       <li>Open <code>certlm.msc</code> (Local Computer certificates) &mdash; press <code>Win+R</code>, type <code>certlm.msc</code>, press Enter.</li>
       <li>Right-click <strong>Personal</strong> &rarr; <strong>All Tasks</strong> &rarr; <strong>Import</strong>.</li>
       <li>Browse to the <code>.pfx</code> file, enter the password.</li>
@@ -214,7 +214,7 @@
       <li>Export as <code>PKCS12 (.pfx)</code> with <code>Certificate + Key</code>.</li>
       <li>Open <code>certmgr.msc</code>, right-click <strong>Personal</strong> &rarr; <strong>All Tasks</strong> &rarr; <strong>Import</strong>. Select the <strong>Personal</strong> store when prompted.</li>
       <li>Sign a PowerShell script: <code>Set-AuthenticodeSignature -FilePath script.ps1 -Certificate (Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert)</code></li>
-      <li>Sign an EXE with <code>signtool</code>: <code>signtool sign /fd SHA256 /f cert.pfx /p changeit app.exe</code></li>
+      <li>Sign an EXE with <code>signtool</code>: <code>signtool sign /fd SHA256 /f cert.pfx /p &lt;your PFX password&gt; app.exe</code></li>
     </ol>
     <div class="step-warn">Self-signed code signing certificates will trigger SmartScreen and trust warnings. To suppress these on managed machines, install the CA into <strong>Trusted Root Certification Authorities</strong> and the code signing cert into <strong>Trusted Publishers</strong>.</div>
   </div>
@@ -257,42 +257,45 @@
 
   <div class="guide-content hidden" id="guide-crl">
     <h4>CRL (Certificate Revocation List)</h4>
-    <p>This tool generates <strong>CRL files signed by the CA</strong> that list the certificates you have revoked. Clients get the CRL one of two ways, chosen per certificate when you issue it: they fetch it from <strong>this server</strong>, or you <strong>import it</strong> on each machine and the certificate carries a placeholder address.</p>
+    <p>This tool generates <strong>CRL files signed by the CA</strong> that list the certificates you have revoked. Each certificate names where clients find its CRL, its <em>distribution point</em>, chosen when you issue it.</p>
 
-    <h4>How It Works</h4>
-    <ol>
-      <li>When issuing a certificate, check <strong>Include CRL Distribution Point</strong> and choose where it points:
-        <ul>
-          <li><strong>This server</strong> (Docker version only) &mdash; <code>&lt;address&gt;/crl/&lt;CA id&gt;.crl</code>, where the address is one your clients can reach. That path answers without signing in. This server signs that CRL itself: valid for 7 days, re-signed on every revocation, and renewed before it runs out.</li>
-          <li><strong>Placeholder URL</strong> &mdash; <code>http://pki.&lt;domain&gt;/crl/...</code>. Nothing answers there; clients rely on a CRL you import yourself.</li>
-        </ul>
-      </li>
-      <li>For a placeholder distribution point, click <strong>Export CRL</strong> on the CA details page to download a signed <code>.crl</code> file, and import it on each endpoint &mdash; Windows caches it locally and uses it for revocation checks without a network fetch. Exporting never changes the CRL this server serves.</li>
-      <li>After revoking a certificate: with <strong>this server</strong> there is nothing to do, and clients see the revocation once their cached copy expires (within 7 days). With a placeholder, the revoke dialog offers the updated CRL; import it on each endpoint.</li>
-      <li><strong>View CRL</strong> on the CA details page shows the CRL this server publishes, or, for a CA it doesn't publish for, the revocations an export would contain now.</li>
-    </ol>
-    {% if not server_mode %}<div class="step-note">This desktop app offers the <strong>placeholder</strong> distribution point only. For a CRL your clients fetch over the network, run the <strong>Docker</strong> version. It's a separate install with its own database: move your CAs across with <strong>Backup</strong> here and <strong>Restore</strong> there.</div>
+    <h4>Distribution Points</h4>
+    <ul>
+      <li><strong>This server</strong> (Docker version only) &mdash; <code>&lt;address&gt;/crl/&lt;CA id&gt;.crl</code>, an address your clients can reach. That path answers without signing in. This server signs that CRL itself: valid for 7 days, re-signed on every revocation, and renewed before it runs out.</li>
+      <li><strong>Cloudflare Worker</strong> (Docker version only) &mdash; the CA's own Worker serves the CRL on the internet, and the app pushes a new one on every revocation. Set it up under <strong>Tools › Cloudflare</strong> and on the CA page.</li>
+      <li><strong>Endpoint-hosted</strong> &mdash; <code>http://pki.&lt;domain&gt;/crl/&lt;CA&gt;.crl</code>, an address no server answers. Each machine gets the CRL itself, for endpoints that can reach neither this server nor Cloudflare. Use the certificate's install .zip (below), or import an exported CRL by hand.</li>
+    </ul>
+    {% if not server_mode %}<div class="step-note">This desktop app offers the <strong>endpoint-hosted</strong> distribution point only. For a CRL your clients fetch over the network, run the <strong>Docker</strong> version. It's a separate install with its own database: move your CAs across with <strong>Backup</strong> here and <strong>Restore</strong> there.</div>
     {% endif %}<div class="step-note">Deleting a revoked certificate keeps its serial on the CRL until the certificate would have expired, so deleting never un-revokes it. Deleting a certificate that isn't revoked does not stop clients trusting it: revoke it first.</div>
 
-    <h4>Importing the CRL on Windows</h4>
+    <h4>Endpoint-hosted on Windows: the Install .zip</h4>
+    <p>On the certificate, open <strong>Export / install ▾ › Windows</strong>, answer the CA question, and choose <strong>Download .zip</strong>. Extract it and double-click <strong>install.cmd</strong>. It asks for administrator rights, shows each command as it runs, stops with an explanation if a step fails, and waits for Enter before closing. Besides the certificate, it:</p>
+    <ul>
+      <li>imports the CRL into <strong>Intermediate Certification Authorities</strong>, where Windows' own revocation check finds it without a network fetch;</li>
+      <li>makes the machine answer the CRL address itself, for programs that download it. It adds a hosts entry for <code>pki.&lt;domain&gt;</code>, keeps the CRL in an admin-only <code>C:\ProgramData\CertGenerator</code>, and starts a small listener at boot, as LOCAL SERVICE, that serves only that CRL.</li>
+    </ul>
+    <ul>
+      <li><strong>After a revocation</strong>, download a new .zip and run its <code>install.cmd</code>. Nothing updates the machine by itself.</li>
+      <li><strong>To back out</strong>, double-click <code>uninstall.cmd</code> in the same folder. It removes the certificate, the CRL, the hosts entry and the listener, and asks before removing CA certificates.</li>
+      <li><strong>"Running scripts is disabled on this system"</strong> appears only if you run the .ps1 files directly. Use the .cmd files, or <code>powershell -ExecutionPolicy Bypass -File .\install.ps1</code>. If Windows warns that the publisher can't be verified, choose <strong>Run</strong>. To avoid that warning, right-click the .zip before extracting, open <strong>Properties</strong> and tick <strong>Unblock</strong>.</li>
+      <li>Security tools may report the hosts-file change and the startup task. <code>README.txt</code> in the .zip lists every change and the manual undo.</li>
+    </ul>
+    <p>macOS and Linux bundles include the CRL file; the local listener is Windows-only for now.</p>
+
+    <h4>Importing a CRL by Hand (Windows)</h4>
     <ol>
+      <li>On the CA page, choose a lifetime and click <strong>Export CRL</strong>.</li>
       <li>Open <code>certlm.msc</code> (Local Machine) or <code>certmgr.msc</code> (Current User).</li>
       <li>Navigate to <strong>Intermediate Certification Authorities</strong>.</li>
       <li>Right-click &rarr; <strong>All Tasks</strong> &rarr; <strong>Import</strong>.</li>
       <li>Browse to the <code>.crl</code> file, select it, and finish the import.</li>
       <li>The CRL will appear under <strong>Certificate Revocation Lists</strong> within that store.</li>
     </ol>
-    <div class="step-note">An exported CRL is valid for 10 years by default. If you revoke a certificate after importing the CRL, you must re-export and re-import the updated CRL on each endpoint for the revocation to take effect.</div>
+    <div class="step-note">An exported CRL is valid for 10 years by default. After a revocation, export and import the updated CRL on each endpoint (or run a new install .zip). <strong>View CRL</strong> on the CA page shows what an export contains now.</div>
 
-    <h4>Important: No OCSP, and Placeholders Are Files</h4>
-    <p>There is no OCSP responder, and the CRL is never signed per request. With a <strong>placeholder</strong> URL there is no server at that address &mdash; the revocation check works because Windows finds the imported CRL already cached in the local certificate store. With <strong>this server</strong>, clients must be able to reach the address in the certificate; expose only <code>/crl/</code> through your reverse proxy (see the README).</p>
-    <p>The placeholder approach is suitable for:</p>
-    <ul>
-      <li>Posture and security demos where certificates need to pass Windows validation</li>
-      <li>Lab and test environments</li>
-      <li>Scenarios where you control the endpoints and can import the CRL manually</li>
-    </ul>
-    <div class="step-warn">This is <strong>not</strong> equivalent to a production PKI. With this server, a revocation reaches clients when their cached CRL expires (up to 7 days); with a placeholder URL, only after you re-import the CRL on each endpoint.</div>
+    <h4>Important: No OCSP</h4>
+    <p>There is no OCSP responder, and the CRL is never signed per request. With <strong>this server</strong>, clients must be able to reach the address in the certificate; expose only <code>/crl/</code> through your reverse proxy (see the README). Endpoint-hosted CRLs suit posture and security demos, lab and test environments, and machines you control.</p>
+    <div class="step-warn">This is <strong>not</strong> equivalent to a production PKI. With this server or a Cloudflare Worker, a revocation reaches clients when their cached CRL expires (up to 7 days); endpoint-hosted, only after each machine gets the updated CRL.</div>
 
     <h4>PowerShell Import (Alternative)</h4>
     <p>You can also import the CRL via PowerShell:</p>

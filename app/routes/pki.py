@@ -10,9 +10,9 @@ from urllib.parse import urlsplit
 
 from flask import Blueprint, Response, jsonify, request
 
-from .. import crl_publisher, crl_worker, crypto_engine, db, state
+from .. import crl_publisher, crl_worker, crypto_engine, db, install_bundle, state
 from ..security import RateLimiter
-from ..web import deliver_export, error, json_body, parse_int, reauth_rejection, str_field
+from ..web import deliver_export, error, export_password_error, json_body, parse_int, reauth_rejection, str_field
 
 log = logging.getLogger("cert-generator")
 
@@ -244,7 +244,7 @@ def _parse_issue_request(data: dict[str, Any]) -> tuple[IssueRequest | None, str
     if crl_dp_mode not in CRL_DP_MODES:
         return None, f"Invalid CRL distribution point. Choose from: {CRL_DP_MODES}"
     if crl_dp_mode in ("server", "cloudflare") and state.desktop_mode():
-        return None, "The desktop app offers the placeholder distribution point only; the others need Docker"
+        return None, "The desktop app offers the endpoint-hosted distribution point only; the others need Docker"
     if crl_dp_mode == "server":
         crl_base_url = parse_crl_base_url(str_field(data, "crl_base_url"))
         if crl_base_url is None:
@@ -413,8 +413,8 @@ _REVOKE_NOTES = {
               f"copy expires, within {crl_publisher.PUBLISHED_CRL_DAYS} days.",
     "cloudflare": "The updated CRL was published to this CA's Cloudflare Worker. Clients see the revocation "
                   f"when their cached copy expires, within {crl_publisher.PUBLISHED_CRL_DAYS} days.",
-    "placeholder": "Its CRL distribution point is a placeholder, so clients only see the revocation "
-                   "once you import an updated CRL on each machine.",
+    "placeholder": "Its CRL is endpoint-hosted, so a machine only sees the revocation once it gets the updated CRL: "
+                   "run a new install .zip from Export / install, or import the CRL by hand.",
     "none": "It has no CRL distribution point, so clients don't check it. Import an updated CRL on "
             "machines that should stop trusting it.",
     "other": "Its CRL distribution point is an address this app doesn't manage. Publish an updated CRL there.",
@@ -522,6 +522,9 @@ def export_ca(ca_id: int):
     fmt = str_field(data, "format", "pem")
     part = str_field(data, "part", "both")
     password = str_field(data, "password") or None
+    password_error = export_password_error(password)
+    if password_error:
+        return error(password_error)
     if fmt not in VALID_FORMATS:
         return error(f"Invalid format. Choose from: {VALID_FORMATS}")
     if part not in VALID_CA_PARTS:
@@ -553,6 +556,9 @@ def export_cert(cert_id: int):
     fmt = str_field(data, "format", "pem")
     part = str_field(data, "part", "both")
     password = str_field(data, "password") or None
+    password_error = export_password_error(password)
+    if password_error:
+        return error(password_error)
     include_chain = bool(data.get("include_chain", False))
     if fmt not in VALID_FORMATS:
         return error(f"Invalid format. Choose from: {VALID_FORMATS}")
@@ -581,6 +587,46 @@ def export_cert(cert_id: int):
     except ValueError as e:
         return error(str(e))
     return deliver_export(export_data, f"{cert['common_name']}-{filename}")
+
+
+@bp.post("/api/export/cert/<int:cert_id>/bundle")
+def export_install_bundle(cert_id: int):
+    """A .zip with the certificate (and key), optionally its CA chain, and an install script."""
+    cert = db.get_cert(cert_id)
+    if not cert:
+        return error("Certificate not found", 404)
+    data = json_body()
+    os_name = str_field(data, "os")
+    if os_name not in install_bundle.OSES:
+        return error(f"Invalid OS. Choose from: {install_bundle.OSES}")
+    rejection = reauth_rejection()  # the bundle carries the private key
+    if rejection is not None:
+        return rejection
+    chain = db.get_ca_named_chain(cert["ca_id"])
+    crl = None
+    issuer = db.get_ca(cert["ca_id"])
+    if issuer and crl_dp_kind(cert.get("crl_dp_url"), issuer) == "placeholder":
+        # Nothing answers at a placeholder address: ship the CRL, as Export CRL would.
+        crl_der = crypto_engine.generate_crl(
+            ca_cert_pem=issuer["cert_pem"], ca_key_pem=issuer["key_pem"],
+            revoked_serials=db.list_revoked_serials(issuer["id"]), crl_lifetime_days=DEFAULT_CRL_DAYS)
+        db.set_ca_crl_next_update(issuer["id"], crypto_engine.crl_next_update(crl_der))
+        crl = (issuer["name"], crl_der)
+    password_error = export_password_error(str_field(data, "password") or None)
+    if password_error:
+        return error(password_error)
+    try:
+        bundle, filename = install_bundle.build(
+            cert_pem=cert["cert_pem"], key_pem=cert["key_pem"], template=cert["template"],
+            common_name=cert["common_name"], os_name=os_name,
+            ca_chain=chain if data.get("include_ca") else [], chain_for_pfx=chain, crl=crl,
+            placeholder_url=cert.get("crl_dp_url") if crl else None,
+            password=str_field(data, "password") or None,
+        )
+    except ValueError as e:
+        return error(str(e))
+    log.info("Install bundle exported: cert=%d os=%s with_ca=%s", cert_id, os_name, bool(data.get("include_ca")))
+    return deliver_export(bundle, filename)
 
 
 @bp.route("/crl/<int:ca_id>.crl", methods=["GET", "HEAD"], provide_automatic_options=False)

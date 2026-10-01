@@ -86,7 +86,6 @@ const SERVER_MODE = document.body.dataset.serverMode === 'true';
 let currentCAId = null;
 let currentCA = null;  // the open CA as /api/ca/<id> returned it
 let currentSSHKeyId = null;
-let exportCertId = null;
 
 const TEMPLATE_LABELS = {
   'web-server': 'Web Server',
@@ -217,7 +216,8 @@ function showIssueCert() {
   document.getElementById('certCN').focus();
 }
 
-// The distribution point choice: this server (server mode only) or the offline placeholder.
+// The distribution point choice: this server, a Cloudflare Worker (server mode only), or
+// endpoint-hosted (internally "placeholder": an address no server answers; each machine gets the CRL).
 function updateCrlDpFields(_arg, el) {
   const include = document.getElementById('certIncludeCRL').checked;
   const select = document.getElementById('certCrlDp');
@@ -249,8 +249,9 @@ function updateCrlDpFields(_arg, el) {
   document.getElementById('crlDpHint').textContent = server
     ? 'Clients fetch ' + baseUrl.value.replace(/\/+$/, '') + '/crl/' + currentCAId + '.crl without signing in. ' +
       'This server signs that CRL itself, republishes it on every revocation and renews it before it expires.'
-    : 'Points at http://pki.' + (ca ? ca.domain : '<domain>') + '/crl/… — nothing answers there; ' +
-      'import the exported CRL on each machine (see Import Guide).' +
+    : 'Points at http://pki.' + (ca ? ca.domain : '<domain>') + '/crl/…, which no server answers. Each machine ' +
+      'gets the CRL from the certificate\'s install .zip (Export / install ▾); on Windows the .zip also answers that ' +
+      'address on the machine itself. For demos and testing only: each machine needs the new CRL after every revocation.' +
       (SERVER_MODE ? '' : ' For a CRL clients fetch over the network, use the Docker version; ' +
         'move your CAs there with Backup and Restore.');
 }
@@ -381,8 +382,8 @@ async function loadCerts(caId) {
       '<td>' + crlDpBadge(c.crl_dp) + '</td>' +
       '<td><div class="row-actions">' +
         '<button class="btn btn-ghost btn-sm" data-action="viewCert" data-arg="' + c.id + '\">View</button> ' +
-        '<button class="btn btn-ghost btn-sm" data-action="showExportCert" data-arg="' + c.id + '\">Export</button> ' +
-        (!c.revoked ? '<button type="button" class="import-chip" data-action="toggleImportHelp" data-arg="' + c.id + '" aria-haspopup="dialog" aria-expanded="false">Endpoint import ▾</button> ' : '') +
+        '<button type="button" class="import-chip" data-action="toggleImportHelp" data-arg="' + c.id + '" aria-haspopup="dialog" aria-expanded="false">' +
+          (c.revoked ? 'Export ▾' : 'Export / install ▾') + '</button> ' +
         (!c.revoked ? '<button class="btn btn-ghost btn-sm" data-action="revokeCert" data-arg="' + c.id + '\">Revoke</button> ' : '') +
         '<button class="btn btn-danger btn-sm" data-action="deleteCert" data-arg="' + c.id + '\">Delete</button>' +
       '</div></td></tr>';
@@ -515,14 +516,20 @@ async function issueCert() {
   }
 }
 
-function showExportCert(certId) {
-  exportCertId = certId;
+// Export lives in the Export / install panel, on its Export file tab.
+function resetCertExportForm() {
   document.getElementById('certExportFormat').value = 'pkcs12';
   document.getElementById('certExportPart').value = 'both';
-  document.getElementById('certExportPassword').value = 'changeit';
+  document.getElementById('certExportPassword').value = '';
   document.getElementById('certExportChain').checked = false;
   updateCertPasswordVisibility();
-  showModal('exportCertModal');
+}
+
+function showExportCert(certId) {
+  const chip = document.querySelector('#certTableContainer .import-chip[data-arg="' + certId + '"]');
+  if (!chip) return;
+  chip.scrollIntoView({ block: 'nearest' });
+  openImportHelp(certId, chip, 'export');
 }
 
 let viewCertId = null;
@@ -538,7 +545,8 @@ function certStatusBadge(notAfter, revoked) {
 // Where a certificate tells clients to check revocation, and whether anything answers there.
 const CRL_DP_LABELS = {
   none: ['badge-algo', 'None', 'No distribution point: clients can only learn of a revocation from a CRL you import yourself.'],
-  placeholder: ['badge-expired', 'Placeholder', 'Placeholder URL: nothing answers there. Import the exported CRL on each machine.'],
+  placeholder: ['badge-expired', 'Endpoint-hosted', 'Endpoint-hosted: no server answers this address. Each machine needs the CRL: ' +
+    'use the install .zip (Export / install ▾), which on Windows also answers the address locally, or import an exported CRL.'],
   server_live: ['badge-active', 'This server', 'Served by this server, which keeps the CRL current automatically.'],
   server_pending: ['badge-expired', 'Not published', 'Points at this server, but no CRL is published yet. It publishes once the database is unlocked.'],
   other: ['badge-algo', 'External', 'Points at an address this app does not manage.'],
@@ -706,18 +714,29 @@ function exportFromCertView() {
 }
 
 async function doExportCert() {
+  if (!importState) return;
   const fmt = document.getElementById('certExportFormat').value;
   const part = document.getElementById('certExportPart').value;
   const password = document.getElementById('certExportPassword').value;
   const includeChain = document.getElementById('certExportChain').checked;
-  await saveExport('/api/export/cert/' + exportCertId, { format: fmt, part, password: password || undefined, include_chain: includeChain });
-  hideModal('exportCertModal');
+  const pwError = exportPasswordProblem(password, fmt === 'pkcs12' && part === 'both');
+  if (pwError) { toast(pwError, 'error'); document.getElementById('certExportPassword').focus(); return; }
+  await saveExport('/api/export/cert/' + importState.certId, { format: fmt, part, password: password || undefined, include_chain: includeChain });
+}
+
+// No default passwords: a PFX needs one the user chose, and the old default is refused.
+function exportPasswordProblem(password, required) {
+  if (required && !password) return 'Choose a password: it protects the key, and you need it to import the file';
+  if (password && password.trim().toLowerCase() === 'changeit') return 'Choose your own password: the old default, changeit, is no longer accepted';
+  return null;
 }
 
 async function exportCA() {
   const fmt = document.getElementById('caExportFormat').value;
   const part = document.getElementById('caExportPart').value;
   const password = document.getElementById('caExportPassword').value;
+  const pwError = exportPasswordProblem(password, fmt === 'pkcs12' && part === 'both');
+  if (pwError) { toast(pwError, 'error'); document.getElementById('caExportPassword').focus(); return; }
   await saveExport('/api/export/ca/' + currentCAId, { format: fmt, part, password: password || undefined });
 }
 
@@ -754,7 +773,8 @@ function updateCaPasswordVisibility() {
   document.getElementById('caExportPassword').style.display = show ? '' : 'none';
   document.getElementById('caExportPasswordNote').style.display = show ? '' : 'none';
   if (!show) document.getElementById('caExportPassword').value = '';
-  else if (!document.getElementById('caExportPassword').value) document.getElementById('caExportPassword').value = 'changeit';
+  // PKCS12 needs a password; for PEM it's optional and encrypts the key.
+  document.getElementById('caExportPasswordNote').textContent = fmt === 'pkcs12' ? 'required' : 'optional: encrypts the key';
 }
 
 function filenameFromDisposition(header) {
@@ -936,7 +956,8 @@ function updateCertPasswordVisibility() {
   const showPw = part === 'both' && fmt !== 'der' && fmt !== 'crt';
   document.getElementById('pfxPasswordRow').style.display = showPw ? '' : 'none';
   if (!showPw) document.getElementById('certExportPassword').value = '';
-  else if (!document.getElementById('certExportPassword').value) document.getElementById('certExportPassword').value = 'changeit';
+  document.getElementById('certExportPasswordNote').textContent = fmt === 'pkcs12'
+    ? '(required: protects the key, needed to import it)' : '(optional: encrypts the key)';
   const showChain = (part === 'both' || part === 'chain') && fmt !== 'der' && fmt !== 'crt';
   document.getElementById('chainRow').style.display = showChain ? '' : 'none';
   if (!showChain) document.getElementById('certExportChain').checked = false;
@@ -1019,6 +1040,7 @@ function caChain(caId) {
 
 function importWindows(cert, root, intermediates, files, withTrust) {
   const machine = MACHINE_TEMPLATES.has(cert.template);
+  const placeholder = Boolean(files.crl);
   const store = machine ? 'LocalMachine' : 'CurrentUser';
   if (!withTrust) intermediates = [];
   const steps = withTrust ? [{ label: 'Trust the root CA (once per machine)',
@@ -1030,12 +1052,21 @@ function importWindows(cert, root, intermediates, files, withTrust) {
   steps.push({ label: 'Certificate and key',
     code: '$pw = Read-Host -AsSecureString ' + psQuote('PFX password') + '\n' +
       'Import-PfxCertificate -FilePath ' + winPath(files.pfx) + ' -CertStoreLocation Cert:\\' + store + '\\My -Password $pw' });
+  if (placeholder) {
+    steps.push({ label: 'Revocation list (endpoint-hosted CRL; the .zip also answers its address locally)',
+      code: 'certutil -addstore CA ' + winPath(files.crl) });
+  }
   if (cert.template === 'code-signing') {
     steps.push({ label: 'On machines that run the signed code',
       code: 'Import-Certificate -FilePath ' + winPath(files.der) + ' -CertStoreLocation Cert:\\LocalMachine\\TrustedPublisher' });
   }
+  const admin = machine || withTrust || placeholder || cert.template === 'code-signing';
   return {
-    where: (machine || withTrust || cert.template === 'code-signing' ? 'PowerShell as Administrator · ' : 'PowerShell · ') +
+    admin: admin
+      ? 'Run PowerShell as Administrator: Start, type PowerShell, right-click it, Run as administrator. ' +
+        'Without it, importing into the Local Machine stores fails with "Access is denied".'
+      : 'Run PowerShell normally, not as administrator: the certificate goes into your own user store.',
+    where: (admin ? 'PowerShell as Administrator · ' : 'PowerShell · ') +
       (withTrust ? 'root → Trusted Root Certification Authorities' +
         (intermediates.length ? ', intermediate → Intermediate Certification Authorities' : '') + ', ' : '') +
       'certificate → ' + (machine ? 'Local Computer' : 'Current User') + ' › Personal' +
@@ -1060,6 +1091,7 @@ function importMac(cert, root, intermediates, files, withTrust) {
     code: (machine ? 'sudo ' : '') + 'security import ' + nixPath(files.pfx) + ' -k ' + keychain +
       (cert.template === 'code-signing' ? ' -T /usr/bin/codesign' : '') });
   return {
+    admin: withTrust || machine ? 'The commands use sudo, so Terminal asks for your Mac password.' : '',
     where: 'Terminal · ' + (withTrust ? 'CAs → System keychain, ' : '') + 'certificate → ' + (machine ? 'System keychain' : 'your login keychain'),
     steps,
     hint: 'Export ' + (withTrust ? 'each CA as DER (Certificate Only) and ' : '') + 'this certificate as PKCS12 (.pfx) first.',
@@ -1091,7 +1123,8 @@ function importLinux(cert, root, files, withTrust) {
     hint = 'Export ' + rootHint + 'this certificate as PKCS12 (.pfx). Firefox: Settings › Certificates › Import.';
   }
   const where = [withTrust && 'root → the system CA bundle', MACHINE_TEMPLATES.has(cert.template) && 'certificate → /etc/ssl'].filter(Boolean);
-  return { where: 'Shell' + (where.length ? ' · ' + where.join(', ') : ''), steps, hint };
+  return { where: 'Shell' + (where.length ? ' · ' + where.join(', ') : ''), steps, hint,
+    admin: steps.some(s => s.code.includes('sudo ')) ? 'The commands use sudo, so the shell asks for your password.' : '' };
 }
 
 function importHelp(cert, os, withTrust) {
@@ -1107,6 +1140,8 @@ function importHelp(cert, os, withTrust) {
     key: exportFileName(cert.common_name + '-private_key.pem'),
     caDer: (ca) => exportFileName('ca-' + safeName(ca.name) + '-certificate.der'),
     caPem: (ca) => exportFileName('ca-' + safeName(ca.name) + '-certificate.pem'),
+    // What Export CRL names the issuing CA's CRL, for a certificate with a placeholder address.
+    crl: cert.crl_dp && cert.crl_dp.kind === 'placeholder' ? safeName(chain[0].name) + '.crl' : null,
   };
   const help = os === 'windows' ? importWindows(cert, root, intermediates, files, withTrust)
     : os === 'macos' ? importMac(cert, root, intermediates, files, withTrust)
@@ -1123,6 +1158,7 @@ function importHelp(cert, os, withTrust) {
   }));
   const linuxServer = os === 'linux' && MACHINE_TEMPLATES.has(cert.template);
   help.files = { cas: caFiles,
+    crl: files.crl ? { caId: chain[0].id, name: chain[0].name, file: files.crl, url: cert.crl_dp.url } : null,
     cert: { file: linuxServer ? files.fullchain + ' + ' + files.key : files.pfx,
       how: linuxServer ? 'Export twice: Full Chain (cert + CA), then Private Key Only, both PEM.'
         : 'Export as PKCS12 (.pfx), Certificate + Key' + (cert.template === 'code-signing' && os === 'windows' ? '; and once more as DER, Certificate Only.' : '.') } };
@@ -1133,6 +1169,24 @@ function importHelp(cert, os, withTrust) {
 
 function renderImportHelp() {
   const cert = certIndex.get(importState.certId);
+  const exporting = importState.os === 'export';
+  // A revoked certificate can still be exported, but there's nothing to install.
+  document.querySelectorAll('#importPop .os-tabs button').forEach((b) => {
+    b.hidden = Boolean(cert && cert.revoked) && b.dataset.arg !== 'export';
+    b.setAttribute('aria-selected', String(b.dataset.arg === importState.os));
+  });
+  document.getElementById('importPopExport').classList.toggle('hidden', !exporting);
+  ['importPopAsk', 'importPopWhere', 'importPopSteps'].forEach((id) => {
+    document.getElementById(id).classList.toggle('hidden', exporting);
+  });
+  if (exporting) {
+    document.getElementById('importPopTitle').textContent = 'Export ' + (cert ? exportFileName(cert.common_name) : '');
+    document.getElementById('importPopAdmin').classList.add('hidden');
+    document.getElementById('importPopHint').textContent = '';
+    importState.steps = [];
+    positionImportHelp();
+    return;
+  }
   const answered = importState.trusted !== null;
   const help = cert && importHelp(cert, importState.os, importState.trusted === false);
   if (!help) { closeImportHelp(); return; }
@@ -1144,24 +1198,106 @@ function renderImportHelp() {
   // Nothing to copy until the trust question is answered: the steps depend on it.
   document.getElementById('importPopWhere').textContent = answered ? help.where : '';
   document.getElementById('importPopHint').textContent = !answered ? 'Answer the question to see the steps.'
-    : help.steps.length ? 'Get the files above, then run the steps in order.' : help.hint;
-  document.getElementById('importPopCopy').disabled = !answered || !help.steps.length;
+    : help.steps.length ? '' : help.hint;
+  const adminEl = document.getElementById('importPopAdmin');
+  adminEl.textContent = answered ? help.admin || '' : '';
+  adminEl.classList.toggle('hidden', !answered || !help.admin);
+  adminEl.classList.toggle('import-admin-warn', importState.os === 'windows' && /as Administrator/.test(help.admin || ''));
   if (!answered) help.steps = [];
-  document.querySelectorAll('#importPop .os-tabs button').forEach((b) => {
-    b.setAttribute('aria-selected', String(b.dataset.arg === importState.os));
-  });
   const stepsEl = document.getElementById('importPopSteps');
-  const filesEl = answered ? [importFilesBlock(help.files, cert)] : [];
-  stepsEl.replaceChildren(...filesEl, ...help.steps.flatMap((step, i) => {
-    const label = document.createElement('div');
-    label.className = 'step';
-    label.textContent = (i + 1) + ' · ' + step.label;
-    const pre = document.createElement('pre');
-    pre.textContent = step.code;
-    return [label, pre];
-  }));
+  const blocks = answered ? [importBundleBlock(cert, help), importFilesBlock(help.files, cert)] : [];
+  if (help.steps.length) blocks.push(importCommandsBlock(help.steps));
+  stepsEl.replaceChildren(...blocks);
   importState.steps = help.steps;
   positionImportHelp();
+}
+
+// Every step in one block, each headed by a comment, with a Copy code button on it.
+function importCommandsText(steps) {
+  return steps.map((s, i) => '# ' + (i + 1) + '. ' + s.label + '\n' + s.code).join('\n\n') + '\n';
+}
+
+function importCommandsBlock(steps) {
+  const wrap = document.createElement('div');
+  const label = document.createElement('div');
+  label.className = 'step';
+  label.textContent = 'Then · run these commands, in order';
+  const box = document.createElement('div');
+  box.className = 'code-box';
+  const pre = document.createElement('pre');
+  pre.textContent = importCommandsText(steps);
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'btn btn-ghost btn-sm code-copy';
+  copy.id = 'importPopCopy';
+  copy.dataset.action = 'copyImportCommands';
+  copy.textContent = 'Copy code';
+  box.append(copy, pre);
+  wrap.append(label, box);
+  return wrap;
+}
+
+// Option: everything in one .zip with an install script that runs from the extracted folder.
+function importBundleBlock(cert, help) {
+  const block = document.createElement('div');
+  block.className = 'import-bundle';
+  const os = importState.os;
+  const withCa = importState.trusted === false;
+  const linuxServer = os === 'linux' && MACHINE_TEMPLATES.has(cert.template);
+  const label = document.createElement('div');
+  label.className = 'step';
+  label.textContent = 'Option · everything in one .zip';
+  const what = document.createElement('p');
+  const run = document.createElement('code');
+  run.textContent = os === 'windows' ? 'install.cmd' : 'sh install.sh';
+  const contents = (withCa ? 'The CA certificate' + (help.files.cas.length > 1 ? 's' : '') + ', this certificate' : 'This certificate') +
+    (linuxServer ? ' (full chain and key)' : ' (.pfx with its key)') + ' and a script to install ' + (withCa ? 'them' : 'it') + '. ';
+  what.append(...(os === 'windows'
+    ? [contents + 'Extract it and double-click ', run, '. It asks for administrator rights when it needs them, shows each ' +
+       'command, explains any failure and waits before closing; uninstall.cmd undoes it. Don\'t run the .ps1 files directly: ' +
+       'Windows blocks unsigned scripts ("running scripts is disabled"), which the .cmd files get around for that one run.']
+    : [contents + 'Extract it, then run ', run, ' from anywhere. It shows each command and stops with an explanation if one fails.']));
+  const row = document.createElement('div');
+  row.className = 'import-bundle-row';
+  if (!linuxServer) {
+    const pw = document.createElement('input');
+    pw.type = 'password';
+    pw.id = 'importBundlePassword';
+    pw.autocomplete = 'new-password';
+    pw.placeholder = 'PFX password';
+    pw.setAttribute('aria-label', 'PFX password for the bundle');
+    pw.title = 'Protects the .pfx in the zip; the install script asks for it.';
+    row.append(pw);
+  }
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn btn-primary btn-sm';
+  btn.dataset.action = 'downloadImportBundle';
+  btn.dataset.arg = String(cert.id);
+  btn.textContent = 'Download .zip';
+  row.append(btn);
+  block.append(label, what);
+  if (help.files.crl) {
+    const extra = document.createElement('p');
+    extra.textContent = os === 'windows'
+      ? 'Endpoint-hosted CRL, for demos and testing only: the zip also makes this machine answer ' + help.files.crl.url +
+        ' itself (a local CRL server), for programs that download the CRL. The commands below only import it. ' +
+        'After every revocation, run a new zip on each machine. Undo everything with uninstall.cmd; README.txt explains both.'
+      : 'Endpoint-hosted CRL, for demos and testing only: the zip includes the CRL. The local CRL server is Windows-only for now.';
+    block.append(extra);
+  }
+  block.append(row);
+  return block;
+}
+
+async function downloadImportBundle(certId) {
+  if (!importState) return;
+  const pw = document.getElementById('importBundlePassword');
+  const pwError = pw && exportPasswordProblem(pw.value, true);
+  if (pwError) { toast(pwError, 'error'); pw.focus(); return; }
+  await saveExport('/api/export/cert/' + certId + '/bundle', {
+    os: importState.os, include_ca: importState.trusted === false, password: pw ? pw.value : '',
+  });
 }
 
 function importFileRow(title, file, how, button) {
@@ -1184,7 +1320,7 @@ function importFilesBlock(files, cert) {
   block.className = 'import-files';
   const label = document.createElement('div');
   label.className = 'step';
-  label.textContent = 'First · get the files (into Downloads)';
+  label.textContent = 'Or · get the files one by one (into Downloads)';
   block.append(label);
   for (const ca of files.cas) {
     const btn = document.createElement('button');
@@ -1194,6 +1330,16 @@ function importFilesBlock(files, cert) {
     btn.dataset.arg = String(ca.caId);
     btn.textContent = 'Download';
     block.append(importFileRow(ca.role + ' · ' + ca.name, ca.file, ca.how, btn));
+  }
+  if (files.crl) {
+    const crlBtn = document.createElement('button');
+    crlBtn.type = 'button';
+    crlBtn.className = 'btn btn-ghost btn-sm';
+    crlBtn.dataset.action = 'downloadImportCRL';
+    crlBtn.dataset.arg = String(files.crl.caId);
+    crlBtn.textContent = 'Download';
+    block.append(importFileRow('Revocation list · ' + files.crl.name, files.crl.file,
+      'Nothing answers this certificate\'s CRL address (' + files.crl.url + '); import this copy instead.', crlBtn));
   }
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -1205,15 +1351,23 @@ function importFilesBlock(files, cert) {
   return block;
 }
 
+async function downloadImportCRL(caId) {
+  if (!importState) return;
+  try {
+    await handleExportResponse(await api('/api/ca/' + caId + '/crl'));
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
 async function downloadImportCA(caId) {
   if (!importState) return;
   const format = importState.os === 'linux' ? 'pem' : 'der';
   await saveExport('/api/export/ca/' + caId, { format, part: 'public' });
 }
 
-function exportFromImport(certId) {
-  closeImportHelp();
-  showExportCert(certId);
+function exportFromImport() {
+  setImportOs('export');
 }
 
 function positionImportHelp() {
@@ -1232,8 +1386,16 @@ function toggleImportHelp(certId, el) {
   const wasOpen = importState && importState.certId === certId;
   closeImportHelp();
   if (wasOpen) return;
+  openImportHelp(certId, el, null);
+}
+
+function openImportHelp(certId, el, tab) {
+  closeImportHelp();
+  const cert = certIndex.get(certId);
   // The trust question is asked every time: the answer depends on the machine.
-  importState = { certId, os: lastImportOs || defaultImportOs(), anchor: el, trusted: null };
+  const os = tab || (cert && cert.revoked ? 'export' : lastImportOs || defaultImportOs());
+  importState = { certId, os, anchor: el, trusted: null };
+  resetCertExportForm();
   el.setAttribute('aria-expanded', 'true');
   document.getElementById('importPop').classList.remove('hidden');
   renderImportHelp();
@@ -1243,7 +1405,7 @@ function closeImportHelp() {
   if (!importState) return;
   importState.anchor.setAttribute('aria-expanded', 'false');
   document.getElementById('importPop').classList.add('hidden');
-  lastImportOs = importState.os;
+  if (importState.os !== 'export') lastImportOs = importState.os;  // the next panel opens on this system
   importState = null;
 }
 
@@ -1262,7 +1424,7 @@ function setImportOs(os) {
 
 async function copyImportCommands() {
   if (!importState || !importState.steps.length) return;
-  const text = importState.steps.map(s => '# ' + s.label + '\n' + s.code).join('\n\n') + '\n';
+  const text = importCommandsText(importState.steps);
   try {
     await navigator.clipboard.writeText(text);
     toast('Import commands copied');
@@ -2495,6 +2657,8 @@ async function teardownCloudflareWorker() {
 // Handlers receive (data-arg, element, event); numeric args become numbers.
 const UI_ACTIONS = new Set([
   'deleteCloudflareWorker',
+  'downloadImportBundle',
+  'downloadImportCRL',
   'toggleCard',
   'deleteLegacyExports',
   'deleteUnlinkedCloudflareWorkers',
