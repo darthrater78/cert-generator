@@ -440,8 +440,12 @@ outer signature; a time outside ±5 min; an inner path outside `/api/pal/v1/`; a
 
 - **R1:** envelope in Python and C# (shared test vectors), relay key, server-side
   dispatch, enrollment refused through the relay. No Cloudflare yet.
-- **R2:** the relay Worker (Durable Object mailbox), its deploy, the server's
-  outbound collector.
+- **R2:** the relay Worker (Durable Object mailbox, `app/relay_worker.py`), its
+  deploy (`cloudflare.deploy_relay`: the migration is sent only on the first
+  upload), the server's outbound collector (`app/relay_collector.py`: long-polls
+  the Worker, rate-limits per PC, pushes the allowed PCs' keys when they change),
+  and set up / tear down. Tested with the Worker's real code in Node against a
+  stand-in for Durable Object storage; the first real deploy happens in R3.
 - **R3:** admin UI: set up / tear down, Allow remote per code and PC, relay status.
 - **R4:** the Pal: LAN ↔ relay switching, Connect to remote, LAN and Remote rows.
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import secrets
 import sqlite3
@@ -466,8 +467,8 @@ def disable_encryption(password: str) -> None:
         raise UserError("Encryption is not enabled")
     if has_cloudflare_token():
         raise UserError("Disconnect Cloudflare first: its API token is only ever stored encrypted")
-    if get_setting("pal_relay_key") is not None:
-        raise UserError("Remove the remote relay first: its key is only ever stored encrypted")
+    if get_setting("pal_relay_key") is not None or get_setting("pal_relay_token") is not None:
+        raise UserError("Remove the remote relay first: its keys are only ever stored encrypted")
     with _key_change() as conn:
         key = _key_for_password(conn, password)[0]
         if key is None:
@@ -1114,6 +1115,37 @@ def get_pal_relay_key() -> bytes | None:
         return None
     require_unlocked()
     return _maybe_decrypt(sealed)
+
+
+def get_pal_relay_config() -> dict[str, Any] | None:
+    """The deployed relay Worker: {"script", "url", "domain_id"?}, or None. Readable while locked."""
+    raw = get_setting("pal_relay_worker")
+    return json.loads(raw) if raw else None
+
+
+def get_pal_relay_token() -> str | None:
+    """The server's token for the relay Worker's server endpoints. Raises DatabaseLocked while locked."""
+    sealed = get_setting("pal_relay_token")
+    if sealed is None:
+        return None
+    require_unlocked()
+    return _maybe_decrypt(sealed).decode()
+
+
+def set_pal_relay_config(config: dict[str, Any], token: str) -> None:
+    if not is_encryption_enabled():
+        raise UserError("Turn on database encryption first: the relay's token is stored encrypted")
+    require_unlocked()
+    with _connect() as conn:
+        _set_setting(conn, "pal_relay_worker", json.dumps(config).encode())
+        _set_setting(conn, "pal_relay_token", crypto_engine.encrypt_column(token.encode(), _master_key))  # type: ignore[arg-type]
+
+
+def clear_pal_relay_config() -> None:
+    """Forget the Worker (the relay key stays: PCs keep it pinned for the next relay)."""
+    with _connect() as conn:
+        _set_setting(conn, "pal_relay_worker", None)
+        _set_setting(conn, "pal_relay_token", None)
 
 
 def create_pal_relay_key(private_der: bytes) -> None:

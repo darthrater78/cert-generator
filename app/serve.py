@@ -8,7 +8,7 @@ import sys
 
 from waitress import serve
 
-from . import crl_publisher
+from . import crl_publisher, relay_collector
 from .legacy_exports import find_legacy_exports, legacy_export_dir
 
 from .db import (
@@ -88,6 +88,7 @@ def main() -> None:
     set_bound_port(port)
     signal.signal(signal.SIGTERM, _exit_on_sigterm)
     crl_publisher.start_renewer()  # keeps CRLs served at /crl/<id>.crl from running out
+    relay_collector.start(app)  # Pal remote relay: idles until one is set up
     log.info("Listening on http://%s:%d", host, port)
     serve(app, host=host, port=port, threads=4)
     log.info("Server stopped")

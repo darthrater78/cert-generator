@@ -79,7 +79,9 @@ def test_a_reply_for_another_request_does_not_open():
         relay.open_reply(k_first, "d" * 32, "b" * 22, reply)  # another nonce
 
 
-@pytest.mark.parametrize("raw", [b"not json", b"[]", b'{"v": 2}', b"{" + b" " * relay.MAX_ENVELOPE + b"}"])
+# Short ids: pytest puts the test id in an environment variable, which Windows caps at 32,767 characters.
+@pytest.mark.parametrize("raw", [b"not json", b"[]", b'{"v": 2}', b"{" + b" " * relay.MAX_ENVELOPE + b"}"],
+                         ids=["not-json", "list", "other-version", "too-large"])
 def test_malformed_envelopes_are_refused(raw):
     with pytest.raises(relay.RelayError):
         relay.parse_request(raw)

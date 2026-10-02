@@ -264,3 +264,55 @@ def delete_worker(creds: Credentials, script_name: str) -> None:
     except CloudflareError as e:
         if "HTTP 404" not in str(e):  # already gone is fine
             raise
+
+
+# ── Cert Generator Pal relay Worker (docs/cert-generator-pal.md §8) ──
+
+RELAY_SCRIPT_RE = re.compile(r"^certgen-relay-[a-z0-9]{8,16}$")
+RELAY_MIGRATION_TAG = "v1"
+
+
+def new_relay_script_name() -> str:
+    return "certgen-relay-" + secrets.token_hex(5)
+
+
+def _migration_tag(creds: Credentials, script_name: str) -> str | None:
+    """The Durable Object migration already applied to the script, or None (new script)."""
+    result = _request(creds.token, "GET", f"/accounts/{creds.account_id}/workers/scripts")
+    for script in result if isinstance(result, list) else []:
+        if isinstance(script, dict) and script.get("id") == script_name:
+            tag = script.get("migration_tag")
+            return tag if isinstance(tag, str) else None
+    return None
+
+
+def deploy_relay(creds: Credentials, script_name: str, server_token: str) -> None:
+    """Create or update the relay Worker: fixed code (app/relay_worker.py), one Durable Object
+    mailbox, and the server's token as a Worker secret. The mailbox's migration is sent only
+    the first time (Cloudflare refuses one that is already applied)."""
+    from .relay_worker import RELAY_WORKER_JS
+
+    if not RELAY_SCRIPT_RE.match(script_name) or len(server_token) < 32:
+        raise CloudflareError("Invalid relay Worker name or token")
+    metadata: dict[str, Any] = {
+        "main_module": "worker.js",
+        "compatibility_date": COMPATIBILITY_DATE,
+        "bindings": [
+            {"type": "durable_object_namespace", "name": "MAILBOX", "class_name": "Mailbox"},
+            {"type": "secret_text", "name": "SERVER_TOKEN", "text": server_token},
+        ],
+    }
+    if _migration_tag(creds, script_name) != RELAY_MIGRATION_TAG:
+        metadata["migrations"] = {"new_tag": RELAY_MIGRATION_TAG, "new_sqlite_classes": ["Mailbox"]}
+    body, content_type = _multipart([
+        ("metadata", "metadata.json", "application/json", json.dumps(metadata).encode()),
+        ("worker.js", "worker.js", "application/javascript+module", RELAY_WORKER_JS.encode()),
+    ])
+    _request(creds.token, "PUT", f"/accounts/{creds.account_id}/workers/scripts/{script_name}",
+             body=body, content_type=content_type)
+
+
+def delete_relay(creds: Credentials, script_name: str) -> None:
+    if not RELAY_SCRIPT_RE.match(script_name):
+        raise CloudflareError("Invalid relay Worker name")
+    _request(creds.token, "DELETE", f"/accounts/{creds.account_id}/workers/scripts/{script_name}?force=true")
