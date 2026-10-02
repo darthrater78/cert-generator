@@ -1075,3 +1075,11 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 }
 #palView .form-hint a { color: var(--accent-text); }
 .pal-drift { margin-top: 4px; color: var(--warning); font-size: 12.5px; }
+.pal-recommend {
+  display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap;
+  margin: -4px 0 16px; padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-left-width: 3px; background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  font-size: 13px;
+}
+.pal-recommend p { flex: 1 1 280px; margin: 0; }

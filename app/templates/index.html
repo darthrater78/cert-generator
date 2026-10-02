@@ -484,6 +484,12 @@
 <div id="issueCertModal" class="modal-backdrop hidden">
   <div class="modal">
     <h3>Issue Certificate</h3>
+    {% if server_mode %}
+    <div class="pal-recommend">
+      <p><strong>Recommended for Windows PCs: Cert Generator Pal.</strong> The PC makes its own key, so it never leaves the PC, then requests, installs and renews its certificates itself. Issue here for anything else: servers, appliances, other operating systems.</p>
+      <button type="button" class="btn btn-ghost btn-sm" data-action="openPalFromIssue">Windows PCs</button>
+    </div>
+    {% endif %}
     <div class="form-row full">
       <div class="form-group">
         <label>Certificate Template</label>
@@ -555,7 +561,7 @@
       <div class="form-group">
         <label for="certCrlDp">Distribution point</label>
         <select id="certCrlDp" data-change="updateCrlDpFields">
-          <option value="server">This server{% if not server_mode %} (Docker version only){% endif %}</option>
+          <option value="server">Cert Generator (LAN){% if not server_mode %} (Docker version only){% endif %}</option>
           {% if server_mode %}<option value="cloudflare">Cloudflare Worker (this CA)</option>{% endif %}
           <option value="placeholder">Endpoint-hosted (each machine gets a copy)</option>
         </select>
@@ -1006,7 +1012,7 @@
       <h4>Revocation (CRL) checks the PC may use <button type="button" class="banner-more" data-action="palAllCrl">All</button></h4>
       <p class="form-hint" style="margin:-4px 0 6px">Each one ticked becomes a CRL profile in the Pal; the user picks one, and its certificates check revocation there.</p>
       <div class="pal-crl-choices" id="palCrlDps">
-        <label class="cf-choice"><input type="checkbox" value="server" checked> <span><strong>This server</strong> <span class="dim">PCs on your LAN see revocations at once</span></span></label>
+        <label class="cf-choice"><input type="checkbox" value="server" checked> <span><strong>Cert Generator (LAN)</strong> <span class="dim">this server answers revocation checks; PCs on your LAN see revocations at once</span></span></label>
         <label class="cf-choice"><input type="checkbox" value="cloudflare"> <span><strong>The CA's Cloudflare Worker</strong> <span class="dim">reachable from anywhere</span></span></label>
         <label class="cf-choice"><input type="checkbox" value="placeholder"> <span><strong>On each PC (self-hosted)</strong> <span class="dim">works offline; updated when the PC updates its CRL</span></span></label>
         <label class="cf-choice"><input type="checkbox" value="none"> <span><strong>None</strong> <span class="dim">no revocation checks</span></span></label>

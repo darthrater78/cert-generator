@@ -51,7 +51,7 @@ public static class CrlTypes
 {
     public static string Label(string crlDp) => crlDp switch
     {
-        "server" => "This server",
+        "server" => "Cert Generator (LAN)",
         "cloudflare" => "Cloudflare Worker",
         "placeholder" => "Self-hosted on this PC",
         "none" => "No revocation checks",

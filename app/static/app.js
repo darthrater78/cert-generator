@@ -564,7 +564,7 @@ const CRL_DP_LABELS = {
   none: ['badge-algo', 'None', 'No distribution point: clients can only learn of a revocation from a CRL you import yourself.'],
   placeholder: ['badge-expired', 'Endpoint-hosted', 'Endpoint-hosted: no server answers this address. Each machine needs the CRL: ' +
     'use the install .zip (Export / install ▾), which on Windows also answers the address locally, or import an exported CRL.'],
-  server_live: ['badge-active', 'This server', 'Served by this server, which keeps the CRL current automatically.'],
+  server_live: ['badge-active', 'Cert Generator (LAN)', 'Served by this Cert Generator server, which keeps the CRL current automatically.'],
   server_pending: ['badge-expired', 'Not published', 'Points at this server, but no CRL is published yet. It publishes once the database is unlocked.'],
   other: ['badge-algo', 'External', 'Points at an address this app does not manage.'],
 };
@@ -2711,7 +2711,7 @@ function palCertSummary(d) {
   return rows.length ? '<ul class="pal-list">' + rows.join('') + '</ul>' : '<span class="dim">Nothing yet</span>';
 }
 
-const PAL_CRL_LABELS = { server: 'This server', cloudflare: 'Cloudflare', placeholder: 'Self-hosted', none: 'No CRL' };
+const PAL_CRL_LABELS = { server: 'Cert Generator (LAN)', cloudflare: 'Cloudflare', placeholder: 'Self-hosted', none: 'No CRL' };
 
 function palUseCaseChips(policy) {
   const chips = Object.entries(PAL_USE_CASES)
@@ -2747,6 +2747,11 @@ async function showPalDevices() {
   ['welcomeView', 'caView', 'sshKeyView'].forEach(id => document.getElementById(id).classList.add('hidden'));
   document.getElementById('palView').classList.remove('hidden');
   await Promise.all([loadPalDevices(), loadPalDownload()]);
+}
+
+function openPalFromIssue() {
+  hideModal('issueCertModal');
+  showPalDevices();
 }
 
 function hidePalView() {
@@ -3040,6 +3045,7 @@ const UI_ACTIONS = new Set([
   'copyPalCode',
   'createPalCode',
   'deletePalDevice',
+  'openPalFromIssue',
   'refreshCerts',
   'denyPalRequest',
   'loadPalDevices',

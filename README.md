@@ -1,6 +1,6 @@
 # Cert Generator
 
-**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.8.0-dev.2 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.8.0-dev.2)**
+**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.8.0-dev.3 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.8.0-dev.3)**
 
 A tool for creating Certificate Authorities and issuing self-signed certificates for posture demos. Runs as a **Docker web app** or a **Windows desktop app** — both use the same interface and database format, and backups created in one mode can be restored in the other.
 
@@ -19,7 +19,7 @@ Both use the same interface and database format. Where they differ:
 |---|---|---|
 | Access | Browser, from any machine that can reach it | Native window on one PC, no network port |
 | Sign-in | User accounts, optional TOTP 2FA, trusted devices | Optional username + master password (turns on encryption) |
-| CRL distribution point | **This server**, a **Cloudflare Worker**, or **endpoint-hosted** | Endpoint-hosted only: each machine gets the CRL from the install .zip or an import |
+| CRL distribution point | **Cert Generator (LAN)** (this server), a **Cloudflare Worker**, or **endpoint-hosted** | Endpoint-hosted only: each machine gets the CRL from the install .zip or an import |
 | Encryption at rest + recovery key | Optional | Optional |
 
 For a CRL that clients fetch over the network, you need the Docker version.
@@ -104,7 +104,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.8.0-dev.2
+    image: ghcr.io/darthrater78/cert-generator:2.8.0-dev.3
     container_name: cert-generator
     restart: unless-stopped
     security_opt:
@@ -153,7 +153,7 @@ Proxies that rewrite the `Host` header should forward the original as `X-Forward
 
 #### Publishing the CRL
 
-Certificates issued with the **This server** distribution point name `<address>/crl/<CA id>.crl`, where `<address>` is the one typed in the Issue Certificate dialog (it defaults to the address you are using). That path is the only one that answers without signing in. The app signs that CRL itself the first time a certificate names this server, and keeps it current: each served CRL is valid for 7 days, it is re-signed on every revocation, and an hourly check renews it when less than half its life is left. Clients cache a CRL until its next update, so a revocation reaches them within 7 days. Nothing is signed per request. A CA's CRL is served only once a certificate has named this server, and unknown, unpublished and never-opted-in CAs all get the same `404`.
+Certificates issued with the **Cert Generator (LAN)** distribution point (this server) name `<address>/crl/<CA id>.crl`, where `<address>` is the one typed in the Issue Certificate dialog (it defaults to the address you are using). That path is the only one that answers without signing in. The app signs that CRL itself the first time a certificate names this server, and keeps it current: each served CRL is valid for 7 days, it is re-signed on every revocation, and an hourly check renews it when less than half its life is left. Clients cache a CRL until its next update, so a revocation reaches them within 7 days. Nothing is signed per request. A CA's CRL is served only once a certificate has named this server, and unknown, unpublished and never-opted-in CAs all get the same `404`.
 
 With an encrypted database, signing needs the CA key, so revoking a certificate of a CA served here is refused while the database is locked, and renewals wait until it is unlocked (the served CRL keeps answering meanwhile). **Export CRL** is for the endpoint-hosted distribution point and offline import: it downloads a CRL with the lifetime you choose and never replaces the one this server serves. After you revoke a certificate whose CRL is endpoint-hosted, or that has none, the app offers that updated CRL for download.
 
@@ -477,6 +477,14 @@ The database format is identical in both modes. Use **Backup** to create an encr
 ## Version history
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
+
+### v2.8.0-dev.3 — 2026-10-02
+
+Third pre-release for testing Cert Generator Pal. Not for production.
+
+#### Docker
+- **Issue Certificate** recommends Cert Generator Pal for Windows PCs (the key never leaves the PC; it requests, installs and renews itself), with a **Windows PCs** button; issuing by hand stays for servers, appliances and other systems
+- The **This server** CRL option is now **Cert Generator (LAN)**: in the Issue dialog, the CRL column, the Windows PCs page, Add a PC and the Pal's CRL profiles
 
 ### v2.8.0-dev.2 — 2026-10-02
 
