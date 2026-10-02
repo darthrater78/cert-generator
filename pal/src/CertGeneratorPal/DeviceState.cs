@@ -22,6 +22,9 @@ internal sealed class DeviceState
     public List<string> CrlDps { get; set; } = [];
     public DateTimeOffset ConnectedAt { get; set; }
 
+    /// <summary>The server's remote relay, learnt at pairing (MACed with the pairing key) or later over the LAN.</summary>
+    public RelayInfo? Relay { get; set; }
+
     /// <summary>The revocation type this profile issues with (set on the active one when loaded); "" until the user picks one.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public string CrlDp { get; set; } = "";
@@ -81,12 +84,57 @@ internal sealed class DeviceState
             : all.FirstOrDefault(p => p.DeviceId == active.DeviceId);
         if (state is not null)
         {
+            // A relay learnt over the LAN after pairing is kept per user (the profile is written only elevated).
+            if (ReadRelayCache(state.DeviceId) is { } cached)
+            {
+                state.Relay = cached;
+            }
             // "" = paired, but no CRL profile picked yet (the user must choose one). A pairing from
             // before profiles (no active.json) keeps the revocation type it was issuing with.
             state.CrlDp = active is not null ? active.CrlDp : state.CrlDps.FirstOrDefault() ?? "";
         }
         return state;
     }
+
+    private static string RelayCacheFile(string deviceId) => Path.Combine(Paths.UserDir, "relay-" + deviceId + ".json");
+
+    private static RelayInfo? ReadRelayCache(string deviceId)
+    {
+        try
+        {
+            string path = RelayCacheFile(deviceId);
+            return File.Exists(path) && JsonSerializer.Deserialize<RelayInfo>(File.ReadAllBytes(path), Json.Options) is { IsUsable: true } relay
+                ? relay : null;
+        }
+        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Keep the relay details the server sent over the LAN (never ones that arrived through the relay itself).</summary>
+    public void RememberRelay(DeviceInfo device)
+    {
+        ArgumentNullException.ThrowIfNull(device);
+        if (device.ArrivedVia != PalRoute.Lan || device.Relay is not { IsUsable: true } relay
+            || (Relay?.Url == relay.Url && Relay?.PublicKey == relay.PublicKey))
+        {
+            return;
+        }
+        Relay = relay;
+        try
+        {
+            AtomicWrite(RelayCacheFile(DeviceId), JsonSerializer.SerializeToUtf8Bytes(relay, Json.Options));
+            AppLog.Info($"Remote relay: {relay.Url}");
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Error("Couldn't save the relay details", e);
+        }
+    }
+
+    /// <summary>A client for this pairing: the LAN, falling back to the relay (or the route <see cref="Connectivity.Route"/> forces).</summary>
+    public PalClient Client(PalRoute? route = null) => new(ServerUri, RootSha256, Relay, route ?? Connectivity.Route);
 
     private static DeviceState? Read(string path)
     {

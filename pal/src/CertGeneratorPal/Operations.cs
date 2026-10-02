@@ -49,6 +49,7 @@ internal static class Operations
                 Chain = device.Chain,
                 CrlDps = device.CrlDps.Count > 0 ? device.CrlDps : [device.CrlDp],
                 ConnectedAt = DateTimeOffset.UtcNow,
+                Relay = device.Relay is { IsUsable: true } relay ? relay : null,  // in the MACed enroll reply
             };
             state.Save();
             AppLog.Info($"Connected as {device.Fqdn} to {code.Server.Host} (device {device.DeviceId[..8]})");
@@ -143,7 +144,7 @@ internal static class Operations
         try
         {
             using var signer = new DeviceSigner(profile);
-            using var client = new PalClient(profile.ServerUri, profile.RootSha256);
+            using var client = profile.Client();
             await client.StatusAsync(signer, []).ConfigureAwait(false);  // tells the server they're gone
         }
         catch (PalException e)
@@ -218,7 +219,7 @@ internal static class Operations
         RequestView view;
         try
         {
-            using var client = new PalClient(state.ServerUri, state.RootSha256);
+            using var client = state.Client();
             view = await client.CreateRequestAsync(signer, useCase, names, Keys.CsrPem(key), lifetime, renewOf,
                 state.CrlDp).ConfigureAwait(false);
         }
@@ -250,7 +251,7 @@ internal static class Operations
             return OpResult.Success("Nothing waiting.");
         }
         using var signer = new DeviceSigner(state);
-        using var client = new PalClient(state.ServerUri, state.RootSha256);
+        using var client = state.Client();
         var messages = new List<string>();
         foreach (var (id, entry) in pending.Items.Where(kv => kv.Value.DeviceId == state.DeviceId || kv.Value.DeviceId.Length == 0).ToList())
         {
@@ -322,7 +323,7 @@ internal static class Operations
         try
         {
             using var signer = new DeviceSigner(state);
-            using var client = new PalClient(state.ServerUri, state.RootSha256);
+            using var client = state.Client();
             var device = await client.GetDeviceAsync(signer).ConfigureAwait(false);
             if (ChainCheck.RootMatches(device.Chain, state.RootSha256))
             {
@@ -345,7 +346,7 @@ internal static class Operations
     public static async Task<OpResult> InstallLocalCrlAsync(DeviceState state)
     {
         using var signer = new DeviceSigner(state);
-        using var client = new PalClient(state.ServerUri, state.RootSha256);
+        using var client = state.Client();
         var crls = await client.GetSelfHostedCrlsAsync(signer).ConfigureAwait(false);
         return await LocalCrlServer.InstallAsync(crls).ConfigureAwait(false);
     }

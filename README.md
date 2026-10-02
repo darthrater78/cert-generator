@@ -1,6 +1,6 @@
 # Cert Generator
 
-**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.8.0-dev.4 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.8.0-dev.4)**
+**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.8.0-dev.5 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.8.0-dev.5)**
 
 A tool for creating Certificate Authorities and issuing self-signed certificates for posture demos. Runs as a **Docker web app** or a **Windows desktop app** — both use the same interface and database format, and backups created in one mode can be restored in the other.
 
@@ -104,7 +104,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.8.0-dev.4
+    image: ghcr.io/darthrater78/cert-generator:2.8.0-dev.5
     container_name: cert-generator
     restart: unless-stopped
     security_opt:
@@ -477,6 +477,15 @@ The database format is identical in both modes. Use **Backup** to create an encr
 ## Version history
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
+
+### v2.8.0-dev.5 — 2026-10-02
+
+Fifth pre-release: **Cert Generator Pal uses the remote relay**. A PC allowed remote connection requests and renews certificates away from your LAN. Not for production.
+
+#### Docker
+- **Pal (served by this image) — remote connection:** a PC paired on the LAN with remote allowed learns the relay's address and key from your server. When the LAN can't be reached, each request goes through the relay instead, end-to-end encrypted to your server's relay key; a refusal from your server is never retried through the relay
+- **Pal — Connectivity:** a **Cert server · LAN** row and a **Cert server · Remote** row, each with status, time and **Test**; **Connect to remote** uses only the relay for the session (to test it, or when the LAN shouldn't be used) and **Use LAN first** switches back. The CRL profile stays available while either route answers
+- The Pal only takes relay details from your server over the LAN (or in its pairing reply), never through the relay itself
 
 ### v2.8.0-dev.4 — 2026-10-02
 

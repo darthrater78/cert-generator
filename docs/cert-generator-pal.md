@@ -452,7 +452,12 @@ outer signature; a time outside ±5 min; an inner path outside `/api/pal/v1/`; a
   the PC when it pairs) and an Allow / Turn off switch per PC with how its last
   request arrived. A PC allowed remote gets `relay: {url, public_key}` in its
   enroll reply (MACed with the pairing key) and in `GET device` over the LAN.
-- **R4:** the Pal: LAN ↔ relay switching, Connect to remote, LAN and Remote rows.
+- **R4:** the Pal (`PalClient`): each signed request goes over the LAN, and through
+  the relay when the LAN can't be reached at all (an HTTP answer is never
+  retried); **Connect to remote** forces the relay for the session. Relay details
+  come from the MACed enroll reply or a LAN `GET device` (kept per user in
+  `%LOCALAPPDATA%\CertGeneratorPal\relay-<device>.json`), never from an answer
+  that came through the relay. Connectivity shows Cert server · LAN and · Remote.
 
 ### Server side
 

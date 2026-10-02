@@ -135,8 +135,36 @@ internal sealed class SelfHostedCrlsReply
     public List<SelfHostedCrl> Crls { get; set; } = [];
 }
 
+/// <summary>The server's remote relay, for a PC allowed to use it (docs/cert-generator-pal.md §8).</summary>
+public sealed class RelayInfo
+{
+    public string Url { get; set; } = "";
+
+    /// <summary>The relay key's public half: base64url SEC1 uncompressed P-256 point.</summary>
+    public string PublicKey { get; set; } = "";
+
+    public bool IsUsable => Uri.TryCreate(Url, UriKind.Absolute, out var u) && u.Scheme == Uri.UriSchemeHttps
+        && PublicKey.Length is > 80 and < 100;
+}
+
+/// <summary>How a request reached the server.</summary>
+public enum PalRoute
+{
+    /// <summary>The LAN first, the relay when the LAN can't be reached.</summary>
+    Auto,
+    Lan,
+    Relay,
+}
+
 public sealed class DeviceInfo
 {
+    /// <summary>Set by the server for a PC allowed to use the relay.</summary>
+    public RelayInfo? Relay { get; set; }
+
+    /// <summary>How this answer arrived (not from the server). Relay details are only trusted when it came over the LAN.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public PalRoute ArrivedVia { get; set; } = PalRoute.Lan;
+
     /// <summary>The server's release; the Pal that shipped with it has the same version.</summary>
     public string ServerVersion { get; set; } = "";
 

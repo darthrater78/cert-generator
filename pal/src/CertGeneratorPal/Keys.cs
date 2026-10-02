@@ -137,6 +137,8 @@ internal sealed class DeviceSigner : IDeviceSigner, IDisposable
 
     public byte[] Sign(byte[] data) => _key.SignData(data, HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence);
 
+    public byte[] SignP1363(byte[] data) => _key.SignData(data, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+
     public void Dispose() => _key.Dispose();
 }
 

@@ -59,7 +59,8 @@ internal sealed class MainForm : Form
 
     /// <summary>The last check of each revocation type's address, by type.</summary>
     private Dictionary<string, CrlCheck.Result> _crlResults = [];
-    private CrlCheck.Result? _serverCheck;
+    private CrlCheck.Result? _serverCheck;   // over the LAN
+    private CrlCheck.Result? _remoteCheck;   // through the relay
 
     /// <summary>One CRL profile: a pairing with one of the revocation types its code allowed.</summary>
     private sealed record ProfileChoice(DeviceState Pairing, string CrlDp)
@@ -442,7 +443,7 @@ internal sealed class MainForm : Form
     /// <summary>Switching CRL profile talks to the server (and backs certificates out): locked while it can't be reached.</summary>
     private void UpdateProfileLock()
     {
-        bool reachable = _state is null || _serverCheck is { Ok: true };  // no active pairing: nothing to check yet
+        bool reachable = _state is null || ServerReachable;  // no active pairing: nothing to check yet
         _profileBox.Enabled = reachable && !_busy;
         _crlTip.SetToolTip(_profileBox, reachable ? "" : "Locked: the cert server can't be reached. Check Connectivity below, then Refresh.");
     }
@@ -472,6 +473,19 @@ internal sealed class MainForm : Form
         _crlPanel.Controls.Add(heading, 0, 0);
         var tools = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
         tools.Controls.Add(PanelLink("Refresh", "Check the cert server and CRL again", async () => await RecheckAsync()));
+        if (_state.Relay is not null)
+        {
+            bool forced = Connectivity.Route == PalRoute.Relay;
+            tools.Controls.Add(PanelLink(forced ? "Use LAN first" : "Connect to remote",
+                forced ? "Go back to the LAN first, the relay only when the LAN can't be reached"
+                       : "Use only the remote relay for now (to test it, or when the LAN shouldn't be used)",
+                async () =>
+                {
+                    Connectivity.Route = forced ? PalRoute.Auto : PalRoute.Relay;
+                    AppLog.Info("Route: " + Connectivity.Route);
+                    await RecheckAsync();
+                }));
+        }
         tools.Controls.Add(PanelLink("Log", "Show the Pal's log, and turn debug logging on or off", () =>
         {
             using var log = new LogDialog();
@@ -482,8 +496,20 @@ internal sealed class MainForm : Form
         _crlPanel.SetColumnSpan(tools, 3);
 
         string serverUrl = _state.ServerUri.GetLeftPart(UriPartial.Authority);
-        AddStatusRow(1, "Cert server", serverUrl, _serverCheck, async () => await TestServerAsync());
-        int row = 2;
+        int row = 1;
+        bool remoteOnly = Connectivity.Route == PalRoute.Relay;
+        if (remoteOnly)
+        {
+            AddStatusRow(row++, "Cert server · LAN", serverUrl, new CrlCheck.Result(true, "Not used: connected to remote", ""), null, neutral: true);
+        }
+        else
+        {
+            AddStatusRow(row++, "Cert server · LAN", serverUrl, _serverCheck, async () => await TestServerAsync(PalRoute.Lan));
+        }
+        if (_state.Relay is { } relayInfo)
+        {
+            AddStatusRow(row++, "Cert server · Remote", relayInfo.Url, _remoteCheck, async () => await TestServerAsync(PalRoute.Relay));
+        }
         if (_state.CrlDp.Length > 0)
         {
             string type = _state.CrlDp;
@@ -548,6 +574,20 @@ internal sealed class MainForm : Form
         return link;
     }
 
+    /// <summary>Check the LAN and (when this PC has one) the relay; _device comes from whichever answered, the LAN first.</summary>
+    private async Task CheckBothAsync(DeviceState state)
+    {
+        _serverCheck = Connectivity.Route == PalRoute.Relay ? null : await CheckServerAsync(state, PalRoute.Lan);
+        var fromLan = _device;
+        _remoteCheck = state.Relay is null ? null : await CheckServerAsync(state, PalRoute.Relay);
+        if (_serverCheck is { Ok: true } && fromLan is not null)
+        {
+            _device = fromLan;  // prefer what the LAN said
+        }
+    }
+
+    private bool ServerReachable => _serverCheck is { Ok: true } || _remoteCheck is { Ok: true };
+
     /// <summary>Re-run the connectivity checks only (no store audit), for the Refresh link.</summary>
     private async Task RecheckAsync()
     {
@@ -557,13 +597,13 @@ internal sealed class MainForm : Form
         }
         try
         {
-            _serverCheck = await CheckServerAsync(_state);
+            await CheckBothAsync(_state);
             _crlAnswering = _device is null ? [] : await LocalCrlServer.ProbeAsync(_device.SelfHosted);
             await CheckCrlsAsync();
             FillCrlPanel();
             UpdateDrift();
-            SetStatus("Cert server: " + _serverCheck.Summary + (_state.CrlDp.Length > 0 && _crlResults.TryGetValue(_state.CrlDp, out var crl)
-                ? " · CRL: " + crl.Summary : ""));
+            SetStatus((_serverCheck is { } lan ? "LAN: " + lan.Summary : "LAN: not used") + (_remoteCheck is { } remote ? " · Remote: " + remote.Summary : "")
+                + (_state.CrlDp.Length > 0 && _crlResults.TryGetValue(_state.CrlDp, out var crl) ? " · CRL: " + crl.Summary : ""));
         }
         finally
         {
@@ -571,45 +611,56 @@ internal sealed class MainForm : Form
         }
     }
 
-    /// <summary>A signed call to the server, timed: the same path every request and renewal takes.</summary>
-    private async Task<CrlCheck.Result> CheckServerAsync(DeviceState state)
+    /// <summary>A signed call to the server over one route, timed: the same path every request and renewal takes.</summary>
+    private async Task<CrlCheck.Result> CheckServerAsync(DeviceState state, PalRoute route)
     {
-        string url = state.ServerUri.GetLeftPart(UriPartial.Authority);
+        string url = route == PalRoute.Relay ? state.Relay?.Url ?? "" : state.ServerUri.GetLeftPart(UriPartial.Authority);
+        string via = route == PalRoute.Relay ? "through the remote relay" : "over the LAN";
         var watch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             using var signer = new DeviceSigner(state);
-            using var client = new PalClient(state.ServerUri, state.RootSha256);
+            using var client = state.Client(route);
             var device = await client.GetDeviceAsync(signer);
             watch.Stop();
             _device = device;
-            AppLog.Debug($"Server check {url}: ok in {watch.ElapsedMilliseconds} ms (server v{device.ServerVersion})");
+            state.RememberRelay(device);  // only when it came over the LAN
+            AppLog.Debug($"Server check {via} {url}: ok in {watch.ElapsedMilliseconds} ms (server v{device.ServerVersion})");
             string ms = watch.ElapsedMilliseconds.ToString(CultureInfo.CurrentCulture);
             return new CrlCheck.Result(true, $"Reachable · {ms} ms",
-                $"{url}\n\nAnswered a signed request in {ms} ms.\nServer v{device.ServerVersion} · CA {device.CaName} · this PC {device.Fqdn}");
+                $"{url}\n\nAnswered a signed request {via} in {ms} ms.\nServer v{device.ServerVersion} · CA {device.CaName} · this PC {device.Fqdn}");
         }
         catch (Exception e) when (e is PalException or DeviceKeyUnavailableException or HttpRequestException or TaskCanceledException)
         {
             string message = Operations.FriendlyMessage(e);
-            AppLog.Debug($"Server check {url}: FAILED after {watch.ElapsedMilliseconds} ms: {e.GetType().Name}: {e.Message}");
+            AppLog.Debug($"Server check {via} {url}: FAILED after {watch.ElapsedMilliseconds} ms: {e.GetType().Name}: {e.Message}");
             return new CrlCheck.Result(false, message.Split(". ")[0].TrimEnd('.'), $"{url}\n\n{message}");
         }
     }
 
-    private async Task TestServerAsync()
+    private async Task TestServerAsync(PalRoute route)
     {
         if (_busy || _state is null)
         {
             return;
         }
+        string name = route == PalRoute.Relay ? "Cert server · Remote" : "Cert server · LAN";
         UseWaitCursor = true;
-        SetStatus("Testing the cert server…");
-        _serverCheck = await CheckServerAsync(_state);
+        SetStatus($"Testing {name}…");
+        var result = await CheckServerAsync(_state, route);
+        if (route == PalRoute.Relay)
+        {
+            _remoteCheck = result;
+        }
+        else
+        {
+            _serverCheck = result;
+        }
         UseWaitCursor = false;
         FillCrlPanel();
-        SetStatus("Cert server: " + _serverCheck.Summary);
-        MessageBox.Show(this, _serverCheck.Detail, "Cert server: " + _serverCheck.Summary, MessageBoxButtons.OK,
-            _serverCheck.Ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        SetStatus($"{name}: {result.Summary}");
+        MessageBox.Show(this, result.Detail, $"{name}: {result.Summary}", MessageBoxButtons.OK,
+            result.Ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
     }
 
     private async Task TestCrlAsync(string type, string url)
@@ -663,13 +714,15 @@ internal sealed class MainForm : Form
             Dictionary<string, string> status = [];
             try
             {
-                _serverCheck = await CheckServerAsync(state);  // sets _device
-                if (!_serverCheck.Ok || _device is null)
+                _device = null;
+                await CheckBothAsync(state);  // sets _device from whichever route answered
+                if (!ServerReachable || _device is null)
                 {
-                    throw new PalException(_serverCheck.Summary + ".");
+                    throw new PalException((_serverCheck ?? _remoteCheck)?.Summary + ".");
                 }
                 using var signer = new DeviceSigner(state);
-                using var client = new PalClient(state.ServerUri, state.RootSha256);
+                // The LAN just failed: go straight to the relay rather than waiting for it again.
+                using var client = state.Client(_serverCheck is { Ok: true } ? null : PalRoute.Relay);
                 if (ChainCheck.RootMatches(_device.Chain, state.RootSha256))
                 {
                     state.Chain = _device.Chain;  // picks up a new intermediate; saved by the next elevated step
@@ -693,7 +746,8 @@ internal sealed class MainForm : Form
             int problems = _items.Count(i => i.Flags.Count > 0);
             SetStatus(serverProblem is not null
                 ? "Server: " + serverProblem
-                : $"{_items.Count} certificates from {state.CaName}" + (problems > 0 ? $", {problems} need a look." : ". All good."));
+                : $"{_items.Count} certificates from {state.CaName}" + (problems > 0 ? $", {problems} need a look." : ". All good.")
+                  + (_serverCheck is { Ok: true } ? "" : " (through the remote relay)"));
         }
         catch (Exception e) when (e is not OutOfMemoryException)
         {
