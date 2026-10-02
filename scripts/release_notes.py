@@ -1,4 +1,4 @@
-"""Build GitHub release notes for a version from README.md's version history.
+"""Build GitHub release notes for a version from CHANGELOG.md's version history.
 
 One version, and the changelog picks what ships. A version entry carries a
 "#### Docker" and/or a "#### Windows EXE" subsection; whichever is present is
@@ -7,7 +7,7 @@ with no section is reported as unchanged, naming the release it last shipped in.
 
 Usage:
   python scripts/release_notes.py v2.1.0 --image-digest sha256:... --exe-sha256 abc... > notes.md
-  python scripts/release_notes.py v2.1.0 --check       # validate the README entry only
+  python scripts/release_notes.py v2.1.0 --check       # validate the changelog entry only
   python scripts/release_notes.py v2.1.0 --components  # docker=<bool> / exe=<bool> for CI
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ def version_entry(readme: str, version: str) -> str:
     """Body of the '### vX.Y.Z — date' entry, without its heading."""
     match = re.search(rf"^### v{re.escape(version)}(?![\w.-])[^\n]*\n(.*?)(?=^### v|^## |\Z)", readme, re.S | re.M)
     if not match:
-        raise NotesError(f"README.md has no '### v{version}' version history entry")
+        raise NotesError(f"CHANGELOG.md has no '### v{version}' version history entry")
     return match.group(1).strip()
 
 
@@ -188,13 +188,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--image-digest")
     parser.add_argument("--exe-sha256")
     parser.add_argument("--not-newest", action="store_true", help="an older version: latest tag does not move")
-    parser.add_argument("--check", action="store_true", help="only validate the README entry")
+    parser.add_argument("--check", action="store_true", help="only validate the changelog entry")
     parser.add_argument("--components", action="store_true",
                         help="print 'docker=<bool>' and 'exe=<bool>' for the deliverables this version ships")
     args = parser.parse_args(argv)
 
     version = args.tag.removeprefix("v")
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     try:
         if args.components:
             shipping = released_components(readme, version)

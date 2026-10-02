@@ -312,7 +312,7 @@ def test_components_output_lists_what_the_version_ships(monkeypatch, capsys, tmp
     for readme, expected in ((BOTH, "docker=true\nexe=true\n"),
                              (DOCKER_ONLY, "docker=true\nexe=false\n"),
                              (EXE_ONLY, "docker=false\nexe=true\n")):
-        (tmp_path / "README.md").write_text(readme, encoding="utf-8")
+        (tmp_path / "CHANGELOG.md").write_text(readme, encoding="utf-8")
         monkeypatch.setattr(release_notes, "ROOT", tmp_path)
         version = "2.1.0" if readme is BOTH else "2.2.0"
         assert release_notes.main([f"v{version}", "--components"]) == 0
