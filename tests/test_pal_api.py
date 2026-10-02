@@ -482,7 +482,8 @@ def test_dns_name_allowed(name, allowed):
 
 @pytest.mark.parametrize("address, private", [
     ("10.1.2.3", True), ("172.16.0.1", True), ("172.32.0.1", False), ("192.168.0.1", True),
-    ("127.0.0.1", True), ("169.254.1.1", True), ("8.8.8.8", False), ("100.64.0.1", False),
+    ("127.0.0.1", True), ("169.254.1.1", True), ("8.8.8.8", False), ("100.64.0.1", True),
+    ("100.127.255.254", True), ("100.63.255.255", False), ("100.128.0.1", False), ("::ffff:100.100.1.1", True),
     ("fd00::1", True), ("fe80::1%eth0", True), ("2001:db8::1", False), ("::ffff:10.0.0.1", True),
     ("::ffff:8.8.8.8", False), ("", False), ("nonsense", False), (None, False),
 ])
