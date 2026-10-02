@@ -2762,18 +2762,43 @@ function hidePalView() {
 let palDownloadPath = '/pal/CertGeneratorPal.exe';
 
 async function loadPalDownload() {
-  const box = document.getElementById('palDownload');
+  const card = document.getElementById('palGet');
+  let info = null;
   try {
-    const info = await (await api('/api/pal/download')).json();
-    palDownloadPath = info.path;
-    box.innerHTML = info.available
-      ? '<a href="' + escapeHtml(info.path) + '" download>Download Cert Generator Pal</a> for Windows (' +
-        (info.size / 1048576).toFixed(0) + ' MB, nothing else to install). PCs on your LAN can download it from this server without signing in.' +
-        '<br>SHA-256 <span class="mono pal-sha">' + escapeHtml(info.sha256) + '</span>'
-      : 'This server\'s image doesn\'t include Cert Generator Pal. Download it from the GitHub release instead.';
-  } catch (e) {
-    box.textContent = '';
+    info = await (await api('/api/pal/download')).json();
+  } catch (_e) { /* shown as unavailable below */ }
+  const available = !!(info && info.available);
+  if (info) palDownloadPath = info.path;
+  card.classList.toggle('unavailable', !available);
+  ['palGetButton', 'palHeaderDownload'].forEach(id => document.getElementById(id).classList.toggle('hidden', !available));
+  document.querySelector('#palGet .pal-get-url').classList.toggle('hidden', !available);
+  document.getElementById('palGetSha').parentElement.classList.toggle('hidden', !available);
+  if (!available) {
+    document.getElementById('palGetVersion').textContent = '';
+    document.getElementById('palGetAbout').textContent = 'This server can\'t offer the Pal: its image doesn\'t include it, or the file is writable by the server ' +
+      '(see the server log). The Pal ships only inside the Cert Generator Docker image.';
+    return;
   }
+  document.getElementById('palGetVersion').textContent = 'v' + document.body.dataset.appVersion + ' · ' + (info.size / 1048576).toFixed(0) + ' MB';
+  document.getElementById('palGetUrl').value = palDownloadUrl(window.location.origin) || '';
+  document.getElementById('palGetSha').textContent = info.sha256;
+}
+
+async function copyPalDownloadUrl() {
+  const input = document.getElementById('palGetUrl');
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(input.value);  // only on https or localhost
+    copied = true;
+  } catch (_e) {
+    input.focus();
+    input.select();
+    copied = document.execCommand('copy');  // plain http on the LAN
+  }
+  if (!copied) { toast('Press Ctrl+C to copy the selected link', 'error'); return; }
+  const btn = document.getElementById('palGetCopy');
+  btn.textContent = 'Copied ✓';
+  setTimeout(() => { btn.textContent = 'Copy link'; }, 2000);
 }
 
 async function loadPalDevices() {
@@ -3044,6 +3069,7 @@ const UI_ACTIONS = new Set([
   'approvePalRequest',
   'copyPalCode',
   'createPalCode',
+  'copyPalDownloadUrl',
   'deletePalDevice',
   'openPalFromIssue',
   'refreshCerts',

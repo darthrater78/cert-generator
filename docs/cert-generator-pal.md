@@ -394,6 +394,57 @@ switching with a manual button and both statuses shown.
   shouldn't be used). The relay address arrives with the pairing, so there is
   nothing to paste. An existing pairing picks it up the next time the PC is on the LAN.
 
+### Envelope protocol (CGP1 relay, v1)
+
+The relay carries **whole signed LAN requests**, sealed. The server opens one and runs
+it through the same handlers as the LAN API, so the device signature, nonce,
+policy and rate limits are checked exactly as on the LAN.
+
+Keys: the server's **relay key** (static P-256, private half encrypted with the
+database key, public half pinned by the Pal at pairing) and, per request, a
+**one-time P-256 key** made by the PC. The device key only signs (it is a CNG
+ECDSA key), so it never takes part in key agreement.
+
+```
+shared  = ECDH(one-time key, relay key)
+okm     = HKDF-SHA256(shared, salt = "CGP1-RELAY", info = epk ‖ relay_pub, 64 bytes)
+k_req   = okm[0:32]      k_rep = okm[32:64]
+```
+
+**Request** (PC → Worker → server), JSON with base64url fields:
+
+```json
+{"v": 1, "d": "<device id>", "t": <unix time>, "n": "<nonce>",
+ "e": "<one-time public key, SEC1 uncompressed>", "i": "<12-byte IV>",
+ "c": "<AES-256-GCM(k_req, inner), tag appended>", "s": "<ECDSA P-256 / SHA-256, IEEE P1363>"}
+```
+
+- `s` is the device key's signature over `"CGP1-RELAY\n" + d + "\n" + t + "\n" + n + "\n" + e + "\n" + i + "\n" + c`,
+  in the raw r‖s form WebCrypto verifies, so the Worker can refuse anything not
+  signed by a PC allowed to use the relay, without being able to read it.
+- GCM associated data: `"CGP1-RELAY-REQ\n" + d + "\n" + t + "\n" + n`.
+- `inner` is JSON `{"method", "path", "headers": {X-Pal-*, User-Agent}, "body": base64}`:
+  the signed request exactly as it would go over the LAN.
+
+**Reply** (server → Worker → PC): `{"v": 1, "n": "<request nonce>", "i": "<IV>", "c": "<AES-256-GCM(k_rep, inner reply)>"}`,
+associated data `"CGP1-RELAY-REP\n" + d + "\n" + n`, inner reply
+`{"status", "headers": {X-Pal-Mac…}, "body": base64}`. Only the holder of the
+one-time key can open it, and only the server could have sealed it (it needs
+`shared`), so the Worker can neither read, forge nor swap replies.
+
+The server refuses: an unknown, disconnected or not-remote-allowed device; a bad
+outer signature; a time outside ±5 min; an inner path outside `/api/pal/v1/`; and
+**enrollment** (pairing is LAN only).
+
+### Build phases
+
+- **R1:** envelope in Python and C# (shared test vectors), relay key, server-side
+  dispatch, enrollment refused through the relay. No Cloudflare yet.
+- **R2:** the relay Worker (Durable Object mailbox), its deploy, the server's
+  outbound collector.
+- **R3:** admin UI: set up / tear down, Allow remote per code and PC, relay status.
+- **R4:** the Pal: LAN ↔ relay switching, Connect to remote, LAN and Remote rows.
+
 ### Server side
 
 - New table columns: `pal_devices.remote_allowed`, server relay key pair (private

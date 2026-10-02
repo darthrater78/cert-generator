@@ -340,10 +340,25 @@
         </div>
         <div class="header-actions">
           <button class="btn btn-ghost" id="palRefreshBtn" data-action="loadPalDevices">Refresh</button>
+          <a class="btn btn-ghost" id="palHeaderDownload" href="/pal/CertGeneratorPal.exe" download>Download Pal</a>
           <button class="btn btn-primary" data-action="showPalAdd">Add a PC</button>
         </div>
       </div>
       <div class="main-content">
+        <div class="pal-get" id="palGet">
+          <div class="pal-get-text">
+            <div class="pal-get-eyebrow">Step 1 on every PC</div>
+            <h3>Cert Generator Pal for Windows <small id="palGetVersion"></small></h3>
+            <p id="palGetAbout">One EXE, nothing else to install. PCs on your LAN download it from this server without signing in.</p>
+            <div class="pal-get-url">
+              <input type="text" id="palGetUrl" class="mono" readonly aria-label="Download address for PCs" spellcheck="false">
+              <button type="button" class="btn btn-ghost btn-sm" id="palGetCopy" data-action="copyPalDownloadUrl">Copy link</button>
+            </div>
+            <p class="pal-get-meta">SHA-256 <span class="mono pal-sha" id="palGetSha"></span></p>
+            <p class="pal-get-meta">LAN only: the PC must reach this server on a private address (RFC 1918, or CGNAT 100.64.0.0/10 as SSE / ZTNA overlays such as Tailscale or Zscaler use).</p>
+          </div>
+          <a class="btn btn-primary pal-get-button" id="palGetButton" href="/pal/CertGeneratorPal.exe" download>Download for Windows</a>
+        </div>
         <div class="card hidden" id="palPendingBox">
           <h3>Waiting for your approval <small id="palPendingNote"></small></h3>
           <div id="palPending"></div>
@@ -355,11 +370,6 @@
         <div class="card">
           <h3>Pairing codes <small id="palCodesNote"></small></h3>
           <div id="palCodes"></div>
-        </div>
-        <div class="card">
-          <h3>Get the app</h3>
-          <p class="form-hint" id="palDownload"></p>
-          <p class="form-hint">LAN only: the PC must reach this server on a private address (RFC 1918, or CGNAT 100.64.0.0/10 as SSE / ZTNA overlays such as Tailscale or Zscaler use).</p>
         </div>
       </div>
     </div>
@@ -487,6 +497,7 @@
     {% if server_mode %}
     <div class="pal-recommend">
       <p><strong>Recommended for Windows PCs: Cert Generator Pal.</strong> The PC makes its own key, so it never leaves the PC, then requests, installs and renews its certificates itself. Issue here for anything else: servers, appliances, other operating systems.</p>
+      <a class="btn btn-primary btn-sm" href="/pal/CertGeneratorPal.exe" download>Download Pal</a>
       <button type="button" class="btn btn-ghost btn-sm" data-action="openPalFromIssue">Windows PCs</button>
     </div>
     {% endif %}
@@ -1029,7 +1040,7 @@
         <button type="button" class="btn btn-ghost btn-sm pal-code-copy" id="palCodeCopy" data-action="copyPalCode">Copy</button>
       </div>
       <ol class="cf-steps" style="margin-top:10px">
-        <li>On the PC, download Cert Generator Pal from <a id="palCodeDownload" href="#" class="mono"></a> and run it. Windows may warn that it's unsigned: choose <strong>More info › Run anyway</strong>.</li>
+        <li>On the PC, download Cert Generator Pal from <a id="palCodeDownload" href="#" class="mono"></a> (<a href="/pal/CertGeneratorPal.exe" download>download it here</a>) and run it. Windows may warn that it's unsigned: choose <strong>More info › Run anyway</strong>.</li>
         <li>Paste the code and choose <strong>Connect</strong>. Windows asks for administrator approval once, to trust your CA.</li>
         <li>Pick what to request. Certificates install themselves.</li>
       </ol>

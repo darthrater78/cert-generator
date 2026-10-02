@@ -22,14 +22,14 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from cryptography import x509
-from flask import Blueprint, Response, g, jsonify, request, send_file
+from flask import Blueprint, Response, current_app, g, jsonify, request, send_file
 
 from .. import __version__, crl_publisher, crypto_engine, db, pal, state
 from ..errors import UserError
 from ..pal import PalError, Policy
 from ..security import AttemptLimiter, RateLimiter
 from ..web import error, json_body, parse_int, str_field
-from .. import crl_local_server
+from .. import crl_local_server, relay
 from .pki import (CRL_DP_MODES, DEFAULT_CRL_DAYS, MAX_LIFETIME_DAYS, _placeholder_crl_url, crl_dp_url_for,
                   parse_crl_base_url, publish_after_issue)
 
@@ -43,6 +43,7 @@ DOWNLOAD_PATH = "/pal/CertGeneratorPal.exe"
 PAL_EXE = Path(os.environ.get("PAL_EXE") or Path(__file__).resolve().parents[2] / "pal" / "CertGeneratorPal.exe")
 MAX_ENROLL_BODY = 8 * 1024
 MAX_REQUEST_BODY = 64 * 1024
+RELAY_ENVIRON = "certgen.pal_relay"  # WSGI key set only by relay_dispatch
 DEFAULT_CODE_HOURS = 24
 MAX_CODE_HOURS = 7 * 24
 MAX_LABEL_LEN = 64
@@ -69,6 +70,12 @@ def reset_limiters() -> None:
 def _gate() -> Any:
     if state.desktop_mode():
         return error("Not found", 404)
+    if request.environ.get(RELAY_ENVIRON):
+        # Opened from a relay envelope by relay_dispatch: its device signature was checked, and
+        # the signed request inside is checked again below like any LAN request. (Only server
+        # code can set this WSGI key; client headers arrive as HTTP_*.)
+        request.max_content_length = MAX_REQUEST_BODY
+        return None
     if request.path.startswith(DEVICE_PREFIX) or request.path == DOWNLOAD_PATH:
         # LAN design: anything that isn't a private address doesn't learn the API exists.
         if not pal.is_private_address(request.remote_addr):
@@ -230,6 +237,8 @@ def download_info():
 
 @bp.post(DEVICE_PREFIX + "enroll")
 def enroll():
+    if request.environ.get(RELAY_ENVIRON):
+        return error("Not found", 404)  # pairing is LAN only, never through the relay
     address = request.remote_addr or ""
     body = request.get_data(cache=True)
     try:
@@ -324,7 +333,7 @@ def _signed_device() -> tuple[dict[str, Any] | None, tuple[Response, int] | None
         return None, error("Request replayed. The same request arrived twice; try again", 401)
     if device["revoked_at"]:
         return None, error(DEVICE_REVOKED, 403)
-    db.touch_pal_device(device_id, _pal_version())
+    db.touch_pal_device(device_id, _pal_version(), via="relay" if request.environ.get(RELAY_ENVIRON) else "lan")
     return device, None
 
 
@@ -813,3 +822,66 @@ def deny_request(request_id: int):
         return error("Request not found or not waiting for approval", 404)
     log.info("Pal request %d denied by %s", request_id, (g.get("user") or {}).get("username"))
     return jsonify({"ok": True})
+
+
+# ── Remote relay (docs/cert-generator-pal.md §8) ────────────────────
+
+_RELAY_HEADERS = ("X-Pal-Device", "X-Pal-Time", "X-Pal-Nonce", "X-Pal-Signature", "User-Agent")
+_RELAY_REPLY_HEADERS = ("X-Pal-Mac", "Content-Type")
+_RELAY_METHODS = ("GET", "POST")
+
+
+def _relay_refusal(req: relay.Request, key, status: int, message: str) -> bytes:
+    """A refusal only the sender can read (it holds the one-time key), so nothing about this
+    server or its PCs reaches anyone else."""
+    body = json.dumps({"error": message}).encode()
+    return relay.seal_reply(relay.reply_key(req, key), req.device_id, req.nonce,
+                            {"status": status, "headers": {"Content-Type": "application/json"}, "body": relay.b64url(body)})
+
+
+def relay_dispatch(envelope: bytes) -> bytes | None:
+    """Open a request envelope collected from the relay, run the signed request inside through
+    the device API exactly as if it came over the LAN, and seal the reply. None means drop it
+    unanswered (not signed by a known PC, or no relay key): nothing is sent back to a stranger.
+    Needs an application context; raises DatabaseLocked while locked."""
+    try:
+        req = relay.parse_request(envelope)
+    except relay.RelayError as e:
+        log.info("Relay envelope dropped: %s", e)
+        return None
+    device = db.get_pal_device(req.device_id)
+    if device is None or not relay.verify_request(req, device["public_key"]):
+        log.info("Relay envelope dropped: not signed by a known PC")
+        return None
+    key_der = db.get_pal_relay_key()
+    if key_der is None:
+        log.warning("Relay envelope dropped: this server has no relay key")
+        return None
+    key = relay.load_private_key(key_der)
+    if device["revoked_at"]:
+        return _relay_refusal(req, key, 403, DEVICE_REVOKED)
+    if not device["remote_allowed"]:
+        return _relay_refusal(req, key, 403, "Remote access is off. Your admin hasn't allowed this PC to use the relay")
+    if abs(time.time() - req.timestamp) > pal.CLOCK_SKEW_SECONDS:
+        return _relay_refusal(req, key, 401, CLOCK_WRONG)
+    try:
+        inner, k_rep = relay.open_request(req, key)
+        method, path = inner.get("method"), inner.get("path")
+        headers = inner.get("headers") or {}
+        body = relay.b64url_decode(inner.get("body") or "")
+        if (method not in _RELAY_METHODS or not isinstance(path, str) or not path.startswith(DEVICE_PREFIX)
+                or path == DEVICE_PREFIX + "enroll" or "?" in path or ".." in path or not isinstance(headers, dict)):
+            raise relay.RelayError("Not a device API request")
+        if headers.get("X-Pal-Device") != req.device_id:
+            raise relay.RelayError("The inner request is from another PC")
+    except relay.RelayError as e:
+        log.info("Relay envelope from %s refused: %s", req.device_id[:8], e)
+        return _relay_refusal(req, key, 400, str(e))
+    sent = {h: str(headers[h])[:512] for h in _RELAY_HEADERS if isinstance(headers.get(h), str)}
+    client = current_app.test_client(use_cookies=False)
+    response = client.open(path, method=method, headers=sent, data=body, content_type="application/json",
+                           environ_base={RELAY_ENVIRON: True, "REMOTE_ADDR": "127.0.0.1"})
+    reply = {"status": response.status_code,
+             "headers": {h: response.headers[h] for h in _RELAY_REPLY_HEADERS if h in response.headers},
+             "body": relay.b64url(response.get_data())}
+    return relay.seal_reply(k_rep, req.device_id, req.nonce, reply)

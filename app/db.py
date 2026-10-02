@@ -181,7 +181,9 @@ _MIGRATIONS = (
     ("certificates", "pal_present", "INTEGER"),  # 1/0: still installed on that PC at its last check; NULL = not checked
     ("certificates", "pal_checked_at", "TEXT"),
     ("pal_requests", "crl_dp", "TEXT"),
-    ("pal_devices", "pal_version", "TEXT"),  # the Pal's version at its last request (it ships with the server's)  # the revocation type (profile) the PC asked with; NULL = the policy's default
+    ("pal_devices", "pal_version", "TEXT"),
+    ("pal_devices", "remote_allowed", "INTEGER NOT NULL DEFAULT 0"),  # may use the remote relay (docs/cert-generator-pal.md §8)
+    ("pal_devices", "last_via", "TEXT"),  # 'lan' or 'relay': how its last request arrived  # the Pal's version at its last request (it ships with the server's)  # the revocation type (profile) the PC asked with; NULL = the policy's default
 )
 
 CF_COLUMNS = ("cf_worker", "cf_account_id", "cf_crl_path", "cf_hostname", "cf_domain_id", "cf_dp_url",
@@ -464,6 +466,8 @@ def disable_encryption(password: str) -> None:
         raise UserError("Encryption is not enabled")
     if has_cloudflare_token():
         raise UserError("Disconnect Cloudflare first: its API token is only ever stored encrypted")
+    if get_setting("pal_relay_key") is not None:
+        raise UserError("Remove the remote relay first: its key is only ever stored encrypted")
     with _key_change() as conn:
         key = _key_for_password(conn, password)[0]
         if key is None:
@@ -1063,7 +1067,7 @@ def enroll_pal_device(code_id: str, device: dict[str, Any]) -> bool:
 
 
 _PAL_DEVICE_COLUMNS = ("id, label, hostname, fqdn, os, public_key, ca_id, policy, code_id, created_at, last_seen, "
-                       "revoked_at, pal_version")
+                       "revoked_at, pal_version, remote_allowed, last_via")
 
 
 def get_pal_device(device_id: str) -> dict[str, Any] | None:
@@ -1083,10 +1087,45 @@ def list_pal_devices() -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
-def touch_pal_device(device_id: str, pal_version: str | None = None) -> None:
+def touch_pal_device(device_id: str, pal_version: str | None = None, via: str = "lan") -> None:
     with _connect() as conn:
-        conn.execute("UPDATE pal_devices SET last_seen = ?, pal_version = COALESCE(?, pal_version) WHERE id = ?",
-                     (_utc_now(), pal_version, device_id))
+        conn.execute("UPDATE pal_devices SET last_seen = ?, pal_version = COALESCE(?, pal_version), last_via = ? WHERE id = ?",
+                     (_utc_now(), pal_version, via, device_id))
+
+
+def set_pal_remote_allowed(device_id: str, allowed: bool) -> bool:
+    with _connect() as conn:
+        return conn.execute("UPDATE pal_devices SET remote_allowed = ? WHERE id = ? AND revoked_at IS NULL",
+                            (int(allowed), device_id)).rowcount == 1
+
+
+def list_pal_remote_keys() -> list[tuple[str, bytes]]:
+    """(device id, public key DER) of every connected PC allowed to use the relay: what the Worker accepts."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT id, public_key FROM pal_devices WHERE remote_allowed = 1 AND revoked_at IS NULL "
+                            "ORDER BY id").fetchall()
+        return [(r["id"], bytes(r["public_key"])) for r in rows]
+
+
+def get_pal_relay_key() -> bytes | None:
+    """The relay key (PKCS#8 DER), or None before one is made. Raises DatabaseLocked while locked."""
+    sealed = get_setting("pal_relay_key")
+    if sealed is None:
+        return None
+    require_unlocked()
+    return _maybe_decrypt(sealed)
+
+
+def create_pal_relay_key(private_der: bytes) -> None:
+    """Store the relay key encrypted with the database key: like the Cloudflare token it needs
+    encryption on (the relay is set up through Cloudflare, which already requires it)."""
+    if not is_encryption_enabled():
+        raise UserError("Turn on database encryption first: the relay key is stored encrypted")
+    require_unlocked()
+    with _connect() as conn:
+        if _get_setting(conn, "pal_relay_key") is not None:
+            raise UserError("This server already has a relay key")
+        _set_setting(conn, "pal_relay_key", crypto_engine.encrypt_column(private_der, _master_key))  # type: ignore[arg-type]
 
 
 def revoke_pal_device(device_id: str) -> bool:
