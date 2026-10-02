@@ -10,6 +10,7 @@ from typing import Any
 from flask import Blueprint, Response, current_app, redirect, render_template, request, session
 
 from .. import db, state
+from ..errors import UserError
 from ..security import lockout_message, verify_totp
 from ..web import auth_limiter, hash_token, new_password_error, start_session
 
@@ -240,7 +241,7 @@ def _unlock_after_mfa(user: dict[str, Any]) -> str | None:
     # Unlocking by password also moves a pre-2.6.0 database to the data-key format.
     key = db.open_with_password((request.form.get("encryption_password") or "").strip())
     if key is None:
-        raise ValueError("Wrong password")
+        raise UserError("Wrong password")
     db.set_master_key(key)
     log.info("Database unlocked during MFA verification for user: %s", user["username"])
     return None

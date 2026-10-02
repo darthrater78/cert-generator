@@ -17,6 +17,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.primitives.serialization import pkcs12
+
+from .errors import UserError
 from cryptography.x509.oid import NameOID
 
 from .errors import UserError
@@ -107,7 +109,7 @@ def _generate_key(algorithm: Algorithm):
         return rsa.generate_private_key(public_exponent=65537, key_size=2048)
     if algorithm == "rsa-4096":
         return rsa.generate_private_key(public_exponent=65537, key_size=4096)
-    raise ValueError(f"Unknown algorithm: {algorithm}")
+    raise UserError(f"Unknown algorithm: {algorithm}")
 
 
 def _signing_hash(algorithm: Algorithm) -> hashes.HashAlgorithm | None:
@@ -682,7 +684,7 @@ def _detect_algorithm(key) -> Algorithm:
         if key.key_size <= 2048:
             return "rsa-2048"
         return "rsa-4096"
-    raise ValueError("Unknown key type")
+    raise UserError("Unknown key type")
 
 
 ExportFormat = Literal["pem", "der", "crt", "pkcs12"]
@@ -720,7 +722,7 @@ def export_certificate(
             ca_certs = [x509.load_pem_x509_certificate(ca_cert_pem)]
 
         if not password:
-            raise ValueError("A password is required for PKCS#12 export")
+            raise UserError("A password is required for PKCS#12 export")
         pfx_password = password.encode("utf-8")
         pfx_data = pkcs12.serialize_key_and_certificates(
             name=None,
@@ -731,7 +733,7 @@ def export_certificate(
         )
         return pfx_data, "certificate.pfx"
 
-    raise ValueError(f"Unknown format: {fmt}")
+    raise UserError(f"Unknown format: {fmt}")
 
 
 def export_public_only(cert_pem: bytes, fmt: ExportFormat) -> tuple[bytes, str]:
@@ -744,7 +746,7 @@ def export_public_only(cert_pem: bytes, fmt: ExportFormat) -> tuple[bytes, str]:
     if fmt == "crt":
         return cert.public_bytes(serialization.Encoding.DER), "certificate.crt"
 
-    raise ValueError(f"Cannot export public-only as {fmt}")
+    raise UserError(f"Cannot export public-only as {fmt}")
 
 
 def export_private_only(key_pem: bytes, fmt: str) -> tuple[bytes, str]:
@@ -760,7 +762,7 @@ def export_private_only(key_pem: bytes, fmt: str) -> tuple[bytes, str]:
         )
         return der, "private_key.der"
 
-    raise ValueError(f"Cannot export private key as {fmt}")
+    raise UserError(f"Cannot export private key as {fmt}")
 
 
 SSHAlgorithm = Literal["rsa-4096", "rsa-2048", "ed25519", "ecdsa-p256", "ecdsa-p384"]
@@ -845,8 +847,8 @@ def parse_ssh_key(
 
     if key is None:
         if passphrase:
-            raise ValueError("Cannot parse private key — wrong passphrase or unsupported format")
-        raise ValueError("Cannot parse private key — unsupported format or passphrase required")
+            raise UserError("Cannot parse private key — wrong passphrase or unsupported format")
+        raise UserError("Cannot parse private key — unsupported format or passphrase required")
 
     algorithm = _detect_algorithm(key)
 
@@ -890,7 +892,7 @@ def export_ssh_private_key(
         except (TypeError, ValueError):
             continue
     else:
-        raise ValueError("Cannot load private key — wrong or missing original passphrase")
+        raise UserError("Cannot load private key — wrong or missing original passphrase")
 
     enc: serialization.KeySerializationEncryption
     if passphrase:
@@ -913,7 +915,7 @@ def export_ssh_private_key(
         )
         return data, "id_key.pem"
 
-    raise ValueError(f"Unknown SSH key format: {fmt}")
+    raise UserError(f"Unknown SSH key format: {fmt}")
 
 
 def _ssh_fingerprint(public_key) -> str:
@@ -1043,9 +1045,9 @@ def encrypt_backup(plaintext: bytes, password: str) -> bytes:
 
 def decrypt_backup(data: bytes, password: str) -> bytes:
     if len(data) < 52 or data[:7] != _BACKUP_MAGIC:
-        raise ValueError("Not a valid backup file")
+        raise UserError("Not a valid backup file")
     if data[7] != _BACKUP_VERSION:
-        raise ValueError("Unsupported backup version")
+        raise UserError("Unsupported backup version")
     salt = data[8:40]
     nonce = data[40:52]
     ciphertext = data[52:]
@@ -1053,4 +1055,4 @@ def decrypt_backup(data: bytes, password: str) -> bytes:
     try:
         return AESGCM(key).decrypt(nonce, ciphertext, None)
     except InvalidTag:
-        raise ValueError("Wrong password or corrupted backup")
+        raise UserError("Wrong password or corrupted backup")

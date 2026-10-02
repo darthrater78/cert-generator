@@ -30,7 +30,7 @@ class NotesError(ValueError):
 
 def version_entry(readme: str, version: str) -> str:
     """Body of the '### vX.Y.Z — date' entry, without its heading."""
-    match = re.search(rf"^### v{re.escape(version)}\b[^\n]*\n(.*?)(?=^### v|^## |\Z)", readme, re.S | re.M)
+    match = re.search(rf"^### v{re.escape(version)}(?![\w.-])[^\n]*\n(.*?)(?=^### v|^## |\Z)", readme, re.S | re.M)
     if not match:
         raise NotesError(f"README.md has no '### v{version}' version history entry")
     return match.group(1).strip()
@@ -64,7 +64,7 @@ def released_components(readme: str, version: str) -> tuple[str, ...]:
 
 def all_versions(readme: str) -> list[str]:
     """Versions in version-history order, newest first."""
-    return re.findall(r"^### v(\d+\.\d+\.\d+)\b", readme, re.M)
+    return re.findall(r"^### v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)(?![\w.-])", readme, re.M)
 
 
 def previous_release_of(readme: str, version: str, component: str) -> str | None:
@@ -85,6 +85,7 @@ def previous_tag(readme: str, version: str) -> str:
 
 def _docker_shipped(version: str, body: str, image_digest: str | None, is_newest: bool) -> list[str]:
     major_minor = ".".join(version.split(".")[:2])
+    prerelease = "-" in version  # a pre-release is tagged with its own version only
     lines = [
         body,
         "",
@@ -92,7 +93,7 @@ def _docker_shipped(version: str, body: str, image_digest: str | None, is_newest
         "```bash",
         f"docker pull {IMAGE}:{version}",
         "```",
-        f"Tags: `{version}`, `{major_minor}`" + (", `latest`" if is_newest else ""),
+        f"Tags: `{version}`" if prerelease else f"Tags: `{version}`, `{major_minor}`" + (", `latest`" if is_newest else ""),
     ]
     if image_digest:
         lines += [
@@ -101,6 +102,11 @@ def _docker_shipped(version: str, body: str, image_digest: str | None, is_newest
             f"Verify provenance: `gh attestation verify oci://{IMAGE}@{image_digest} --repo {REPO}`",
         ]
     return lines
+
+
+def _not_built(previous: str | None, what: str) -> list[str]:
+    """A pre-release builds only what it is testing; the other deliverable is the last release's."""
+    return [f"{what} not built for this pre-release" + (f": use {previous}." if previous else ".")]
 
 
 def _docker_unchanged(previous: str | None) -> list[str]:
@@ -154,6 +160,8 @@ def build_notes(version: str, readme: str, image_digest: str | None, exe_sha256:
     lines += ["## 🐳 Docker (server mode)", ""]
     if DOCKER in shipping:
         lines += _docker_shipped(version, sections[DOCKER], image_digest, is_newest)
+    elif "-" in version:
+        lines += _not_built(previous_release_of(readme, version, DOCKER), "Docker image")
     else:
         lines += _docker_unchanged(previous_release_of(readme, version, DOCKER))
     lines += [""]
@@ -161,6 +169,8 @@ def build_notes(version: str, readme: str, image_digest: str | None, exe_sha256:
     lines += ["## 🪟 Windows EXE (desktop)", ""]
     if EXE in shipping:
         lines += _exe_shipped(sections[EXE], exe_sha256)
+    elif "-" in version:
+        lines += _not_built(previous_release_of(readme, version, EXE), "Windows EXE")
     else:
         lines += _exe_unchanged(previous_release_of(readme, version, EXE))
     lines += [""]

@@ -4,6 +4,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import io
+import logging
 import os
 import re
 import time
@@ -16,6 +17,8 @@ from flask import Response, abort, g, jsonify, request, send_file, session
 from . import state
 from .errors import UserError
 from .security import AttemptLimiter
+
+log = logging.getLogger("cert-generator")
 
 # Shared by login, MFA, and password re-entry endpoints.
 auth_limiter = AttemptLimiter()
@@ -55,6 +58,15 @@ def parse_int(value: Any, default: int) -> int | None:
 
 def error(message: str, status: int = 400) -> tuple[Response, int]:
     return jsonify({"error": message}), status
+
+
+def value_error(exc: ValueError) -> tuple[Response, int]:
+    """Answer a failed operation: a UserError's message as written; any other ValueError (raised
+    by a library, its text not meant for clients) is logged and answered generically."""
+    if isinstance(exc, UserError):
+        return error(exc.user_message)
+    log.warning("Request failed: %s", type(exc).__name__)
+    return error("That input couldn't be processed")
 
 
 def new_password_error(password: str, confirm: str, empty_message: str) -> str | None:

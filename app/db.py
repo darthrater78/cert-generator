@@ -14,6 +14,7 @@ from typing import Any
 import bcrypt as _bcrypt
 
 from . import crypto_engine
+from .errors import UserError
 
 
 DB_DIR = Path(os.environ.get("DB_DIR", str(Path.home() / ".cert-generator")))
@@ -443,11 +444,11 @@ def enable_encryption(password: str, username: str | None = None) -> str:
     asked for with the master password. It is not secret and is stored as is.
     """
     if is_encryption_enabled():
-        raise ValueError("Encryption is already enabled")
+        raise UserError("Encryption is already enabled")
     data_key = crypto_engine.new_data_key()
     with _key_change() as conn:
         if _get_setting(conn, "encryption_salt") is not None:
-            raise ValueError("Encryption is already enabled")
+            raise UserError("Encryption is already enabled")
         _reencrypt_all(conn, None, data_key)
         _store_password_wrap(conn, password, data_key)
         recovery_key = _store_recovery_wrap(conn, data_key)
@@ -459,13 +460,13 @@ def enable_encryption(password: str, username: str | None = None) -> str:
 
 def disable_encryption(password: str) -> None:
     if not is_encryption_enabled():
-        raise ValueError("Encryption is not enabled")
+        raise UserError("Encryption is not enabled")
     if has_cloudflare_token():
-        raise ValueError("Disconnect Cloudflare first: its API token is only ever stored encrypted")
+        raise UserError("Disconnect Cloudflare first: its API token is only ever stored encrypted")
     with _key_change() as conn:
         key = _key_for_password(conn, password)[0]
         if key is None:
-            raise ValueError("Wrong password")
+            raise UserError("Wrong password")
         _reencrypt_all(conn, key, None)
         for name in _KEY_SETTINGS:
             _set_setting(conn, name, None)
@@ -493,7 +494,7 @@ def change_password(old_password: str, new_password: str) -> None:
     with _key_change() as conn:
         key = _open_with_password(conn, old_password)
         if key is None:
-            raise ValueError("Wrong current password")
+            raise UserError("Wrong current password")
         _store_password_wrap(conn, new_password, key)
     set_master_key(key)
 
@@ -507,17 +508,17 @@ def create_recovery_key(password: str | None) -> str:
     """
     with _key_change() as conn:
         if _get_setting(conn, "encryption_wrapped_key") is None:
-            raise ValueError("Encryption is not enabled")
+            raise UserError("Encryption is not enabled")
         if _get_setting(conn, "recovery_wrapped_key") is None:
             key = _master_key
             if key is None:
                 raise DatabaseLocked("Database is locked. Unlock it with your encryption password.")
         else:
             if not password:
-                raise ValueError("Password is required to replace the recovery key")
+                raise UserError("Password is required to replace the recovery key")
             key = _key_for_password(conn, password)[0]
             if key is None:
-                raise ValueError("Wrong password")
+                raise UserError("Wrong password")
         return _store_recovery_wrap(conn, key)
 
 
@@ -543,10 +544,10 @@ def recover_with_key(recovery_key: str, new_password: str) -> str:
     """
     with _key_change() as conn:
         if _get_setting(conn, "recovery_wrapped_key") is None:
-            raise ValueError("This database has no recovery key")
+            raise UserError("This database has no recovery key")
         key = _key_for_recovery_key(conn, recovery_key)
         if key is None:
-            raise ValueError("Wrong recovery key")
+            raise UserError("Wrong recovery key")
         _store_password_wrap(conn, new_password, key)
         new_recovery_key = _store_recovery_wrap(conn, key)
     set_master_key(key)
@@ -729,7 +730,7 @@ def set_cloudflare_credentials(account_id: str, token: str) -> None:
     """Store the API token encrypted with the database key. Needs encryption on and unlocked:
     the token can rewrite every CRL Worker, so it is never kept in plaintext."""
     if not is_encryption_enabled():
-        raise ValueError("Turn on database encryption first: the Cloudflare token is stored encrypted")
+        raise UserError("Turn on database encryption first: the Cloudflare token is stored encrypted")
     require_unlocked()
     sealed = crypto_engine.encrypt_column(token.encode("utf-8"), _master_key)  # type: ignore[arg-type]
     with _connect() as conn:
@@ -1302,7 +1303,7 @@ def export_all_data() -> dict[str, Any]:
 def _import_rows(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
     rows = data.get(key, [])
     if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
-        raise ValueError(f"Invalid backup data: '{key}' must be a list of objects")
+        raise UserError(f"Invalid backup data: '{key}' must be a list of objects")
     return rows
 
 
@@ -1377,7 +1378,7 @@ def _restore_users(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None
 
 def import_all_data(data: dict[str, Any]) -> dict[str, int]:
     if data.get("version") != 1:
-        raise ValueError("Unsupported backup data version")
+        raise UserError("Unsupported backup data version")
     require_unlocked()
     cas = _import_rows(data, "certificate_authorities")
     certs = _import_rows(data, "certificates")
@@ -1404,7 +1405,7 @@ def import_all_data(data: dict[str, Any]) -> dict[str, int]:
             _restore_ssh_keys(conn, ssh_keys)
             _restore_users(conn, users)
     except (KeyError, TypeError, AttributeError, sqlite3.IntegrityError, ValueError) as e:
-        raise ValueError(f"Invalid backup data: {e}") from e
+        raise UserError("Invalid backup data: it does not match what this version expects") from e
     return {"cas": len(cas), "certs": len(certs), "ssh_keys": len(ssh_keys), "users": len(users)}
 
 

@@ -96,7 +96,7 @@ def test_every_ui_action_is_allowlisted_and_defined():
 
 def test_app_script_is_served_and_referenced(admin_client):
     page = admin_client.get("/").get_data(as_text=True)
-    assert re.search(r'<script src="/static/app\.js\?v=[\d.]+"></script>', page)
+    assert re.search(r'<script src="/static/app\.js\?v=[\w.-]+"></script>', page)
     assert 'data-server-mode="true"' in page
     resp = admin_client.get("/static/app.js")
     assert resp.status_code == 200
@@ -317,3 +317,23 @@ def test_components_output_lists_what_the_version_ships(monkeypatch, capsys, tmp
         version = "2.1.0" if readme is BOTH else "2.2.0"
         assert release_notes.main([f"v{version}", "--components"]) == 0
         assert capsys.readouterr().out == expected
+
+
+PRERELEASE = """## Version history
+
+### v2.2.0-dev.1 — 2026-09-25
+
+#### Docker
+- Dev build
+
+""" + BOTH.split("## Version history\n\n", 1)[1]
+
+
+def test_prerelease_entry_is_its_own_version():
+    notes = release_notes.build_notes("2.2.0-dev.1", PRERELEASE, "sha256:abc", None)
+    assert "- Dev build" in notes and "Tags: `2.2.0-dev.1`\n" in notes and "`latest`" not in notes
+    assert "compare/v2.1.0...v2.2.0-dev.1" in notes
+    assert "Windows EXE not built for this pre-release: use 2.1.0." in notes
+    # the final release's entry is not confused with its pre-release
+    with pytest.raises(release_notes.NotesError, match="v2.2.0"):
+        release_notes.build_notes("2.2.0", PRERELEASE, None, None)

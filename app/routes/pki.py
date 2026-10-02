@@ -13,7 +13,8 @@ from flask import Blueprint, Response, jsonify, request
 from .. import crl_publisher, crl_worker, crypto_engine, db, install_bundle, state
 from ..errors import UserError
 from ..security import RateLimiter
-from ..web import deliver_export, error, export_password_error, json_body, parse_int, reauth_rejection, str_field
+from ..web import (deliver_export, error, export_password_error, json_body, parse_int, reauth_rejection, str_field,
+                   value_error)
 
 log = logging.getLogger("cert-generator")
 
@@ -556,7 +557,7 @@ def export_ca(ca_id: int):
         else:
             export_data, filename = crypto_engine.export_certificate(ca["cert_pem"], ca["key_pem"], fmt, password=password)
     except ValueError as e:
-        return error(str(e))
+        return value_error(e)
     return deliver_export(export_data, f"ca-{_safe_name(ca['name'])}-{filename}")
 
 
@@ -601,7 +602,7 @@ def export_cert(cert_id: int):
                 password=password,
             )
     except ValueError as e:
-        return error(str(e))
+        return value_error(e)
     return deliver_export(export_data, f"{cert['common_name']}-{filename}")
 
 

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
 using CertGeneratorPal.Core;
 
@@ -8,7 +9,9 @@ namespace CertGeneratorPal;
 internal sealed class MainForm : Form
 {
     private const string RepoUrl = "https://github.com/darthrater78/cert-generator";
-    private static readonly string Version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+    // The informational version keeps a pre-release suffix (2.8.0-dev.1); the build adds "+<commit>".
+    private static readonly string Version = (typeof(MainForm).Assembly
+        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0").Split('+')[0];
     private static readonly string ReleaseNotesUrl = RepoUrl + "/releases/tag/v" + Version;
 
     private const string TrustTile = "trust";

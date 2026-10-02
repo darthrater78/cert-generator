@@ -1,6 +1,6 @@
 # Cert Generator
 
-**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.7.0 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.7.0)**
+**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.8.0-dev.1 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.8.0-dev.1)**
 
 A tool for creating Certificate Authorities and issuing self-signed certificates for posture demos. Runs as a **Docker web app** or a **Windows desktop app** — both use the same interface and database format, and backups created in one mode can be restored in the other.
 
@@ -104,7 +104,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.7.0
+    image: ghcr.io/darthrater78/cert-generator:2.8.0-dev.1
     container_name: cert-generator
     restart: unless-stopped
     security_opt:
@@ -477,6 +477,17 @@ The database format is identical in both modes. Use **Backup** to create an encr
 ## Version history
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
+
+### v2.8.0-dev.1 — 2026-10-02
+
+Pre-release for testing Cert Generator Pal against a real server. Not for production: pairings and Pal-issued certificates made with it may need redoing before v2.8.0, and this README documents the Pal fully in v2.8.0.
+
+#### Docker
+- **Cert Generator Pal (preview)**, a Windows companion app: **Windows PCs** (sidebar, under Devices) › **Add a PC** makes a single-use pairing code that says what the PC may request (web server / RDP, this computer, the signed-in user, code signing; each issued at once or after your approval) and which CRL profiles it may use. The PC makes its own keys, so they never leave it, requests and installs certificates in one click, and renews them near expiry. LAN only
+- The image serves the Pal at `/pal/CertGeneratorPal.exe` to PCs on your LAN, no sign-in needed
+- **Windows PCs** page: each PC with what it may request, its CRL profiles and what is installed on it right now; approve or deny requests; disconnect or delete a PC (its certificates are revoked). Requests waiting for approval show a count in the sidebar and a banner, checked every minute
+- Issued certificates: a **Refresh** button, and the row actions line up whether a certificate offers Export or has its key on a PC
+- Fixed: a library's error text could reach the browser on a failed export, SSH key import, encryption change or restore; those now answer with the app's own message
 
 ### v2.7.0 — 2026-10-01
 

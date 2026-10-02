@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <Version>2.8.0</Version>
+    <Version>2.8.0-dev.1</Version>
     <Company>Cert Generator</Company>
     <Product>Cert Generator Pal</Product>
     <Copyright>darthrater78/cert-generator</Copyright>

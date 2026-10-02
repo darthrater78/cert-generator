@@ -1,6 +1,6 @@
 [project]
 name = "cert-generator"
-version = "2.7.0"
+version = "2.8.0-dev.1"
 description = "Certificate Authority tool for generating and managing self-signed certificates"
 requires-python = ">=3.10"
 dependencies = [
