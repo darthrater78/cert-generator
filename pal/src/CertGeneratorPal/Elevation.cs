@@ -27,6 +27,8 @@ internal sealed class HelperOp
     public bool Machine { get; set; } = true;
     public string? DeviceId { get; set; }
     public string? CrlDp { get; set; }
+    public BindRequest? Bind { get; set; }
+    public string? Thumbprint { get; set; }
 }
 
 /// <summary>
@@ -138,7 +140,9 @@ internal static class Elevation
                     return await Operations.RemoveProfileAsync(op.DeviceId).ConfigureAwait(false);
                 case "request" when op.UseCase is not null && UseCases.All.Contains(op.UseCase) && op.Names is not null:
                     return await Operations.RequestAsync(RequireState(), op.UseCase, op.Names, op.LifetimeDays, op.RenewOf,
-                        ValidThumbprint(op.ReplaceThumbprint)).ConfigureAwait(false);
+                        ValidThumbprint(op.ReplaceThumbprint), op.Bind).ConfigureAwait(false);
+                case "bind" when ValidThumbprint(op.Thumbprint) is { } thumbprint && op.Bind is { IsEmpty: false } bind:
+                    return Operations.Bind(thumbprint, bind);
                 case "collect":
                     return await Operations.CollectAsync(RequireState(), op.Machine).ConfigureAwait(false);
                 case "remove" when op.Targets is { Count: > 0 and <= 500 } targets

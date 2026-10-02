@@ -207,8 +207,9 @@ internal static class Operations
     // ── Requests ────────────────────────────────────────────────────
 
     public static async Task<OpResult> RequestAsync(DeviceState state, string useCase, Dictionary<string, object> names, int? lifetime,
-        int? renewOf, string? replaceThumbprint)
+        int? renewOf, string? replaceThumbprint, BindRequest? bind = null)
     {
+        bind = useCase == UseCases.WebServer && bind is { IsEmpty: false } ? bind : null;
         if (state.CrlDp.Length == 0)
         {
             throw new PalException("No CRL profile. Pick one at the top: it decides where these certificates check revocation.");
@@ -230,13 +231,13 @@ internal static class Operations
         }
         if (view.Status == "issued")
         {
-            Install(state, view, key, machine, replaceThumbprint);
-            return OpResult.Success($"{UseCases.Label(useCase)} certificate for {view.Names.Display} installed. Expires {ExpiryText(view)}.", "issued", view.Id);
+            string notes = Install(state, view, key, machine, replaceThumbprint, bind);
+            return OpResult.Success($"{UseCases.Label(useCase)} certificate for {view.Names.Display} installed. Expires {ExpiryText(view)}.{notes}", "issued", view.Id);
         }
         var pending = PendingStore.Open(machine);
         pending.Items[view.Id] = new PendingStore.Entry
         {
-            KeyName = key.KeyName!, UseCase = useCase, ReplaceThumbprint = replaceThumbprint, DeviceId = state.DeviceId,
+            KeyName = key.KeyName!, UseCase = useCase, ReplaceThumbprint = replaceThumbprint, DeviceId = state.DeviceId, Bind = bind,
         };
         pending.Save();
         return OpResult.Success($"Sent. Your admin approves {UseCases.Label(useCase)} certificates: choose Check again once they have.", "pending", view.Id);
@@ -259,8 +260,8 @@ internal static class Operations
             if (view.Status == "issued")
             {
                 using var key = Keys.Open(entry.KeyName, machine);
-                Install(state, view, key, machine, entry.ReplaceThumbprint);
-                messages.Add($"{UseCases.Label(entry.UseCase)} for {view.Names.Display}: approved and installed.");
+                string notes = Install(state, view, key, machine, entry.ReplaceThumbprint, entry.Bind);
+                messages.Add($"{UseCases.Label(entry.UseCase)} for {view.Names.Display}: approved and installed.{notes}");
                 pending.Items.Remove(id);
             }
             else if (view.Status == "denied")
@@ -278,18 +279,74 @@ internal static class Operations
         return OpResult.Success(string.Join(Environment.NewLine, messages));
     }
 
-    private static void Install(DeviceState state, RequestView view, CngKey key, bool machine, string? replaceThumbprint)
+    /// <summary>
+    /// Install the issued certificate. A renewal first moves whatever used the old certificate
+    /// (IIS, Remote Desktop) to the new one, then removes the old one: the server has revoked it.
+    /// Returns notes for the user (leading space), including binding problems, which don't undo the install.
+    /// </summary>
+    private static string Install(DeviceState state, RequestView view, CngKey key, bool machine, string? replaceThumbprint, BindRequest? bind)
     {
         if (view.Cert is null || view.Chain is null)
         {
             throw new PalException("The server said the certificate was issued but didn't send it. Try Check again.");
         }
         Installer.EnsureChain(view.Chain, state.RootSha256, machine);
-        Installer.InstallLeaf(view.Cert, key, machine);
+        string thumbprint = Installer.InstallLeaf(view.Cert, key, machine);
+        var notes = new List<string>();
+        if (machine && (replaceThumbprint is not null || bind is not null))
+        {
+            using var installed = FindMachineCert(thumbprint);
+            if (replaceThumbprint is not null)
+            {
+                try
+                {
+                    notes.AddRange(Binder.Repoint(replaceThumbprint, installed));
+                }
+                catch (Exception e) when (e is PalException or CryptographicException or UnauthorizedAccessException or IOException)
+                {
+                    // Keep the old certificate: removing it would leave IIS or Remote Desktop with nothing to serve.
+                    AppLog.Error("Couldn't move bindings to the renewed certificate", e);
+                    return " Couldn't move IIS / Remote Desktop to it (" + FriendlyMessage(e) + "), so the old certificate stays installed: use Bind… on the new one, then remove the old one.";
+                }
+            }
+            if (bind is not null)
+            {
+                try
+                {
+                    notes.AddRange(Binder.Apply(installed, bind));
+                }
+                catch (Exception e) when (e is PalException or CryptographicException or UnauthorizedAccessException or IOException)
+                {
+                    AppLog.Error("Couldn't bind the new certificate", e);
+                    notes.Add("Not bound: " + FriendlyMessage(e) + " Use Bind… to try again.");
+                }
+            }
+        }
         if (replaceThumbprint is not null)
         {
             Installer.Remove(machine ? StoreLocation.LocalMachine : StoreLocation.CurrentUser, "My", replaceThumbprint);
         }
+        return notes.Count > 0 ? " " + string.Join(" ", notes) : "";
+    }
+
+    private static X509Certificate2 FindMachineCert(string thumbprint)
+    {
+        using var store = new X509Store(StoreName.My, StoreLocation.LocalMachine);
+        store.Open(OpenFlags.ReadOnly);
+        var found = store.Certificates.Find(X509FindType.FindByThumbprint, thumbprint, validOnly: false);
+        return found.Count > 0 ? found[0] : throw new PalException("Certificate not found. It isn't in the computer's Personal store.");
+    }
+
+    /// <summary>Use a certificate already in the computer's Personal store for IIS and/or Remote Desktop.</summary>
+    public static OpResult Bind(string thumbprint, BindRequest request)
+    {
+        using var cert = FindMachineCert(thumbprint);
+        if (!cert.HasPrivateKey)
+        {
+            throw new PalException("No private key. A certificate needs its key on this PC to serve HTTPS or Remote Desktop.");
+        }
+        var notes = Binder.Apply(cert, request);
+        return OpResult.Success(notes.Count > 0 ? string.Join(" ", notes) : "Nothing to change.");
     }
 
     private static string ExpiryText(RequestView view) =>

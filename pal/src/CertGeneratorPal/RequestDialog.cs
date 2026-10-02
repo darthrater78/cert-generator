@@ -11,10 +11,14 @@ internal sealed class RequestDialog : Form
     private readonly string _useCase;
     private readonly TextBox? _names;
     private readonly NumericUpDown _lifetime;
+    private readonly BindPanel? _bind;
 
     public Dictionary<string, object> Names { get; private set; } = [];
 
     public int LifetimeDays => (int)_lifetime.Value;
+
+    /// <summary>Where to use a web server certificate once installed; null for other kinds or nothing chosen.</summary>
+    public BindRequest? Bind => _bind?.Request is { IsEmpty: false } bind ? bind : null;
 
     public RequestDialog(string useCase, DeviceState state, Policy policy, bool rootTrusted)
     {
@@ -49,6 +53,8 @@ internal sealed class RequestDialog : Form
                 _names = new TextBox { Multiline = true, Width = 460, Height = 90, ScrollBars = ScrollBars.Vertical, Text = state.Fqdn };
                 layout.Controls.Add(_names);
                 layout.Controls.Add(Hint("Allowed by your admin: " + string.Join(", ", policy.Dns)));
+                _bind = new BindPanel(() => SplitNames(_names.Text), []);
+                layout.Controls.Add(_bind);
                 break;
             case UseCases.User:
                 layout.Controls.Add(new Label { Text = "Your sign-in name (UPN):", AutoSize = true });
@@ -117,6 +123,9 @@ internal sealed class RequestDialog : Form
         _ => "A code-signing certificate for scripts and programs. Installed in your Personal store.",
     };
 
+    private static List<string> SplitNames(string text) =>
+        text.Split(['\r', '\n', ',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+
     private void Accept()
     {
         string text = _names?.Text.Trim() ?? "";
@@ -126,10 +135,14 @@ internal sealed class RequestDialog : Form
                 Names = [];
                 break;
             case UseCases.WebServer:
-                var dns = text.Split(['\r', '\n', ',', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+                var dns = SplitNames(text);
                 if (dns.Count == 0)
                 {
                     MessageBox.Show(this, "Enter at least one name.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                if (_bind is not null && !_bind.ValidateFor(this, Text))
+                {
                     return;
                 }
                 Names = new Dictionary<string, object> { ["dns"] = dns };

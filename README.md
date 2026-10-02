@@ -1,6 +1,6 @@
 # Cert Generator
 
-**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.8.0-dev.5 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.8.0-dev.5)**
+**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.8.0-dev.6 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.8.0-dev.6)**
 
 A tool for creating Certificate Authorities and issuing self-signed certificates for posture demos. Runs as a **Docker web app** or a **Windows desktop app** — both use the same interface and database format, and backups created in one mode can be restored in the other.
 
@@ -96,7 +96,7 @@ Cert Generator Pal is a Windows companion app for the Docker version. You pair a
 | **Code signing** | Signing scripts and programs | Current User › Personal |
 | **TLS inspection** | Trusts your CA for HTTPS inspection (no request) | Local Computer › Trusted Root |
 
-Only what the pairing code allows appears. The CA chain is checked before every install and any missing root or intermediate is added. Binding a web server certificate to an IIS site or to Remote Desktop is still yours to do: the Pal installs it, with its key, ready to bind.
+Only what the pairing code allows appears. The CA chain is checked before every install and any missing root or intermediate is added. A web server certificate can go straight to work: tick **Use for Remote Desktop** and/or **Bind to an IIS site** (site, port, and every name or one of the certificate's names) when you request it, or use **Bind…** on one already installed.
 
 ### Setting up a PC
 
@@ -117,7 +117,8 @@ Only what the pairing code allows appears. The CA chain is checked before every 
 
 - **Request** with a tile. *Issue right away* installs the certificate in seconds. *Needs approval* waits for you: the request appears on the **Windows PCs** page with a banner and a count in the sidebar, and the Pal's **Check again** installs it once you approve.
 - **The certificate list** shows every certificate on the PC that chains to your CA, in the user's and the computer's stores, with the server's view of each (valid, revoked, expired) and anything that needs a look. **Details** opens a full certificate view (every field and extension, the chain, where the key lives). **Remove** takes one or several out, with one administrator prompt for the computer's.
-- **Renew** opens in a certificate's last 30 days (the last third for short-lived ones). Until then the button says how long is left. Renewing makes a new key and replaces the old certificate, which is then revoked.
+- **Renew** opens in a certificate's last 30 days (the last third for short-lived ones). Until then the button says how long is left. Renewing makes a new key and replaces the old certificate, which is then revoked. Whatever used the old certificate (IIS sites, other HTTPS bindings, Remote Desktop), even if you set it up by hand, moves to the new one first.
+- **Bind…** uses a web server certificate in the computer's store for **Remote Desktop** or an **IIS site**: the site's https binding is added if it has none, or switched to this certificate. The list shows what uses each certificate, and **Remove** warns before taking away one that's in use.
 - **One live certificate** per PC, kind and name: the server refuses duplicates and early renewals.
 - **CRL profiles**: switching profile backs out the current one first (its certificates leave the PC); the root CA stays trusted. **Self-hosted** adds a small listener on the PC that answers its own revocation checks, for laptops away from the LAN; its tile shows only under that profile.
 - **Connectivity** shows the cert server (over the LAN, and through the relay when the PC has one) and the CRL of the profile in use, each with a coloured status and **Test**. **Refresh** re-checks, and **Log** shows the Pal's log with a **Debug logging** switch (every request and check; never keys or pairing codes). The CRL profile is locked while the server can't be reached.
@@ -160,6 +161,8 @@ What Cloudflare sees: a PC's device id, sizes and times. Each request is **end-t
 | **Clock wrong.** | The PC's clock is more than 5 minutes off the server's |
 | **Not allowed.** / **Revocation type not allowed.** | The pairing doesn't allow that; make a new code with it |
 | **Too early to renew.** | Renewal opens in the certificate's last 30 days |
+| **IIS refused.** / **No such site.** | Check the site name in IIS Manager; the log has appcmd's full answer |
+| **Remote Desktop isn't set up.** | Turn on Remote Desktop in Settings, then **Bind…** again |
 | **Remote access refused.** | Allow remote for the PC on the Windows PCs page; the relay hears about it within a minute |
 | Windows SmartScreen blocks the EXE | It's unsigned: **More info › Run anyway**, after checking its SHA-256 on the Windows PCs page |
 
@@ -197,7 +200,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.8.0-dev.5
+    image: ghcr.io/darthrater78/cert-generator:2.8.0-dev.6
     container_name: cert-generator
     restart: unless-stopped
     security_opt:
@@ -571,6 +574,16 @@ The database format is identical in both modes. Use **Backup** to create an encr
 ## Version history
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
+
+### v2.8.0-dev.6 — 2026-10-02
+
+Sixth pre-release: **Cert Generator Pal binds web server certificates to IIS and Remote Desktop**, and keeps them bound through renewals. Not for production.
+
+#### Docker
+- **Pal (served by this image) — bindings:** the Web server / RDP request has **Use for Remote Desktop** and **Bind to an IIS site** (site, port, and every name or one of the certificate's names via SNI); **Bind…** does the same for a certificate already in the computer's store. The site's https binding is added when missing, and Remote Desktop's service is given read access to the key
+- **Pal — renewals keep working:** before the old certificate is removed (the server revokes it), every HTTPS binding, IIS site and Remote Desktop that used it moves to the new one, including bindings made by hand. If that can't be done, the old certificate stays installed and the Pal says so
+- **Pal — certificate list:** shows what uses each certificate; **Remove** and a CRL profile switch warn before taking away one in use
+- Windows PCs page: disconnected PCs are listed last
 
 ### v2.8.0-dev.5 — 2026-10-02
 

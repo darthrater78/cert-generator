@@ -207,6 +207,9 @@ internal sealed class PendingStore
         public string UseCase { get; set; } = "";
         public string DeviceId { get; set; } = "";
         public string? ReplaceThumbprint { get; set; }
+
+        /// <summary>Where to use the certificate once the admin approves it (web server only).</summary>
+        public BindRequest? Bind { get; set; }
     }
 
     private readonly string _path;

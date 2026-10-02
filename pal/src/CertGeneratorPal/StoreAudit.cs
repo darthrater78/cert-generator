@@ -18,6 +18,14 @@ internal sealed class AuditItem
     public string ServerStatus { get; set; } = "unknown";
     public List<string> Flags { get; } = [];
 
+    /// <summary>What uses this certificate: "Remote Desktop", "HTTPS 0.0.0.0:443" (the computer's Personal store only).</summary>
+    public List<string> UsedBy { get; } = [];
+
+    /// <summary>A server certificate in the computer's Personal store, with its key: it can serve IIS or Remote Desktop.</summary>
+    public bool CanBind => !IsCa && Location == StoreLocation.LocalMachine && StoreName == "My" && Cert.HasPrivateKey
+        && (Cert.Extensions.OfType<X509EnhancedKeyUsageExtension>().FirstOrDefault() is not { } eku
+            || eku.EnhancedKeyUsages.Cast<System.Security.Cryptography.Oid>().Any(o => o.Value == "1.3.6.1.5.5.7.3.1"));
+
     public string StoreLabel => $"{(Location == StoreLocation.LocalMachine ? "Computer" : "User")} \\ {StoreName}";
 
     public string UseLabel => FromPal is { } pal && UseCases.FromTemplate(pal.Template) is { } useCase
@@ -98,6 +106,11 @@ internal static class StoreAudit
             cert.Dispose();
         }
         Flag(items);
+        var uses = Binder.Uses();
+        foreach (var item in items.Where(i => i.Location == StoreLocation.LocalMachine && i.StoreName == "My"))
+        {
+            item.UsedBy.AddRange(uses.GetValueOrDefault(item.Cert.Thumbprint) ?? []);
+        }
         return items;
     }
 

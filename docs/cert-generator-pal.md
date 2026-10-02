@@ -72,8 +72,9 @@ Disconnect, Delete) and the pairing codes (unused / used / expired / revoked).
      (CN = SAN = `pc01.lan`). The server ignores any names the PC sends.
    - **Web server / RDP** — starts from the same FQDN; extra names (aliases,
      the PC's LAN IP) can be added within the policy, like AD CS's *Web
-     Server* template. Binding it to an IIS site or Remote Desktop is not built
-     yet (§4 Bindings): the certificate is installed with its key, ready to bind.
+     Server* template. Options *Use for Remote Desktop* and *Bind to an IIS site*
+     (site, port, every name or one of the certificate's names via SNI); **Bind…**
+     does the same for a certificate already installed (§4 Bindings).
    - **Me** — user/client-auth certificate, filled with the signed-in user's
      UPN (`whoami /upn`, falling back to the e-mail the admin's pattern
      expects); editable only within the user patterns.
@@ -251,10 +252,31 @@ Machine-scope keys in the machine key store. The device key's ACL also grants
 *use* to Interactive users so the unelevated Pal can sign "Me" / code-signing
 requests (⚠ verify on a real PC, with and without a TPM).
 
-**Bindings (web server / RDP) — not built yet.** Planned: IIS: `netsh http` SSL binding plus the site's
-`https` binding via `appcmd`. RDP: `Win32_TSGeneralSetting.SSLCertificateSHA1Hash`.
-Both run fixed executables with argument lists — never a shell string built from
-input. Renew re-applies the binding to the new thumbprint.
+**Bindings (web server / RDP).** `Binder.cs`, elevated (`bind` helper op, or as part of
+`request` / `collect`; a request waiting for approval keeps its choice in the pending entry).
+- **http.sys:** the SSL binding is set through `httpapi.dll` (`HttpSetServiceConfiguration`,
+  address:port and SNI host:port kinds), not `netsh`, whose output Windows translates.
+  New bindings get IIS's app id and the `MY` store; an existing one keeps every setting
+  but the certificate. A failed swap puts the old certificate back.
+- **IIS:** `appcmd list site /config /xml` finds the site; if it has no matching https
+  binding, `appcmd set site <name> /+bindings.[protocol='https',bindingInformation='*:port:host',sslFlags]`
+  adds one (`sslFlags=1` for SNI). The binding's `certificateHash` / `certificateStoreName`
+  are set too (IIS Manager shows them), best effort. Reading IIS's configuration needs
+  administrator rights, so the unelevated dialog may ask for the site name instead of listing.
+- **RDP:** the `SSLCertificateSHA1Hash` value under `…\WinStations\RDP-Tcp` (what
+  `Win32_TSGeneralSetting` sets), plus read access to the key for NETWORK SERVICE, which
+  Remote Desktop runs as (⚠ verify with a TPM key, and that new connections pick it up
+  without restarting the service).
+- **Renewal** repoints *everything* that used the old thumbprint (http.sys entries of
+  either kind, IIS's recorded hash, RDP) before the old certificate is removed, including
+  bindings made by hand. If that fails, the old certificate stays installed and the user
+  is told to bind the new one.
+- The certificate list shows what uses each certificate; Remove and a CRL profile switch
+  warn when a certificate is in use.
+- Validation (site name, port, host must be one of the certificate's DNS names, no
+  wildcard) lives in Core `BindingRules` and is unit-tested.
+- appcmd runs as a fixed executable with an argument list — never a shell string
+  built from input.
 
 **Store audit.** Runs on start and on **Refresh**, unelevated (reading the
 stores needs no admin rights; removing from machine stores does):
@@ -338,7 +360,7 @@ the admin set.
 2. **Devices page** in the web UI.
 3. **Pal core + UI** — connect, four use cases, trust, renew, store audit. ✅
    (v2.8.0-dev.1 – dev.3, then real-PC feedback rounds)
-4. **Bindings** — IIS and RDP. ⬜ not built
+4. **Bindings** — IIS and RDP. ✅ built (v2.8.0-dev.6); ⏳ real-PC test
 5. **CI / release, README, screenshots, real-PC test.** ⏳ (pre-releases
    `2.8.0-dev.N` from the branch; README and screenshots done; real-PC test
    ongoing)

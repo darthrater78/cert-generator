@@ -42,6 +42,7 @@ internal sealed class MainForm : Form
     private readonly Button _renew = new() { Text = "Renew", AutoSize = true, Enabled = false };
     private readonly Button _remove = new() { Text = "Remove", AutoSize = true, Enabled = false, Tag = Theme.ButtonKind.Danger };
     private readonly Button _details = new() { Text = "Details", AutoSize = true, Enabled = false };
+    private readonly Button _bind = new() { Text = "Bind…", AutoSize = true, Enabled = false };
     private readonly Button _refresh = new() { Text = "Refresh", AutoSize = true };
     private readonly Label _status = new()
     {
@@ -253,8 +254,9 @@ internal sealed class MainForm : Form
         _renew.Click += async (_, _) => await RenewAsync();
         _remove.Click += async (_, _) => await RemoveAsync();
         _details.Click += (_, _) => ShowDetails();
+        _bind.Click += async (_, _) => await BindAsync();
         _refresh.Click += async (_, _) => await RefreshAsync();
-        actions.Controls.AddRange([_renew, _remove, _details, _refresh]);
+        actions.Controls.AddRange([_renew, _bind, _remove, _details, _refresh]);
         _mainPanel.Controls.Add(actions, 0, 4);
     }
 
@@ -396,7 +398,8 @@ internal sealed class MainForm : Form
         {
             return;
         }
-        var lines = _items.Where(i => i.FromPal is not null && !i.IsCa).Select(i => $"• {i.Names}  ({i.UseLabel}, {i.StoreLabel})").ToList();
+        var lines = _items.Where(i => i.FromPal is not null && !i.IsCa).Select(i => $"• {i.Names}  ({i.UseLabel}, {i.StoreLabel})"
+            + (i.UsedBy.Count > 0 ? $" ⚠ used by {string.Join(", ", i.UsedBy)}: request and bind a new one afterwards" : "")).ToList();
         if (_state?.CrlDp == "placeholder")
         {
             lines.Add("• the self-hosted CRL listener");
@@ -814,7 +817,7 @@ internal sealed class MainForm : Form
             row.SubItems.Add(item.Cert.NotAfter.ToString("d MMM yyyy", CultureInfo.CurrentCulture));
             row.SubItems.Add(RenewText(item));
             row.SubItems.Add(item.ServerStatus);
-            row.SubItems.Add(string.Join("; ", item.Flags));
+            row.SubItems.Add(string.Join("; ", item.Flags.Concat(item.UsedBy.Select(u => "Used by " + u))));
             if (item.ServerStatus == "revoked" || item.Flags.Any(f => f.StartsWith("Expired", StringComparison.Ordinal)))
             {
                 row.ForeColor = Theme.Danger;
@@ -861,6 +864,8 @@ internal sealed class MainForm : Form
         _remove.Enabled = !_busy && count > 0;
         _remove.Text = count > 1 ? $"REMOVE {count}" : "REMOVE";
         _details.Enabled = item is not null;
+        _bind.Enabled = !_busy && item is { CanBind: true };
+        _crlTip.SetToolTip(_bind, "Use this certificate for Remote Desktop or an IIS site. Renewing it moves them to the new certificate.");
     }
 
     /// <summary>When a certificate this PC was issued can be renewed: "now", "in 245 days", or "" for others.</summary>
@@ -926,7 +931,7 @@ internal sealed class MainForm : Form
         {
             return;
         }
-        await RunRequestAsync(useCase, dialog.Names, dialog.LifetimeDays, renewOf: null, replace: null);
+        await RunRequestAsync(useCase, dialog.Names, dialog.LifetimeDays, renewOf: null, replace: null, dialog.Bind);
     }
 
     private async Task RenewAsync()
@@ -950,7 +955,8 @@ internal sealed class MainForm : Form
         await RunRequestAsync(useCase, names, lifetime: null, renewOf: pal.Id, replace: item.Cert.Thumbprint);
     }
 
-    private async Task RunRequestAsync(string useCase, Dictionary<string, object> names, int? lifetime, int? renewOf, string? replace)
+    private async Task RunRequestAsync(string useCase, Dictionary<string, object> names, int? lifetime, int? renewOf, string? replace,
+        BindRequest? bind = null)
     {
         if (_state is null || !BeginBusy($"Requesting {UseCases.Label(useCase)}…"))
         {
@@ -958,7 +964,7 @@ internal sealed class MainForm : Form
         }
         try
         {
-            var op = new HelperOp { Op = "request", UseCase = useCase, Names = names, LifetimeDays = lifetime, RenewOf = renewOf, ReplaceThumbprint = replace };
+            var op = new HelperOp { Op = "request", UseCase = useCase, Names = names, LifetimeDays = lifetime, RenewOf = renewOf, ReplaceThumbprint = replace, Bind = bind };
             OpResult result;
             if (UseCases.IsMachine(useCase))
             {
@@ -1044,6 +1050,12 @@ internal sealed class MainForm : Form
         }
         string warning = items.Any(i => i.IsRoot)
             ? "\n\nThis includes the root CA: this PC will stop trusting every certificate from it." : "";
+        var inUse = items.Where(i => i.UsedBy.Count > 0).ToList();
+        if (inUse.Count > 0)
+        {
+            warning += "\n\nIn use: " + string.Join("; ", inUse.Select(i => $"{i.Names} by {string.Join(", ", i.UsedBy)}")) +
+                ". Without it, those HTTPS bindings have no certificate and Remote Desktop goes back to its own.";
+        }
         string question = items.Count == 1 ? "Remove this certificate?" : $"Remove these {items.Count} certificates?";
         if (MessageBox.Show(this, question + "\n\n" + string.Join("\n", lines) + warning, Text, MessageBoxButtons.OKCancel,
                 MessageBoxIcon.Warning) != DialogResult.OK || !BeginBusy("Removing…"))
@@ -1085,6 +1097,32 @@ internal sealed class MainForm : Form
             {
                 SetStatus(items.Count == 1 ? "Removed." : $"Removed {items.Count} certificates.");
             }
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            Fail(e);
+        }
+        finally
+        {
+            EndBusy();
+        }
+        await RefreshAsync();
+    }
+
+    private async Task BindAsync()
+    {
+        if (Selected is not { CanBind: true } item)
+        {
+            return;
+        }
+        using var dialog = new BindDialog(item);
+        if (dialog.ShowDialog(this) != DialogResult.OK || !BeginBusy("Binding…"))
+        {
+            return;
+        }
+        try
+        {
+            Report(await Elevation.RunAsync(new HelperOp { Op = "bind", Thumbprint = item.Cert.Thumbprint, Bind = dialog.Request }));
         }
         catch (Exception e) when (e is not OutOfMemoryException)
         {
