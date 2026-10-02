@@ -384,7 +384,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input[type="checkbo
   font: italic 13px var(--font-serif);
   color: var(--text-dim);
 }
-.form-group input:not([type="checkbox"]):not([type="radio"]), .form-group select, .form-group textarea {
+.form-group input:not([type="checkbox"]):not([type="radio"]), .form-group select, .form-group textarea, .pal-cases select {
   padding: 7px 2px 6px;
   background: transparent;
   border: 0;
@@ -401,8 +401,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input[type="checkbo
   background: var(--bg) !important;
   border-radius: var(--radius) !important;
 }
-.form-group select { cursor: pointer; }
-.form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+.form-group select, .pal-cases select { cursor: pointer; }
+.form-group input:focus, .form-group select:focus, .form-group textarea:focus, .pal-cases select:focus {
   border-color: var(--accent);
   box-shadow: 0 1px 0 var(--accent);
 }
@@ -585,7 +585,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   position: fixed; inset: 0;
   background: color-mix(in srgb, #0b0b0f 55%, transparent);
   display: flex; align-items: center; justify-content: center;
-  z-index: 100;
+  z-index: 120;  /* above the phone menu button (110) and sidebar (100) */
   animation: backdrop-in 0.15s ease;
 }
 .modal {
@@ -1018,3 +1018,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .import-pop .import-export .form-row { margin-bottom: 10px; }
 .import-pop .import-export-check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
 .import-pop .os-tabs .os-tab-export { margin-left: auto; }
+
+/* Cert Generator Pal */
+.pal-cases td:last-child { width: 1%; }
+.pal-cases select { min-width: 170px; }
+.pal-code-wrap { position: relative; }
+.pal-code-copy { position: absolute; top: 6px; right: 6px; background: var(--surface); }
+.pal-code { width: 100%; padding-right: 76px; font-family: var(--font-mono, monospace); font-size: 12.5px; word-break: break-all; resize: none; }
+.pal-names { font-family: var(--font-mono, monospace); font-size: 12.5px; }
+.pal-sha { word-break: break-all; }

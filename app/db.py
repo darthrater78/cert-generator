@@ -177,6 +177,9 @@ _MIGRATIONS = (
     ("certificate_authorities", "cf_pushed_at", "TEXT"),
     ("certificate_authorities", "cf_push_error", "TEXT"),    # last failed push; NULL = up to date
     ("certificates", "pal_device_id", "TEXT"),  # issued to a Cert Generator Pal device; key_pem is empty
+    ("certificates", "pal_present", "INTEGER"),  # 1/0: still installed on that PC at its last check; NULL = not checked
+    ("certificates", "pal_checked_at", "TEXT"),
+    ("pal_requests", "crl_dp", "TEXT"),  # the revocation type (profile) the PC asked with; NULL = the policy's default
 )
 
 CF_COLUMNS = ("cf_worker", "cf_account_id", "cf_crl_path", "cf_hostname", "cf_domain_id", "cf_dp_url",
@@ -597,8 +600,8 @@ def get_ca_summary(ca_id: int) -> dict[str, Any] | None:
     """id, name, domain and CRL state, without the key: readable while locked."""
     with _connect() as conn:
         row = conn.execute(
-            "SELECT id, name, domain, crl_public, crl_next_update, cf_worker, cf_dp_url, cf_hostname, cf_crl_path "
-            "FROM certificate_authorities WHERE id = ?", (ca_id,),
+            "SELECT id, parent_ca_id, name, domain, crl_public, crl_next_update, cf_worker, cf_dp_url, cf_hostname, "
+            "cf_crl_path FROM certificate_authorities WHERE id = ?", (ca_id,),
         ).fetchone()
         return dict(row) if row else None
 
@@ -847,7 +850,7 @@ def save_cert(
 
 _CERT_LIST_COLUMNS = (
     "id, ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, revoked, created_at, "
-    "crl_dp_url, pal_device_id, length(key_pem) > 0 AS has_key"
+    "crl_dp_url, pal_device_id, pal_present, length(key_pem) > 0 AS has_key"
 )
 
 
@@ -1007,7 +1010,9 @@ _PAL_CODE_COLUMNS = "id, label, ca_id, policy, server_url, created_at, expires_a
 def list_pal_codes() -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
-            f"SELECT {_PAL_CODE_COLUMNS} FROM pal_codes ORDER BY created_at DESC LIMIT 500"  # nosec B608 - constant column list
+            "SELECT c.id, c.label, c.ca_id, c.policy, c.server_url, c.created_at, c.expires_at, c.used_at, c.device_id, "
+            "c.revoked_at, d.hostname AS device_name, d.fqdn AS device_fqdn "
+            "FROM pal_codes c LEFT JOIN pal_devices d ON d.id = c.device_id ORDER BY c.created_at DESC LIMIT 500"
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -1034,7 +1039,8 @@ def revoke_pal_code(code_id: str) -> bool:
 
 def enroll_pal_device(code_id: str, device: dict[str, Any]) -> bool:
     """Use the code and create its device in one transaction. False if the code was used,
-    revoked or expired in the meantime, so a code can never connect two devices."""
+    revoked or expired in the meantime, so a code can never connect two devices. The device
+    is named after itself (the host name it reports), not after the code's note."""
     now = _utc_now()
     with _connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -1047,8 +1053,9 @@ def enroll_pal_device(code_id: str, device: dict[str, Any]) -> bool:
             return False
         conn.execute(
             "INSERT INTO pal_devices (id, label, hostname, fqdn, os, public_key, ca_id, policy, code_id, last_seen) "
-            "SELECT ?, label, ?, ?, ?, ?, ca_id, policy, id, ? FROM pal_codes WHERE id = ?",
-            (device["id"], device["hostname"], device["fqdn"], device["os"], device["public_key"], now, code_id),
+            "SELECT ?, ?, ?, ?, ?, ?, ca_id, policy, id, ? FROM pal_codes WHERE id = ?",
+            (device["id"], device["hostname"] or device["fqdn"].split(".")[0], device["hostname"], device["fqdn"],
+             device["os"], device["public_key"], now, code_id),
         )
         return True
 
@@ -1101,6 +1108,25 @@ def list_pal_device_certs(device_id: str) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
+def mark_pal_presence(device_id: str, present_serials: set[str]) -> None:
+    """Record which of the device's own certificates its last store audit found."""
+    now = _utc_now()
+    with _connect() as conn:
+        for row in conn.execute("SELECT id, serial FROM certificates WHERE pal_device_id = ?", (device_id,)).fetchall():
+            conn.execute("UPDATE certificates SET pal_present = ?, pal_checked_at = ? WHERE id = ?",
+                         (int(row["serial"] in present_serials), now, row["id"]))
+
+
+def list_pal_issued_certs() -> list[dict[str, Any]]:
+    """Every certificate issued to a Pal device, for the Devices page (one query, not one per device)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT pal_device_id, template, common_name, not_after, revoked, pal_present FROM certificates "
+            "WHERE pal_device_id IS NOT NULL ORDER BY not_after DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def use_pal_nonce(device_id: str, nonce: str, now: float, ttl: float) -> bool:
     """Record a request nonce; False if this device already used it within ``ttl`` seconds."""
     with _connect() as conn:
@@ -1114,12 +1140,12 @@ def use_pal_nonce(device_id: str, nonce: str, now: float, ttl: float) -> bool:
 
 
 def create_pal_request(device_id: str, use_case: str, names: str, csr_pem: bytes, lifetime_days: int,
-                       renew_of: int | None) -> int:
+                       renew_of: int | None, crl_dp: str | None = None) -> int:
     with _connect() as conn:
         cursor = conn.execute(
-            "INSERT INTO pal_requests (device_id, use_case, names, csr_pem, lifetime_days, status, renew_of) "
-            "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
-            (device_id, use_case, names, csr_pem, lifetime_days, renew_of),
+            "INSERT INTO pal_requests (device_id, use_case, names, csr_pem, lifetime_days, status, renew_of, crl_dp) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+            (device_id, use_case, names, csr_pem, lifetime_days, renew_of, crl_dp),
         )
         return cursor.lastrowid
 
@@ -1142,7 +1168,7 @@ def list_pal_requests(status: str | None = None, device_id: str | None = None) -
     with _connect() as conn:
         rows = conn.execute(
             "SELECT r.id, r.device_id, d.label AS device_label, d.hostname, r.use_case, r.names, r.lifetime_days, "
-            "r.status, r.cert_id, r.renew_of, r.reason, r.created_at, r.decided_at "
+            "r.status, r.cert_id, r.renew_of, r.reason, r.created_at, r.decided_at, r.crl_dp "
             f"FROM pal_requests r JOIN pal_devices d ON d.id = r.device_id {where} "  # nosec B608 - constant clauses
             "ORDER BY r.created_at DESC, r.id DESC LIMIT 500",
             params,

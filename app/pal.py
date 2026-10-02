@@ -14,6 +14,7 @@ import json
 import re
 import secrets
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 
 from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
@@ -39,6 +40,8 @@ USE_CASES = {
     "user": "user",
     "code-signing": "code-signing",
 }
+USE_CASE_LABELS = {"web-server": "web server", "computer": "computer", "user": "user", "code-signing": "code-signing"}
+TEMPLATE_USE_CASES = {template: case for case, template in USE_CASES.items()}
 MACHINE_USE_CASES = ("web-server", "computer")
 APPROVAL_MODES = ("off", "auto", "approve")
 DEFAULT_APPROVALS = {"web-server": "auto", "computer": "auto", "user": "approve", "code-signing": "off"}
@@ -243,19 +246,28 @@ class Policy:
     dns: list[str]
     users: list[str]
     max_days: int
-    crl_dp: str
+    crl_dps: list[str]          # revocation types the PC may choose from: one profile each in the Pal
     crl_base_url: str | None
+
+    @property
+    def crl_dp(self) -> str:
+        """The default revocation type: the first allowed."""
+        return self.crl_dps[0] if self.crl_dps else "none"
 
     def to_json(self) -> str:
         return json.dumps(self.__dict__, separators=(",", ":"))
 
     @classmethod
     def from_json(cls, text: str) -> Policy:
-        return cls(**json.loads(text))
+        data = json.loads(text)
+        if "crl_dp" in data:  # one revocation type, before a code could allow several
+            data["crl_dps"] = [data.pop("crl_dp")]
+        return cls(**data)
 
     def public(self) -> dict[str, Any]:
-        """What the PC is told: which tiles to offer and which names will be accepted."""
-        return {"use_cases": self.use_cases, "dns": self.dns, "users": self.users, "max_days": self.max_days}
+        """What the PC is told: which tiles to offer, which names will be accepted, which revocation types."""
+        return {"use_cases": self.use_cases, "dns": self.dns, "users": self.users, "max_days": self.max_days,
+                "crl_dps": self.crl_dps}
 
 
 def parse_policy(data: dict[str, Any], max_lifetime: int) -> Policy:
@@ -286,7 +298,7 @@ def parse_policy(data: dict[str, Any], max_lifetime: int) -> Policy:
     max_days = data.get("max_days", 365)
     if isinstance(max_days, bool) or not isinstance(max_days, int) or not 1 <= max_days <= max_lifetime:
         raise PalError(f"Maximum lifetime must be between 1 and {max_lifetime} days")
-    return Policy(use_cases=use_cases, dns=dns, users=users, max_days=max_days, crl_dp="none", crl_base_url=None)
+    return Policy(use_cases=use_cases, dns=dns, users=users, max_days=max_days, crl_dps=["none"], crl_base_url=None)
 
 
 @dataclass
@@ -306,9 +318,12 @@ def parse_fqdn(raw: Any, policy: Policy) -> str:
     name only, so it must already fit the policy when machine certificates are allowed."""
     fqdn = raw.strip().lower().rstrip(".") if isinstance(raw, str) else ""
     if not fqdn or not _is_dns_name(fqdn):
-        raise PalError("This PC has no usable DNS name. Set its DNS suffix and try again")
+        raise PalError("No DNS suffix. This PC's name has no domain (like pc01.lan), so a CA can't name it. "
+                       "Set the PC's primary DNS suffix and try again")
     if any(policy.use_cases[c] != "off" for c in MACHINE_USE_CASES) and not dns_name_allowed(fqdn, policy.dns):
-        raise PalError(f"This PC's name, {fqdn}, is not allowed by the pairing code")
+        suffix = fqdn.split(".", 1)[1] if "." in fqdn else fqdn
+        raise PalError(f"Wrong domain. This PC is {fqdn}, but this pairing code only allows {', '.join(policy.dns)}. "
+                       f"Ask your admin for a new code that allows *.{suffix}")
     return fqdn
 
 
@@ -327,9 +342,9 @@ def parse_names(use_case: str, data: Any, policy: Policy, device_fqdn: str) -> N
         cleaned = [n.strip().lower().rstrip(".") for n in dns]
         for name in cleaned:
             if not _is_requestable_name(name):
-                raise PalError(f"Not a DNS name or IP address: {name!r}")
+                raise PalError(f"Not a valid name. {name!r} isn't a DNS name or IP address")
             if not dns_name_allowed(name, policy.dns):
-                raise PalError(f"{name} is not allowed for this PC")
+                raise PalError(f"Wrong domain. {name} isn't allowed for this PC (allowed: {', '.join(policy.dns)})")
         unique = list(dict.fromkeys(cleaned))
         return Names(common_name=unique[0], san=unique)
     if use_case == "user":
@@ -339,13 +354,13 @@ def parse_names(use_case: str, data: Any, policy: Policy, device_fqdn: str) -> N
             raise PalError("names.upn must be user@domain")
         upn = upn.strip().lower()
         if not user_name_allowed(upn, policy.users):
-            raise PalError(f"{upn} is not allowed for this PC")
+            raise PalError(f"Name not allowed. {upn} isn't allowed for this PC (allowed: {', '.join(policy.users)})")
         if email is not None:
             if not isinstance(email, str) or not _EMAIL_RE.match(email.strip().lower()):
                 raise PalError("names.email must be an e-mail address")
             email = email.strip().lower()
             if not user_name_allowed(email, policy.users):
-                raise PalError(f"{email} is not allowed for this PC")
+                raise PalError(f"Name not allowed. {email} isn't allowed for this PC (allowed: {', '.join(policy.users)})")
         return Names(common_name=upn, san=[], upn=upn, email=email or upn)
     if use_case == "code-signing":
         cn = data.get("cn")
@@ -353,6 +368,16 @@ def parse_names(use_case: str, data: Any, policy: Policy, device_fqdn: str) -> N
             raise PalError(f"names.cn must be 1-{MAX_CN_LEN} letters, digits, spaces or .,'()&-")
         return Names(common_name=cn.strip(), san=[])
     raise PalError("Unknown use case")
+
+
+RENEW_WINDOW_DAYS = 30
+
+
+def renew_opens(not_before: datetime, not_after: datetime) -> datetime:
+    """When a certificate may be renewed: its last 30 days, or its last third if it lives
+    less than 90 days. Earlier renewals are refused, so a PC can't stockpile certificates."""
+    window = min(timedelta(days=RENEW_WINDOW_DAYS), (not_after - not_before) / 3)
+    return not_after - window
 
 
 def normalize_serial(raw: Any) -> str | None:

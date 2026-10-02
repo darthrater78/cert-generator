@@ -56,7 +56,7 @@ class _SessionInterface(SecureCookieSessionInterface):
     on the Pal device API, which authenticates every request by signature."""
 
     def save_session(self, app, session, response) -> None:
-        if request.path.startswith(("/crl/", pal.DEVICE_PREFIX)):
+        if request.path.startswith(("/crl/", pal.DEVICE_PREFIX)) or request.path == pal.DOWNLOAD_PATH:
             return
         super().save_session(app, session, response)
 
@@ -169,8 +169,8 @@ def _auth_check() -> Response | None:
         return rejection
     if request.path in _PUBLIC_PATHS or request.path.startswith(("/static/", "/crl/")):
         return None
-    if request.path.startswith(pal.DEVICE_PREFIX):
-        return None  # PCs sign every request; routes/pal.py checks the signature and the LAN source
+    if request.path.startswith(pal.DEVICE_PREFIX) or request.path == pal.DOWNLOAD_PATH:
+        return None  # PCs sign every request (the download is public); routes/pal.py checks the LAN source
     if not db.has_users():
         return redirect("/setup")
     # MFA pending: user authenticated with password but hasn't completed MFA yet

@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import secrets
 import time
 
@@ -91,6 +92,15 @@ class FakePal:
                            {"use_case": use_case, "names": names, "csr": csr_pem(key), **extra}), key
 
 
+def _near_expiry(cert_id: int, days_left: int = 5) -> None:
+    """Move a certificate into its renewal window (the server reads the dates it stored)."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    with db._connect() as conn:
+        conn.execute("UPDATE certificates SET not_before = ?, not_after = ? WHERE id = ?",
+                     ((now - timedelta(days=360)).isoformat(), (now + timedelta(days=days_left)).isoformat(), cert_id))
+
+
 def csr_pem(key, cn="ignored-by-server") -> str:
     algorithm = None if isinstance(key, ed25519.Ed25519PrivateKey) else hashes.SHA256()
     csr = (x509.CertificateSigningRequestBuilder()
@@ -159,15 +169,30 @@ def test_enroll_body_tampering_breaks_proof(admin_client):
     assert resp.status_code == 403
 
 
-def test_revoked_and_expired_codes_fail(admin_client):
+def test_revoked_expired_and_used_codes_say_why(admin_client):
     ca_id = _make_ca(admin_client)
     data = _code(admin_client, ca_id).get_json()
     assert admin_client.post(f"/api/pal/codes/{data['id']}/revoke").status_code == 200
-    assert FakePal(admin_client, data["pairing_code"]).enroll().status_code == 403
+    resp = FakePal(admin_client, data["pairing_code"]).enroll()
+    assert resp.status_code == 403 and resp.get_json()["error"].startswith("Code revoked.")
     data = _code(admin_client, ca_id).get_json()
     with db._connect() as conn:
         conn.execute("UPDATE pal_codes SET expires_at = '2000-01-01T00:00:00Z' WHERE id = ?", (data["id"],))
-    assert FakePal(admin_client, data["pairing_code"]).enroll().status_code == 403
+    resp = FakePal(admin_client, data["pairing_code"]).enroll()
+    assert resp.status_code == 403 and resp.get_json()["error"] == (
+        "Code expired. This pairing code expired 01 Jan 2000 00:00 UTC. Ask your admin for a new one")
+    data = _code(admin_client, ca_id).get_json()
+    assert FakePal(admin_client, data["pairing_code"]).enroll().status_code == 201
+    resp = FakePal(admin_client, data["pairing_code"]).enroll()
+    assert resp.status_code == 403 and resp.get_json()["error"].startswith("Code already used.")
+
+
+def test_code_state_is_only_told_to_the_code_holder(admin_client):
+    ca_id = _make_ca(admin_client)
+    data = _code(admin_client, ca_id).get_json()
+    admin_client.post(f"/api/pal/codes/{data['id']}/revoke")
+    resp = FakePal(admin_client, data["pairing_code"]).enroll(key=secrets.token_bytes(32))  # wrong key
+    assert resp.get_json()["error"].startswith("Code not accepted.")
 
 
 def test_enroll_rejects_stale_clock(admin_client):
@@ -206,7 +231,7 @@ def test_admin_api_requires_login(client):
     ({"use_cases": {"web-server": "sometimes"}}, "choose one of"),
     ({"max_days": 0}, "Maximum lifetime"),
     ({"expires_hours": 1000}, "expire within"),
-    ({"label": ""}, "label"),
+    ({"label": "x" * 65}, "note"),
 ])
 def test_code_form_validation(admin_client, overrides, message):
     ca_id = _make_ca(admin_client)
@@ -327,6 +352,10 @@ def test_approval_flow_and_renewal(paired):
     cert = x509.load_pem_x509_certificate(view["cert"].encode())
     assert cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(
         x509.RFC822Name) == ["alice@lan"]
+    # renewal opens near expiry only
+    resp, _ = device.request("user", {"upn": "alice@lan"}, renew_of=view["cert_id"])
+    assert resp.status_code == 409 and resp.get_json()["error"].startswith("Too early to renew.")
+    _near_expiry(view["cert_id"])
     # renewing the approved names needs no new approval
     resp, _ = device.request("user", {"upn": "alice@lan"}, renew_of=view["cert_id"])
     assert resp.status_code == 201
@@ -404,7 +433,7 @@ def test_revoke_device_stops_requests_and_revokes_certs(paired):
     assert db.get_cert_summary(issued.get_json()["cert_id"])["revoked"] == 1
     assert db.get_pal_request(pending.get_json()["id"])["status"] == "denied"
     resp = device.signed("GET", "/api/pal/v1/device")
-    assert resp.status_code == 403 and "disconnected" in resp.get_json()["error"]
+    assert resp.status_code == 403 and resp.get_json()["error"].startswith("Disconnected.")
 
 
 def test_status_lookup(paired):
@@ -488,9 +517,10 @@ def test_computer_cert_uses_fqdn_from_pairing(paired):
 
 
 @pytest.mark.parametrize("fqdn, message", [
-    ("pc01.example.com", "not allowed by the pairing code"),
-    ("", "no usable DNS name"),
-    ("bad name.lan", "no usable DNS name"),
+    ("pc01.example.com", "Wrong domain. This PC is pc01.example.com, but this pairing code only allows *.lan, 10.0.0.0/24. "
+                         "Ask your admin for a new code that allows *.example.com"),
+    ("", "No DNS suffix."),
+    ("bad name.lan", "No DNS suffix."),
 ])
 def test_enroll_requires_fqdn_in_policy(admin_client, fqdn, message):
     ca_id = _make_ca(admin_client)
@@ -506,3 +536,238 @@ def test_fqdn_not_checked_when_no_machine_certs(admin_client):
     code = _code(admin_client, ca_id, use_cases={"user": "auto"}, dns=[]).get_json()["pairing_code"]
     device = FakePal(admin_client, code)
     assert device.enroll(device.enroll_body(fqdn="laptop.home.example")).status_code == 201
+
+
+# ── Download ────────────────────────────────────────────────────────
+
+def _write_exe(folder, data: bytes):
+    """Write the EXE, then make it and its folder read-only, as the Docker image does."""
+    folder.mkdir(exist_ok=True)
+    folder.chmod(0o755)
+    exe = folder / "CertGeneratorPal.exe"
+    if exe.exists():
+        exe.chmod(0o644)
+    exe.write_bytes(data)
+    exe.chmod(0o444)
+    folder.chmod(0o555)
+    return exe
+
+
+@pytest.fixture
+def fake_exe(tmp_path, monkeypatch):
+    exe = _write_exe(tmp_path / "pal", b"MZ" + b"\0" * 1000)
+    monkeypatch.setattr(pal_routes, "PAL_EXE", exe)
+    yield exe
+    exe.parent.chmod(0o755)
+
+
+def test_download_is_public_on_lan_without_cookies(client, fake_exe):
+    client.post("/setup", data={"username": "a", "password": "correct-horse-battery", "confirm": "correct-horse-battery"})
+    anonymous = server.app.test_client()
+    resp = anonymous.get("/pal/CertGeneratorPal.exe", environ_base=LAN)
+    assert resp.status_code == 200 and resp.data.startswith(b"MZ")
+    assert "attachment" in resp.headers["Content-Disposition"]
+    assert resp.headers["X-Checksum-SHA256"] == hashlib.sha256(fake_exe.read_bytes()).hexdigest()
+    assert "Set-Cookie" not in resp.headers
+
+
+def test_download_is_lan_only(client, fake_exe):
+    assert client.get("/pal/CertGeneratorPal.exe", environ_base={"REMOTE_ADDR": "8.8.8.8"}).status_code == 404
+
+
+def test_download_missing_exe(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(pal_routes, "PAL_EXE", tmp_path / "nope.exe")
+    assert client.get("/pal/CertGeneratorPal.exe", environ_base=LAN).status_code == 404
+
+
+def test_download_info_for_admin(admin_client, fake_exe):
+    info = admin_client.get("/api/pal/download").get_json()
+    assert info == {"available": True, "path": "/pal/CertGeneratorPal.exe", "size": 1002,
+                    "sha256": hashlib.sha256(fake_exe.read_bytes()).hexdigest()}
+    _write_exe(fake_exe.parent, b"MZ changed")  # a rebuilt EXE gets a fresh checksum
+    assert admin_client.get("/api/pal/download").get_json()["sha256"] == hashlib.sha256(b"MZ changed").hexdigest()
+
+
+def test_download_info_requires_login(client, fake_exe):
+    client.post("/setup", data={"username": "a", "password": "correct-horse-battery", "confirm": "correct-horse-battery"})
+    assert server.app.test_client().get("/api/pal/download").status_code == 401
+
+
+def test_pc_names_itself(admin_client):
+    ca_id = _make_ca(admin_client)
+    data = _code(admin_client, ca_id, label="").get_json()  # no name typed by the admin
+    device = FakePal(admin_client, data["pairing_code"])
+    resp = device.enroll(device.enroll_body(hostname="nscriven", fqdn="nscriven.lan"))
+    assert resp.get_json()["label"] == "nscriven" and resp.get_json()["fqdn"] == "nscriven.lan"
+    assert admin_client.get("/api/pal/devices").get_json()[0]["label"] == "nscriven"
+    code = admin_client.get("/api/pal/codes").get_json()[0]
+    assert code["label"] == "" and code["device_name"] == "nscriven" and code["device_fqdn"] == "nscriven.lan"
+
+
+def test_no_second_live_certificate(paired):
+    client, device, _ = paired
+    first, _ = device.request("computer", {})
+    assert first.status_code == 201
+    again, _ = device.request("computer", {})
+    assert again.status_code == 409 and again.get_json()["error"].startswith("Already issued.")
+    # another name is another certificate
+    assert device.request("web-server", {"dns": ["pc01.lan"]})[0].status_code == 201
+    assert device.request("web-server", {"dns": ["intranet.lan"]})[0].status_code == 201
+    # once the admin revokes the lost one, the PC may ask again
+    client.post(f"/api/certs/{first.get_json()['cert_id']}/revoke")
+    assert device.request("computer", {})[0].status_code == 201
+
+
+def test_no_duplicate_pending_request(paired):
+    _, device, _ = paired
+    assert device.request("user", {"upn": "alice@lan"})[0].status_code == 202
+    resp, _ = device.request("user", {"upn": "alice@lan"})
+    assert resp.status_code == 409 and resp.get_json()["error"].startswith("Already requested.")
+    assert device.request("user", {"upn": "bob@lan"})[0].status_code == 202
+
+
+def test_renewal_window_and_single_renewal(paired):
+    _, device, _ = paired
+    issued = device.request("computer", {})[0].get_json()
+    info = device.signed("GET", "/api/pal/v1/device").get_json()
+    assert info["certs"][0]["renew_from"] > info["certs"][0]["not_before"][:19]
+    resp, _ = device.request("computer", {}, renew_of=issued["cert_id"])
+    assert resp.status_code == 409 and "Renewal opens" in resp.get_json()["error"]
+    _near_expiry(issued["cert_id"])
+    assert device.request("computer", {}, renew_of=issued["cert_id"])[0].status_code == 201
+    resp, _ = device.request("computer", {}, renew_of=issued["cert_id"])
+    assert resp.status_code == 409 and resp.get_json()["error"].startswith("Already renewed.")
+
+
+def test_renew_window_rule():
+    from datetime import datetime, timedelta, timezone
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert pal.renew_opens(start, start + timedelta(days=365)) == start + timedelta(days=335)
+    assert pal.renew_opens(start, start + timedelta(days=30)) == start + timedelta(days=20)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can write anything")
+def test_writable_exe_is_not_served(client, fake_exe):
+    fake_exe.parent.chmod(0o755)  # the folder is writable: someone could swap the EXE
+    assert client.get("/pal/CertGeneratorPal.exe", environ_base=LAN).status_code == 404
+    fake_exe.parent.chmod(0o555)
+    fake_exe.chmod(0o644)  # the file itself is writable
+    assert client.get("/pal/CertGeneratorPal.exe", environ_base=LAN).status_code == 404
+    fake_exe.chmod(0o444)
+    assert client.get("/pal/CertGeneratorPal.exe", environ_base=LAN).status_code == 200
+
+
+# ── Self-hosted CRL ─────────────────────────────────────────────────
+
+def test_self_hosted_crls(admin_client):
+    ca_id = _make_ca(admin_client)
+    device = FakePal(admin_client, _code(admin_client, ca_id, crl_dp="placeholder").get_json()["pairing_code"])
+    device.enroll()
+    issued = device.request("computer", {})[0].get_json()
+    cert = x509.load_pem_x509_certificate(issued["cert"].encode())
+    dp = cert.extensions.get_extension_for_class(x509.CRLDistributionPoints).value[0].full_name[0].value
+    data = device.signed("GET", "/api/pal/v1/crls").get_json()["crls"]
+    assert [c["url"] for c in data] == [dp] and data[0]["host"] == "pki.lan" and data[0]["file"].endswith(".crl")
+    assert device.signed("GET", "/api/pal/v1/device").get_json()["crl_dp"] == "placeholder"
+    admin_client.post(f"/api/certs/{issued['cert_id']}/revoke")
+    crl = x509.load_der_x509_crl(base64.b64decode(device.signed("GET", "/api/pal/v1/crls").get_json()["crls"][0]["crl"]))
+    assert crl.get_revoked_certificate_by_serial_number(cert.serial_number) is not None
+
+
+def test_self_hosted_crls_need_unlocked_server(paired, monkeypatch):
+    _, device, _ = paired
+
+    def locked(_):
+        raise db.DatabaseLocked("Database is locked")
+
+    monkeypatch.setattr(db, "get_ca", locked)
+    assert device.signed("GET", "/api/pal/v1/crls").status_code == 423
+
+
+def test_pal_listener_script_matches_server_copy():
+    """The Pal installs the same listener the v2.7 install bundles use; one copy of the truth."""
+    from pathlib import Path
+
+    from app.crl_local_server import SERVE_PS1
+    pal_copy = Path(__file__).resolve().parents[1] / "pal" / "src" / "CertGeneratorPal" / "serve-crl.ps1"
+    assert pal_copy.read_text(encoding="utf-8") == SERVE_PS1
+
+
+def test_self_hosted_covers_the_whole_chain(admin_client):
+    root_id = _make_ca(admin_client)
+    resp = admin_client.post(f"/api/ca/{root_id}/intermediate", json={"domain": "lan", "name": "Issuing CA", "algorithm": "ecdsa-p256"})
+    issuing_id = resp.get_json()["id"]
+    device = FakePal(admin_client, _code(admin_client, issuing_id, crl_dp="placeholder").get_json()["pairing_code"])
+    assert device.enroll().status_code == 201
+    info = device.signed("GET", "/api/pal/v1/device").get_json()
+    assert [a["ca_name"] for a in info["self_hosted"]] == ["Issuing CA", "Home Root CA"]
+    assert len(info["chain"]) == 2
+    crls = device.signed("GET", "/api/pal/v1/crls").get_json()["crls"]
+    assert [c["ca_name"] for c in crls] == ["Issuing CA", "Home Root CA"]
+
+
+def test_devices_page_reflects_what_the_pc_holds(paired):
+    client, device, _ = paired
+    computer = device.request("computer", {})[0].get_json()
+    web = device.request("web-server", {"dns": ["pc01.lan"]})[0].get_json()
+    states = lambda: {c["use_case"]: c["state"] for c in client.get("/api/pal/devices").get_json()[0]["certs"]}
+    assert states() == {"computer": "unchecked", "web-server": "unchecked"}
+    device.signed("POST", "/api/pal/v1/status", {"serials": [computer["serial"], web["serial"]]})
+    assert states() == {"computer": "installed", "web-server": "installed"}
+    device.signed("POST", "/api/pal/v1/status", {"serials": [computer["serial"]]})  # the PC deleted the web cert
+    assert states() == {"computer": "installed", "web-server": "removed"}
+    client.post(f"/api/certs/{computer['cert_id']}/revoke")
+    assert states()["computer"] == "revoked"
+
+
+def test_removed_copy_can_be_replaced_and_is_revoked(paired):
+    client, device, _ = paired
+    first = device.request("computer", {})[0].get_json()
+    device.signed("POST", "/api/pal/v1/status", {"serials": [first["serial"]]})  # on the PC
+    assert device.request("computer", {})[0].status_code == 409
+    device.signed("POST", "/api/pal/v1/status", {"serials": []})  # the PC removed it (e.g. switched profile)
+    second = device.request("computer", {})[0]
+    assert second.status_code == 201
+    assert db.get_cert_summary(first["cert_id"])["revoked"] == 1  # superseded: only one live copy
+    assert db.get_cert_summary(second.get_json()["cert_id"])["revoked"] == 0
+
+
+def test_enroll_reports_revocation_setting(admin_client):
+    ca_id = _make_ca(admin_client)
+    device = FakePal(admin_client, _code(admin_client, ca_id, crl_dp="placeholder").get_json()["pairing_code"])
+    assert device.enroll().get_json()["crl_dp"] == "placeholder"
+
+
+def test_code_can_allow_several_revocation_types(admin_client):
+    ca_id = _make_ca(admin_client)
+    code = _code(admin_client, ca_id, crl_dps=["placeholder", "server"]).get_json()["pairing_code"]
+    device = FakePal(admin_client, code)
+    info = device.enroll().get_json()
+    assert info["crl_dps"] == ["placeholder", "server"] and info["crl_dp"] == "placeholder"  # first ticked = default
+
+    def dp(resp):
+        cert = x509.load_pem_x509_certificate(resp.get_json()["cert"].encode())
+        return cert.extensions.get_extension_for_class(x509.CRLDistributionPoints).value[0].full_name[0].value
+
+    assert dp(device.request("computer", {}, crl_dp="server")[0]).startswith("http://10.0.0.252:5000/crl/")
+    assert dp(device.request("web-server", {"dns": ["pc01.lan"]})[0]).startswith("http://pki.lan/crl/")
+    resp, _ = device.request("web-server", {"dns": ["web.lan"]}, crl_dp="cloudflare")
+    assert resp.status_code == 403 and resp.get_json()["error"].startswith("Revocation type not allowed.")
+
+
+def test_approval_keeps_the_requested_revocation_type(admin_client):
+    ca_id = _make_ca(admin_client)
+    code = _code(admin_client, ca_id, crl_dps=["server", "placeholder"]).get_json()["pairing_code"]
+    device = FakePal(admin_client, code)
+    device.enroll()
+    request_id = device.request("user", {"upn": "alice@lan"}, crl_dp="placeholder")[0].get_json()["id"]
+    assert admin_client.get("/api/pal/requests?status=pending").get_json()[0]["crl_dp"] == "placeholder"
+    admin_client.post(f"/api/pal/requests/{request_id}/approve")
+    view = device.signed("GET", f"/api/pal/v1/requests/{request_id}").get_json()
+    cert = x509.load_pem_x509_certificate(view["cert"].encode())
+    assert cert.extensions.get_extension_for_class(x509.CRLDistributionPoints).value[0].full_name[0].value.startswith("http://pki.lan/")
+
+
+def test_old_single_type_policies_still_load():
+    policy = pal.Policy.from_json('{"use_cases":{},"dns":[],"users":[],"max_days":30,"crl_dp":"server","crl_base_url":null}')
+    assert policy.crl_dps == ["server"] and policy.crl_dp == "server"

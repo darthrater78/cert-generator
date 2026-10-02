@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The protocol and policy logic, free of Windows APIs so it builds and is tested anywhere. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>CertGeneratorPal.Core</RootNamespace>
+  </PropertyGroup>
+</Project>

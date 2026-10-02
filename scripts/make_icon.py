@@ -1,76 +1,116 @@
-"""Generate app/icon.ico — a padlock mark matching the app's dark theme."""
+"""Generate the app icons: a certificate with a brass rosette and ribbon, on the app's slate.
+
+Writes app/icon.ico + app/icon.png (Cert Generator), app/static/icon.ico (web favicon) and
+pal/src/CertGeneratorPal/pal.ico (Cert Generator Pal: the same mark with a PC badge).
+Drawn on a 256-unit grid at 4x and scaled down per size, so small sizes stay crisp.
+"""
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-BG = (15, 17, 23, 255)         # --bg
-SURFACE = (26, 29, 39, 255)    # --surface
-BORDER = (42, 46, 62, 255)     # --border
-ACCENT = (99, 102, 241, 255)   # --accent
-ACCENT_HI = (129, 140, 248, 255)  # --accent-hover
+ROOT = Path(__file__).resolve().parent.parent
+SLATE = (29, 33, 41, 255)
+SLATE_EDGE = (42, 48, 59, 255)
+BRASS = (212, 160, 23, 255)
+BRASS_DARK = (168, 124, 12, 255)
+IVORY = (244, 239, 227, 255)
+INK_LINE = (185, 178, 162, 255)
+INK_LINE_LIGHT = (207, 200, 184, 255)
 
-OUT_DIR = Path(__file__).parent.parent / "app"
-CANVAS = 512
-
-
-def rounded_square(size: int, radius: int, fill, outline=None, outline_width: int = 0) -> Image.Image:
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle([0, 0, size - 1, size - 1], radius=radius, fill=fill, outline=outline, width=outline_width)
-    return img
+SUPER = 4                      # supersampling factor
+GRID = 256                     # design units
+ICO_SIZES = (16, 20, 24, 32, 40, 48, 64, 96, 128, 256)
 
 
-def draw_padlock(draw: ImageDraw.ImageDraw, cx: int, cy: int, scale: float) -> None:
-    body_w = int(200 * scale)
-    body_h = int(160 * scale)
-    body_top = cy - int(20 * scale)
-    body_left = cx - body_w // 2
-    body_right = cx + body_w // 2
-    body_bottom = body_top + body_h
-    radius = int(28 * scale)
+class Canvas:
+    """Draws on the 256-unit design grid at ``px`` pixels per side."""
 
-    shackle_outer_r = int(90 * scale)
-    shackle_width = int(34 * scale)
-    shackle_cy = body_top
+    def __init__(self, px: int) -> None:
+        self.k = px / GRID
+        self.img = Image.new("RGBA", (px, px), (0, 0, 0, 0))
+        self.draw = ImageDraw.Draw(self.img)
 
-    # Shackle (arc) — draw as thick ring, then mask bottom half away
-    shackle_bbox = [cx - shackle_outer_r, shackle_cy - shackle_outer_r, cx + shackle_outer_r, shackle_cy + shackle_outer_r]
-    draw.arc(shackle_bbox, start=180, end=360, fill=ACCENT, width=shackle_width)
+    def s(self, v: float) -> float:
+        return v * self.k
 
-    # Body
-    draw.rounded_rectangle([body_left, body_top, body_right, body_bottom], radius=radius, fill=ACCENT)
+    def pts(self, points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        return [(self.s(x), self.s(y)) for x, y in points]
 
-    # Keyhole cutout
-    hole_r = int(18 * scale)
-    hole_cx, hole_cy = cx, body_top + int(55 * scale)
-    draw.ellipse([hole_cx - hole_r, hole_cy - hole_r, hole_cx + hole_r, hole_cy + hole_r], fill=BG)
-    tri_w = int(14 * scale)
-    tri_h = int(38 * scale)
-    draw.polygon(
-        [
-            (hole_cx - tri_w, hole_cy + int(6 * scale)),
-            (hole_cx + tri_w, hole_cy + int(6 * scale)),
-            (hole_cx, hole_cy + int(6 * scale) + tri_h),
-        ],
-        fill=BG,
-    )
+    def rrect(self, x0: float, y0: float, x1: float, y1: float, r: float, fill, outline=None, width: float = 0) -> None:
+        self.draw.rounded_rectangle([self.s(x0), self.s(y0), self.s(x1), self.s(y1)], radius=self.s(r), fill=fill,
+                                    outline=outline, width=max(1, round(self.s(width))) if outline else 0)
+
+
+def scallop(cx: float, cy: float, outer: float, inner: float, peaks: int) -> list[tuple[float, float]]:
+    return [(cx + (outer if i % 2 == 0 else inner) * math.cos(math.pi * i / peaks - math.pi / 2),
+             cy + (outer if i % 2 == 0 else inner) * math.sin(math.pi * i / peaks - math.pi / 2))
+            for i in range(peaks * 2)]
+
+
+def draw_background(c: Canvas) -> None:
+    c.rrect(8, 8, 248, 248, 52, SLATE, SLATE_EDGE, 4)
+
+
+def draw_certificate(px: int) -> Image.Image:
+    """The ivory sheet with its text lines, tilted 6° like a document set down on a desk."""
+    sheet = Canvas(px)
+    sheet.rrect(52, 46, 184, 210, 10, IVORY)
+    sheet.rrect(72, 74, 164, 83, 4.5, INK_LINE)
+    sheet.rrect(72, 96, 144, 105, 4.5, INK_LINE_LIGHT)
+    sheet.rrect(72, 118, 154, 127, 4.5, INK_LINE_LIGHT)
+    return sheet.img.rotate(6, resample=Image.BICUBIC, center=(sheet.s(128), sheet.s(128)))
+
+
+def draw_rosette(c: Canvas) -> None:
+    c.draw.polygon(c.pts([(152, 176), (140, 228), (160, 216), (174, 234), (182, 182)]), fill=BRASS_DARK)
+    c.draw.polygon(c.pts([(188, 176), (200, 228), (180, 216), (166, 234), (158, 182)]), fill=BRASS_DARK)
+    c.draw.polygon(c.pts(scallop(170, 168, 36, 30, 16)), fill=BRASS)
+    r = 18
+    c.draw.ellipse([c.s(170 - r), c.s(168 - r), c.s(170 + r), c.s(168 + r)], outline=SLATE, width=round(c.s(4)))
+
+
+def draw_pc_badge(c: Canvas) -> None:
+    """Cert Generator Pal's badge: a PC with a brass check, bottom right."""
+    def at(x: float, y: float) -> tuple[float, float]:
+        return 150 + x, 150 + y
+
+    c.rrect(*at(0, 0), *at(92, 92), 22, SLATE)
+    c.rrect(*at(12, 16), *at(80, 62), 7, IVORY)
+    c.rrect(*at(20, 24), *at(72, 54), 3, SLATE)
+    c.rrect(*at(38, 62), *at(54, 73), 0, IVORY)
+    c.rrect(*at(28, 72), *at(64, 79), 3.5, IVORY)
+    c.draw.line(c.pts([at(33, 40), at(42, 48), at(59, 31)]), fill=BRASS, width=round(c.s(7)), joint="curve")
+    for x, y in (at(33, 40), at(59, 31)):  # round caps
+        r = c.s(3.5)
+        c.draw.ellipse([c.s(x) - r, c.s(y) - r, c.s(x) + r, c.s(y) + r], fill=BRASS)
+
+
+def render(px: int, pal: bool) -> Image.Image:
+    big = px * SUPER
+    c = Canvas(big)
+    draw_background(c)
+    c.img.alpha_composite(draw_certificate(big))
+    draw_rosette(c)
+    if pal:
+        draw_pc_badge(c)
+    return c.img.resize((px, px), Image.LANCZOS)
+
+
+def write_ico(path: Path, pal: bool) -> None:
+    frames = [render(size, pal) for size in ICO_SIZES]
+    frames[-1].save(path, format="ICO", sizes=[(s, s) for s in ICO_SIZES], append_images=frames[:-1])
+    print(f"wrote {path.relative_to(ROOT)}")
 
 
 def main() -> None:
-    img = rounded_square(CANVAS, radius=96, fill=SURFACE, outline=BORDER, outline_width=6)
-    draw = ImageDraw.Draw(img)
-    draw_padlock(draw, cx=CANVAS // 2, cy=CANVAS // 2 + 10, scale=CANVAS / 512)
-
-    ico_path = OUT_DIR / "icon.ico"
-    sizes = [16, 24, 32, 48, 64, 128, 256]
-    img.save(ico_path, format="ICO", sizes=[(s, s) for s in sizes])
-    print(f"Wrote {ico_path}")
-
-    png_path = OUT_DIR / "icon.png"
-    img.save(png_path, format="PNG")
-    print(f"Wrote {png_path}")
+    write_ico(ROOT / "app" / "icon.ico", pal=False)
+    write_ico(ROOT / "app" / "static" / "icon.ico", pal=False)
+    render(512, pal=False).save(ROOT / "app" / "icon.png")
+    print("wrote app/icon.png")
+    write_ico(ROOT / "pal" / "src" / "CertGeneratorPal" / "pal.ico", pal=True)
 
 
 if __name__ == "__main__":
