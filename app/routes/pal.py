@@ -29,7 +29,7 @@ from ..errors import UserError
 from ..pal import PalError, Policy
 from ..security import AttemptLimiter, RateLimiter
 from ..web import error, json_body, parse_int, str_field
-from .. import crl_local_server, relay
+from .. import crl_local_server, relay, relay_collector
 from .pki import (CRL_DP_MODES, DEFAULT_CRL_DAYS, MAX_LIFETIME_DAYS, _placeholder_crl_url, crl_dp_url_for,
                   parse_crl_base_url, publish_after_issue)
 
@@ -283,11 +283,14 @@ def enroll():
         return error(e.user_message)
 
     device_id = pal.new_device_id()
+    remote = Policy.from_json(code["policy"]).allow_remote
     if not db.enroll_pal_device(code_id, {"id": device_id, "hostname": hostname, "fqdn": fqdn, "os": os_name,
-                                          "public_key": device_key}):
+                                          "public_key": device_key, "remote_allowed": remote}):
         return failed()
     for k in keys:
         _enroll_limiter.success(k)
+    if remote:
+        relay_collector.poke()  # the relay learns the new PC's key now
     log.info("Pal device connected: %s (%s) with code %s", device_id, hostname, code_id[:8])
     return _enrolled_response(code, device_id, fqdn)
 
@@ -306,6 +309,7 @@ def _enrolled_response(code: dict[str, Any], device_id: str, fqdn: str) -> Respo
         "policy": Policy.from_json(code["policy"]).public(),
         "chain": _chain_root_first(code["ca_id"]),
         "crls": _crls(code["ca_id"]),
+        **_relay_info(Policy.from_json(code["policy"]).allow_remote),
     }, separators=(",", ":")).encode()
     response = Response(payload, status=201, mimetype="application/json")
     response.headers["X-Pal-Mac"] = pal.enrolled_mac(code["key"], payload)
@@ -372,6 +376,7 @@ def device_info():
         "crl_dp": Policy.from_json(device["policy"]).crl_dp,
         "crl_dps": Policy.from_json(device["policy"]).crl_dps,
         "self_hosted": _self_hosted_addresses(device["ca_id"]),
+        **_relay_info(bool(device["remote_allowed"])),
         "crl_urls": _crl_test_urls(device),
         "chain": _chain_root_first(device["ca_id"]),
         "crls": _crls(device["ca_id"]),
@@ -380,6 +385,19 @@ def device_info():
                                         "not_after", "revoked")}, "renew_from": _renew_from(c)}
                   for c in db.list_pal_device_certs(device["id"])],
     })
+
+
+def _relay_info(allowed: bool) -> dict[str, Any]:
+    """The relay's address and public key, for a PC allowed to use it (it pins the key when
+    it hears it over the LAN). Nothing while no relay is set up, or the database is locked."""
+    config = db.get_pal_relay_config()
+    if not allowed or not config:
+        return {}
+    try:
+        key = relay_collector.relay_public_key()
+    except db.DatabaseLocked:
+        return {}
+    return {"relay": {"url": config["url"], "public_key": key}} if key else {}
 
 
 def _crl_test_urls(device: dict[str, Any]) -> dict[str, str]:
@@ -885,3 +903,66 @@ def relay_dispatch(envelope: bytes) -> bytes | None:
              "headers": {h: response.headers[h] for h in _RELAY_REPLY_HEADERS if h in response.headers},
              "body": relay.b64url(response.get_data())}
     return relay.seal_reply(k_rep, req.device_id, req.nonce, reply)
+
+
+# ── Remote relay: admin (docs/cert-generator-pal.md §8) ─────────────
+
+def _relay_admin(action: Any) -> tuple[Response, int] | Response:
+    from ..cloudflare import CloudflareError
+
+    try:
+        action()
+    except (UserError, CloudflareError) as e:
+        return error(getattr(e, "user_message", str(e)))
+    return relay_status()
+
+
+@bp.get("/api/pal/relay")
+def relay_status():
+    """What the Windows PCs page shows about the relay."""
+    config = db.get_pal_relay_config()
+    collector = relay_collector.status()
+    worker: dict[str, Any] | None = None
+    if config and request.args.get("live") == "1":
+        try:
+            token = db.get_pal_relay_token()
+            worker = relay_collector.HttpLink(config["url"], token).worker_status() if token else None
+        except (relay_collector.RelayError, db.DatabaseLocked) as e:
+            worker = {"error": str(e) if isinstance(e, relay_collector.RelayError) else "Database is locked"}
+    return jsonify({
+        "configured": config is not None,
+        "url": config["url"] if config else None,
+        "encryption": db.is_encryption_enabled(),
+        "cloudflare": db.has_cloudflare_token(),
+        "remote_pcs": len(db.list_pal_remote_keys()),
+        "collector": {k: collector.get(k) for k in ("running", "last_ok", "last_error", "handled", "dropped")},
+        "worker": worker,
+    })
+
+
+@bp.post("/api/pal/relay/setup")
+def relay_setup():
+    return _relay_admin(relay_collector.set_up)
+
+
+@bp.post("/api/pal/relay/update")
+def relay_update():
+    return _relay_admin(relay_collector.update)
+
+
+@bp.post("/api/pal/relay/teardown")
+def relay_teardown():
+    return _relay_admin(relay_collector.tear_down)
+
+
+@bp.post("/api/pal/devices/<device_id>/remote")
+def device_remote(device_id: str):
+    allowed = json_body().get("allowed")
+    if not isinstance(allowed, bool):
+        return error("allowed must be true or false")
+    if not db.set_pal_remote_allowed(device_id, allowed):
+        return error("Device not found or disconnected", 404)
+    relay_collector.poke()  # the relay's list of allowed PCs follows at once
+    log.info("Pal device %s remote access %s by %s", device_id[:8], "on" if allowed else "off",
+             (g.get("user") or {}).get("username"))
+    return jsonify({"ok": True, "remote_allowed": allowed})

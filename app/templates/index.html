@@ -367,6 +367,10 @@
           <h3>Connected PCs <small id="palDevicesNote"></small></h3>
           <div id="palDevices"></div>
         </div>
+        <div class="card" id="palRelayCard">
+          <h3>Remote connection <small id="palRelayNote"></small></h3>
+          <div id="palRelay"><p class="dim">Loading…</p></div>
+        </div>
         <div class="card">
           <h3>Pairing codes <small id="palCodesNote"></small></h3>
           <div id="palCodes"></div>
@@ -1028,6 +1032,8 @@
         <label class="cf-choice"><input type="checkbox" value="placeholder"> <span><strong>On each PC (self-hosted)</strong> <span class="dim">works offline; updated when the PC updates its CRL</span></span></label>
         <label class="cf-choice"><input type="checkbox" value="none"> <span><strong>None</strong> <span class="dim">no revocation checks</span></span></label>
       </div>
+      <h4>Away from the LAN</h4>
+      <label class="cf-choice"><input type="checkbox" id="palAllowRemote"> <span><strong>Allow remote connection</strong> <span class="dim" id="palAllowRemoteHint">through the remote relay, once the PC has paired on the LAN. Requests stay end-to-end encrypted; Cloudflare can't read them</span></span></label>
       <div class="modal-actions">
         <button class="btn btn-ghost" data-action="hideModal" data-arg="palAddModal">Cancel</button>
         <button class="btn btn-primary" id="palCreateBtn" data-action="createPalCode">Create pairing code</button>

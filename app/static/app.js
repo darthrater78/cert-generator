@@ -2726,6 +2726,15 @@ function palCrlChips(policy) {
     escapeHtml(PAL_CRL_LABELS[m] || m) + '</span>').join('') || '<span class="dim">None</span>';
 }
 
+function palRemoteSummary(d, data) {
+  const state = d.remote_allowed
+    ? '<span class="pal-chip pal-chip-on">Allowed</span>'
+    : '<span class="pal-chip">Off</span>';
+  const via = d.last_via ? '<div class="dim">Last request ' + (d.last_via === 'relay' ? 'through the relay' : 'on the LAN') + '</div>' : '';
+  return state + ' <button class="btn btn-ghost btn-sm" data-action="togglePalRemote" data-allowed="' + (d.remote_allowed ? '0' : '1') + '"' + data + '>' +
+    (d.remote_allowed ? 'Turn off' : 'Allow') + '</button>' + via;
+}
+
 // A one-line summary for the pairing codes table.
 function palPolicySummary(policy) {
   const kinds = Object.entries(PAL_USE_CASES)
@@ -2733,7 +2742,7 @@ function palPolicySummary(policy) {
     .map(([key, label]) => label + (policy.use_cases[key] === 'approve' ? ' (approval)' : ''))
     .join(' · ') || 'nothing';
   const crls = (policy.crl_dps || []).map(m => PAL_CRL_LABELS[m] || m).join(', ');
-  return kinds + (crls ? ' — CRL profiles: ' + crls : '');
+  return kinds + (crls ? ' — CRL profiles: ' + crls : '') + (policy.allow_remote ? ' — remote allowed' : '');
 }
 
 function palAllCrl() {
@@ -2821,6 +2830,7 @@ async function loadPalDevices() {
   renderPalPending(pending);
   renderPalDevices(devices);
   renderPalCodes(codes);
+  loadPalRelay(false);
   showPalPendingCount(pending.length);
 }
 
@@ -2869,6 +2879,7 @@ function renderPalDevices(devices) {
         '<div><label>May request</label><div>' + palUseCaseChips(d.policy) + '</div></div>' +
         '<div><label>CRL profiles</label><div>' + palCrlChips(d.policy) + '</div></div>' +
         '<div><label>On this PC</label>' + palCertSummary(d) + '</div>' +
+        (d.revoked_at ? '' : '<div><label>Remote</label>' + palRemoteSummary(d, data) + '</div>') +
       '</div></div>';
   }).join('');
 }
@@ -2924,6 +2935,7 @@ async function showPalAdd() {
   if (!usable) { toast('Create an ECDSA or RSA certificate authority first', 'error'); return; }
   select.value = String(usable.id);
   document.getElementById('palLabel').value = '';
+  document.getElementById('palAllowRemote').checked = false;
   document.getElementById('palServerUrl').value = window.location.origin;
   document.getElementById('palAddForm').classList.remove('hidden');
   document.getElementById('palCodeResult').classList.add('hidden');
@@ -2959,6 +2971,7 @@ async function createPalCode() {
     expires_hours: Number(document.getElementById('palExpires').value),
     server_url: document.getElementById('palServerUrl').value.trim(),
     crl_dps: [...document.querySelectorAll('#palCrlDps input:checked')].map(i => i.value),
+    allow_remote: document.getElementById('palAllowRemote').checked,
   };
   btn.disabled = true;
   try {
@@ -3012,6 +3025,97 @@ async function revokePalCode(_arg, el) {
   try {
     await api('/api/pal/codes/' + encodeURIComponent(el.dataset.id) + '/revoke', { method: 'POST' });
     toast('Pairing code revoked');
+  } catch (e) { toast(e.message, 'error'); }
+  loadPalDevices();
+}
+
+// ── Remote relay (docs/cert-generator-pal.md §8) ─────────────────
+
+function palAgo(seconds) {
+  if (!seconds) return 'never';
+  const s = Math.max(0, Math.round(Date.now() / 1000 - seconds));
+  return s < 90 ? s + ' s ago' : s < 5400 ? Math.round(s / 60) + ' min ago' : Math.round(s / 3600) + ' h ago';
+}
+
+async function loadPalRelay(live) {
+  const box = document.getElementById('palRelay');
+  if (!box) return;
+  try {
+    renderPalRelay(await (await api('/api/pal/relay' + (live ? '?live=1' : ''))).json());
+  } catch (e) {
+    box.innerHTML = '<p class="dim">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function renderPalRelay(s) {
+  const box = document.getElementById('palRelay');
+  const note = document.getElementById('palRelayNote');
+  const intro = '<p class="form-hint">PCs away from the LAN reach this server through a Cloudflare Worker that this server collects from: ' +
+    'nothing on your network opens to the internet, and requests stay end-to-end encrypted. Only PCs paired on the LAN, with remote allowed, get in.</p>';
+  if (!s.encryption || !s.cloudflare) {
+    note.textContent = 'not set up';
+    box.innerHTML = intro + '<p>' + (!s.encryption
+      ? 'Turn on <strong>database encryption</strong> first: the relay\'s keys are only ever stored encrypted. <button class="btn btn-ghost btn-sm" data-action="showEncryptionSettings">Encryption</button>'
+      : 'Connect <strong>Cloudflare</strong> first. <button class="btn btn-ghost btn-sm" data-action="showCloudflareSettings">Cloudflare</button>') + '</p>';
+    return;
+  }
+  if (!s.configured) {
+    note.textContent = 'not set up';
+    box.innerHTML = intro + '<p><button class="btn btn-primary" id="palRelaySetupBtn" data-action="palRelaySetup">Set up remote connection</button> ' +
+      '<span class="dim">Deploys a relay Worker on your workers.dev subdomain.</span></p>';
+    return;
+  }
+  const c = s.collector || {};
+  const healthy = c.last_ok && !c.last_error && (Date.now() / 1000 - c.last_ok) < 120;
+  note.textContent = healthy ? 'connected' : c.last_error ? 'not reaching the relay' : 'starting';
+  const w = s.worker;
+  box.innerHTML = intro +
+    '<div class="pal-relay-row"><span class="pal-dot ' + (healthy ? 'ok' : c.last_error ? 'bad' : 'wait') + '"></span>' +
+      '<span class="mono">' + escapeHtml(s.url) + '</span></div>' +
+    '<ul class="pal-list">' +
+      '<li>Server ' + (healthy ? 'collecting' : 'last collected') + ': ' + palAgo(c.last_ok) +
+        (c.last_error ? ' · <span class="pal-bad">' + escapeHtml(c.last_error) + '</span>' : '') + '</li>' +
+      '<li>' + s.remote_pcs + (s.remote_pcs === 1 ? ' PC' : ' PCs') + ' allowed · ' + (c.handled || 0) + ' requests answered' +
+        (c.dropped ? ' · ' + c.dropped + ' refused or unreadable' : '') + '</li>' +
+      (w ? '<li>' + (w.error ? '<span class="pal-bad">Worker: ' + escapeHtml(w.error) + '</span>'
+        : 'Worker: ' + w.queued + ' waiting for the server, ' + w.replies + ' replies waiting for PCs, ' + w.keys + ' PCs listed') + '</li>' : '') +
+    '</ul>' +
+    '<p><button class="btn btn-ghost btn-sm" data-action="palRelayCheck">Check now</button> ' +
+      '<button class="btn btn-ghost btn-sm" data-action="palRelayUpdate">Update Worker</button> ' +
+      '<button class="btn btn-danger btn-sm" data-action="palRelayTeardown">Tear down</button></p>';
+}
+
+async function palRelayCall(path, message) {
+  try {
+    renderPalRelay(await (await api('/api/pal/relay/' + path, { method: 'POST' })).json());
+    if (message) toast(message);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function palRelaySetup(_arg, el) {
+  el.disabled = true;
+  el.textContent = 'Setting up…';
+  await palRelayCall('setup', 'Remote connection set up. PCs allowed remote pick it up the next time they check in on the LAN');
+  loadPalDevices();
+}
+
+function palRelayCheck() { return loadPalRelay(true); }
+
+function palRelayUpdate() { return palRelayCall('update', 'Relay Worker updated'); }
+
+async function palRelayTeardown() {
+  if (!confirm('Tear down the remote connection? PCs away from the LAN can no longer reach this server until you set it up again.\n\n' +
+      'The relay key stays, so PCs keep working with a new relay without pairing again.')) return;
+  await palRelayCall('teardown', 'Remote connection removed');
+}
+
+async function togglePalRemote(_arg, el) {
+  const allowed = el.dataset.allowed === '1';
+  try {
+    await api('/api/pal/devices/' + encodeURIComponent(el.dataset.id) + '/remote', { method: 'POST', body: JSON.stringify({ allowed }) });
+    toast(allowed ? el.dataset.label + ' may use the remote connection' : el.dataset.label + ' can no longer use the remote connection');
   } catch (e) { toast(e.message, 'error'); }
   loadPalDevices();
 }
@@ -3071,6 +3175,11 @@ const UI_ACTIONS = new Set([
   'createPalCode',
   'copyPalDownloadUrl',
   'deletePalDevice',
+  'palRelayCheck',
+  'palRelaySetup',
+  'palRelayTeardown',
+  'palRelayUpdate',
+  'togglePalRemote',
   'openPalFromIssue',
   'refreshCerts',
   'denyPalRequest',

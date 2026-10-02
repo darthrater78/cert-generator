@@ -446,7 +446,12 @@ outer signature; a time outside ±5 min; an inner path outside `/api/pal/v1/`; a
   the Worker, rate-limits per PC, pushes the allowed PCs' keys when they change),
   and set up / tear down. Tested with the Worker's real code in Node against a
   stand-in for Durable Object storage; the first real deploy happens in R3.
-- **R3:** admin UI: set up / tear down, Allow remote per code and PC, relay status.
+- **R3:** admin UI: the Windows PCs page's **Remote connection** card (set up,
+  check, update the Worker, tear down; prerequisites: encryption on and
+  Cloudflare connected), **Allow remote connection** on a pairing code (copied to
+  the PC when it pairs) and an Allow / Turn off switch per PC with how its last
+  request arrived. A PC allowed remote gets `relay: {url, public_key}` in its
+  enroll reply (MACed with the pairing key) and in `GET device` over the LAN.
 - **R4:** the Pal: LAN ↔ relay switching, Connect to remote, LAN and Remote rows.
 
 ### Server side

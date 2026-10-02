@@ -167,3 +167,58 @@ def test_set_up_and_tear_down(admin_client, cf_calls, monkeypatch):
     assert ("DELETE", f"/accounts/{'a' * 32}/workers/scripts/{config['script']}?force=true", None) in calls
     assert db.get_pal_relay_config() is None and db.get_pal_relay_token() is None
     assert relay_collector.relay_public_key() == key  # the key stays pinned for a new relay
+
+
+# ── R3: admin endpoints and what PCs are told ───────────────────────
+
+def _configured_relay(admin_client):
+    from .test_security import _enable_encryption
+    _enable_encryption(admin_client)
+    db.create_pal_relay_key(relay.private_key_der(relay.new_relay_key()))
+    db.set_pal_relay_config({"script": "certgen-relay-abcdef12", "url": "https://certgen-relay-abcdef12.home.workers.dev"}, "t" * 40)
+
+
+def test_allow_remote_on_the_code_reaches_the_pc(admin_client):
+    from .test_pal_api import FakePal, _code, _make_ca
+    _configured_relay(admin_client)
+    ca_id = _make_ca(admin_client)
+    on = FakePal(admin_client, _code(admin_client, ca_id, allow_remote=True).get_json()["pairing_code"])
+    enrolled = on.enroll().get_json()  # MACed with the pairing key: the PC can trust the relay key in it
+    assert enrolled["relay"] == {"url": "https://certgen-relay-abcdef12.home.workers.dev", "public_key": relay_collector.relay_public_key()}
+    assert enrolled["policy"]["allow_remote"] is True
+    assert db.get_pal_device(on.device_id)["remote_allowed"] == 1
+    assert on.signed("GET", "/api/pal/v1/device").get_json()["relay"]["url"].endswith(".workers.dev")
+
+    off = FakePal(admin_client, _code(admin_client, ca_id).get_json()["pairing_code"])
+    assert "relay" not in off.enroll().get_json()
+    assert "relay" not in off.signed("GET", "/api/pal/v1/device").get_json()
+    assert admin_client.post(f"/api/pal/devices/{off.device_id}/remote", json={"allowed": True}).get_json()["remote_allowed"]
+    assert "relay" in off.signed("GET", "/api/pal/v1/device").get_json()
+
+
+def test_allow_remote_must_be_boolean(admin_client):
+    from .test_pal_api import _code, _make_ca
+    resp = _code(admin_client, _make_ca(admin_client), allow_remote="yes")
+    assert resp.status_code == 400 and "allow_remote" in resp.get_json()["error"]
+
+
+def test_remote_switch_per_pc(remote):  # noqa: F811
+    client, pc, _ = remote
+    assert client.post(f"/api/pal/devices/{pc.device_id}/remote", json={"allowed": "yes"}).status_code == 400
+    assert client.post("/api/pal/devices/" + "f" * 32 + "/remote", json={"allowed": True}).status_code == 404
+    assert client.post(f"/api/pal/devices/{pc.device_id}/remote", json={"allowed": True}).status_code == 200
+    [row] = client.get("/api/pal/devices").get_json()
+    assert row["remote_allowed"] == 1
+
+
+def test_relay_status_and_setup_errors(admin_client):
+    status = admin_client.get("/api/pal/relay").get_json()
+    assert status["configured"] is False and status["cloudflare"] is False and status["remote_pcs"] == 0
+    resp = admin_client.post("/api/pal/relay/setup")
+    assert resp.status_code == 400 and "Connect Cloudflare first" in resp.get_json()["error"]
+
+
+def test_relay_admin_needs_login(client):
+    for method, path in [("GET", "/api/pal/relay"), ("POST", "/api/pal/relay/setup"), ("POST", "/api/pal/relay/teardown"),
+                         ("POST", "/api/pal/devices/" + "a" * 32 + "/remote")]:
+        assert client.open(path, method=method, json={}).status_code in (302, 401)

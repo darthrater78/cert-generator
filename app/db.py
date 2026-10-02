@@ -1059,10 +1059,10 @@ def enroll_pal_device(code_id: str, device: dict[str, Any]) -> bool:
         if cursor.rowcount != 1:
             return False
         conn.execute(
-            "INSERT INTO pal_devices (id, label, hostname, fqdn, os, public_key, ca_id, policy, code_id, last_seen) "
-            "SELECT ?, ?, ?, ?, ?, ?, ca_id, policy, id, ? FROM pal_codes WHERE id = ?",
+            "INSERT INTO pal_devices (id, label, hostname, fqdn, os, public_key, ca_id, policy, code_id, last_seen, "
+            "remote_allowed) SELECT ?, ?, ?, ?, ?, ?, ca_id, policy, id, ?, ? FROM pal_codes WHERE id = ?",
             (device["id"], device["hostname"] or device["fqdn"].split(".")[0], device["hostname"], device["fqdn"],
-             device["os"], device["public_key"], now, code_id),
+             device["os"], device["public_key"], now, int(bool(device.get("remote_allowed"))), code_id),
         )
         return True
 
@@ -1081,6 +1081,7 @@ def list_pal_devices() -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
             "SELECT d.id, d.label, d.hostname, d.fqdn, d.os, d.ca_id, d.policy, d.created_at, d.last_seen, d.revoked_at, d.pal_version, "
+            "d.remote_allowed, d.last_via, "
             "(SELECT COUNT(*) FROM certificates c WHERE c.pal_device_id = d.id) AS cert_count, "
             "(SELECT COUNT(*) FROM pal_requests r WHERE r.device_id = d.id AND r.status = 'pending') AS pending "
             "FROM pal_devices d ORDER BY d.created_at DESC"

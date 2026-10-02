@@ -248,6 +248,7 @@ class Policy:
     max_days: int
     crl_dps: list[str]          # revocation types the PC may choose from: one profile each in the Pal
     crl_base_url: str | None
+    allow_remote: bool = False  # may use the remote relay once paired (docs/cert-generator-pal.md §8)
 
     @property
     def crl_dp(self) -> str:
@@ -267,7 +268,7 @@ class Policy:
     def public(self) -> dict[str, Any]:
         """What the PC is told: which tiles to offer, which names will be accepted, which revocation types."""
         return {"use_cases": self.use_cases, "dns": self.dns, "users": self.users, "max_days": self.max_days,
-                "crl_dps": self.crl_dps}
+                "crl_dps": self.crl_dps, "allow_remote": self.allow_remote}
 
 
 def parse_policy(data: dict[str, Any], max_lifetime: int) -> Policy:
@@ -298,7 +299,11 @@ def parse_policy(data: dict[str, Any], max_lifetime: int) -> Policy:
     max_days = data.get("max_days", 365)
     if isinstance(max_days, bool) or not isinstance(max_days, int) or not 1 <= max_days <= max_lifetime:
         raise PalError(f"Maximum lifetime must be between 1 and {max_lifetime} days")
-    return Policy(use_cases=use_cases, dns=dns, users=users, max_days=max_days, crl_dps=["none"], crl_base_url=None)
+    allow_remote = data.get("allow_remote", False)
+    if not isinstance(allow_remote, bool):
+        raise PalError("allow_remote must be true or false")
+    return Policy(use_cases=use_cases, dns=dns, users=users, max_days=max_days, crl_dps=["none"], crl_base_url=None,
+                  allow_remote=allow_remote)
 
 
 @dataclass
