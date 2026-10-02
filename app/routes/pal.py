@@ -913,7 +913,7 @@ def _relay_admin(action: Any) -> tuple[Response, int] | Response:
     try:
         action()
     except (UserError, CloudflareError) as e:
-        return error(getattr(e, "user_message", str(e)))
+        return error(e.user_message)
     return relay_status()
 
 
@@ -927,8 +927,10 @@ def relay_status():
         try:
             token = db.get_pal_relay_token()
             worker = relay_collector.HttpLink(config["url"], token).worker_status() if token else None
-        except (relay_collector.RelayError, db.DatabaseLocked) as e:
-            worker = {"error": str(e) if isinstance(e, relay_collector.RelayError) else "Database is locked"}
+        except relay_collector.RelayError as e:
+            worker = {"error": e.user_message}
+        except db.DatabaseLocked:
+            worker = {"error": "Database is locked"}
     return jsonify({
         "configured": config is not None,
         "url": config["url"] if config else None,

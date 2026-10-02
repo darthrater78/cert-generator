@@ -1,6 +1,6 @@
 # Cert Generator
 
-**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.8.0-dev.3 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.8.0-dev.3)**
+**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.8.0-dev.4 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.8.0-dev.4)**
 
 A tool for creating Certificate Authorities and issuing self-signed certificates for posture demos. Runs as a **Docker web app** or a **Windows desktop app** — both use the same interface and database format, and backups created in one mode can be restored in the other.
 
@@ -104,7 +104,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.8.0-dev.3
+    image: ghcr.io/darthrater78/cert-generator:2.8.0-dev.4
     container_name: cert-generator
     restart: unless-stopped
     security_opt:
@@ -477,6 +477,16 @@ The database format is identical in both modes. Use **Backup** to create an encr
 ## Version history
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
+
+### v2.8.0-dev.4 — 2026-10-02
+
+Fourth pre-release: the server side of the **remote relay** for Cert Generator Pal, to try against a real Cloudflare account. The Pal doesn't use the relay yet (that comes next). Not for production.
+
+#### Docker
+- **Download the Pal** from the top of the Windows PCs page: a download card with the LAN link to copy and the SHA-256; the page header and the Issue Certificate dialog offer it too
+- **Remote connection** (Windows PCs page): **Set up** deploys a relay Worker on your `workers.dev` subdomain. Paired PCs away from the LAN will reach this server through it, while **nothing on your network opens to the internet**: the server collects from the Worker over outbound HTTPS. Needs database encryption on and Cloudflare connected. **Check now** shows whether the server is collecting; **Update Worker** and **Tear down** manage it
+- Requests through the relay are **end-to-end encrypted** to a key only this server holds (a one-time key per request, ECDH P-256, AES-256-GCM): Cloudflare can't read, change or replay them, and the Worker accepts only envelopes signed by a PC you allowed
+- **Allow remote connection** on a pairing code, and an **Allow / Turn off** switch per PC (off by default); each PC shows whether its last request came over the LAN or through the relay. Pairing is LAN only, never through the relay
 
 ### v2.8.0-dev.3 — 2026-10-02
 

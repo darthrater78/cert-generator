@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Protocol
 
-from . import db
+from . import __version__, db
 from .errors import UserError
 from .security import RateLimiter
 
@@ -56,8 +56,9 @@ class Link(Protocol):
     def reply(self, replies: list[dict[str, str]]) -> None: ...
 
 
-class RelayError(RuntimeError):
-    pass
+class RelayError(UserError):
+    """The relay couldn't be used. The message is the app's own wording (shown on the admin page);
+    any library detail goes to the log only."""
 
 
 class HttpLink:
@@ -73,15 +74,18 @@ class HttpLink:
         data = None if body is None else json.dumps(body).encode()
         request = urllib.request.Request(self.base + path, data=data, method=method)  # noqa: S310 - https only (checked above)
         request.add_header("Authorization", "Bearer " + self.token)
+        # Cloudflare answers urllib's default User-Agent with 403 "error code: 1010" (its bot block).
+        request.add_header("User-Agent", f"CertGenerator/{__version__} (relay collector)")
         if data is not None:
             request.add_header("Content-Type", "application/json")
         try:
             with urllib.request.urlopen(request, timeout=timeout, context=ssl.create_default_context()) as response:  # nosec B310
                 return json.loads(response.read() or b"null")
         except urllib.error.HTTPError as e:
-            raise RelayError(f"The relay answered HTTP {e.code}") from None
+            raise RelayError(f"The relay answered HTTP {int(e.code)}") from None
         except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
-            raise RelayError(f"Can't reach the relay: {getattr(e, 'reason', e)}") from None
+            log.info("Pal relay: %s %s failed: %s", method, path, getattr(e, "reason", e))
+            raise RelayError("Can't reach the relay (details in the server log)") from None
 
     def put_keys(self, keys: dict[str, str]) -> None:
         self._call("PUT", "/v1/server/keys", {"keys": keys})
@@ -163,8 +167,9 @@ def start(app: Any) -> threading.Thread:
                     _wake.clear()
                     pushed = None  # a PC's remote access changed: push the list now
             except Exception as e:  # noqa: BLE001 - the collector must survive anything and retry
-                _note(last_error=str(e) if isinstance(e, RelayError) else type(e).__name__)
-                log.warning("Pal relay: %s; retrying in %d s", e if isinstance(e, RelayError) else type(e).__name__, backoff)
+                shown = e.user_message if isinstance(e, UserError) else "Unexpected error (details in the server log)"
+                _note(last_error=shown)
+                log.warning("Pal relay: %s; retrying in %d s", shown, backoff, exc_info=not isinstance(e, UserError))
                 pushed = None
                 _wake.wait(backoff)
                 _wake.clear()

@@ -222,3 +222,36 @@ def test_relay_admin_needs_login(client):
     for method, path in [("GET", "/api/pal/relay"), ("POST", "/api/pal/relay/setup"), ("POST", "/api/pal/relay/teardown"),
                          ("POST", "/api/pal/devices/" + "a" * 32 + "/remote")]:
         assert client.open(path, method=method, json={}).status_code in (302, 401)
+
+
+def test_relay_errors_never_carry_library_text():
+    link = relay_collector.HttpLink("https://127.0.0.1:9", "t" * 40)  # nothing listens there
+    with pytest.raises(relay_collector.RelayError) as caught:
+        link.put_keys({})
+    assert caught.value.user_message == "Can't reach the relay (details in the server log)"
+    assert "Errno" not in str(caught.value) and "refused" not in str(caught.value).lower()
+
+
+def test_collector_names_itself_to_cloudflare(monkeypatch):
+    """Cloudflare blocks urllib's default User-Agent ("error code: 1010"), so the collector sends its own."""
+    from app import __version__
+    seen = {}
+
+    class Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    def fake_urlopen(request, timeout, context):
+        seen.update(dict(request.header_items()))
+        return Reply()
+
+    monkeypatch.setattr(relay_collector.urllib.request, "urlopen", fake_urlopen)
+    relay_collector.HttpLink("https://relay.example.workers.dev", "t" * 40).put_keys({})
+    assert seen["User-agent"] == f"CertGenerator/{__version__} (relay collector)"
+    assert seen["Authorization"] == "Bearer " + "t" * 40
