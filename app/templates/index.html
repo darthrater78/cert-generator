@@ -115,7 +115,7 @@
       <div class="tool-group">Publishing</div>
       <button type="button" class="tool-link" data-action="showCloudflareSettings">Cloudflare <em>CRL Workers</em></button>
       <div class="tool-group">Devices</div>
-      <button type="button" class="tool-link" data-action="showPalDevices">Windows PCs <em>Cert Generator Pal</em></button>
+      <button type="button" class="tool-link" data-action="showPalDevices">Windows PCs <em><span class="nav-alert hidden" id="palPendingCount" title="Requests waiting for your approval"></span>Cert Generator Pal</em></button>
       {% endif %}
       <div class="tool-group">Help</div>
       <button type="button" class="tool-link" data-action="showGuide">Certificate guide <em>import help</em></button>
@@ -136,6 +136,15 @@
 
   <div class="main">
     <div class="notice-strip">
+      {% if server_mode %}
+      <div id="palPendingBanner" class="encryption-banner hidden">
+        <h4>Approval needed</h4>
+        <p id="palPendingBannerText"></p>
+        <div class="banner-actions">
+          <button class="btn btn-primary btn-sm" data-action="showPalDevices">Review</button>
+        </div>
+      </div>
+      {% endif %}
       <div id="legacyExportsBanner" class="encryption-banner hidden">
         <h4>Old exports</h4>
         <p><span id="legacyExportsCount">0</span> files in <code id="legacyExportsDir"></code> were written by versions before 2.0.0 and may contain unencrypted private keys.</p>
@@ -253,7 +262,7 @@
         {% endif %}
 
         <div class="card">
-          <h3>Issued certificates <small id="certCountNote"></small></h3>
+          <h3>Issued certificates <small id="certCountNote"></small><button type="button" class="btn btn-ghost btn-sm card-refresh" id="certRefreshBtn" data-action="refreshCerts" title="Reload the list (Cert Generator Pal requests arrive here)">Refresh</button></h3>
           <div id="certTableContainer">
             <table class="cert-table">
               <thead>
@@ -321,6 +330,40 @@
         </div>
       </div>
     </div>
+    {% if server_mode %}
+    <div id="palView" class="hidden">
+      <div class="main-header">
+        <div class="titles">
+          <div class="eyebrow">Devices · Cert Generator Pal</div>
+          <h2>Windows PCs</h2>
+          <div class="chain">Pair a PC once; it requests and installs its own certificates. Keys are made on the PC and never leave it.</div>
+        </div>
+        <div class="header-actions">
+          <button class="btn btn-ghost" id="palRefreshBtn" data-action="loadPalDevices">Refresh</button>
+          <button class="btn btn-primary" data-action="showPalAdd">Add a PC</button>
+        </div>
+      </div>
+      <div class="main-content">
+        <div class="card hidden" id="palPendingBox">
+          <h3>Waiting for your approval <small id="palPendingNote"></small></h3>
+          <div id="palPending"></div>
+        </div>
+        <div class="card">
+          <h3>Connected PCs <small id="palDevicesNote"></small></h3>
+          <div id="palDevices"></div>
+        </div>
+        <div class="card">
+          <h3>Pairing codes <small id="palCodesNote"></small></h3>
+          <div id="palCodes"></div>
+        </div>
+        <div class="card">
+          <h3>Get the app</h3>
+          <p class="form-hint" id="palDownload"></p>
+          <p class="form-hint">LAN only: the PC must reach this server on a private address.</p>
+        </div>
+      </div>
+    </div>
+    {% endif %}
   </div>
 </div>
 
@@ -904,29 +947,6 @@
 </div>
 
 {% if server_mode %}
-<div id="palModal" class="modal-backdrop hidden">
-  <div class="modal cf-modal">
-    <h3>Windows PCs · Cert Generator Pal</h3>
-    <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px">
-      Connect a Windows PC once with a pairing code. From then on, Cert Generator Pal on that PC requests certificates in one click and installs them in the right place. Its keys are made on the PC and never leave it. For your LAN only: the PC must reach this server on a private address.
-    </p>
-    <p class="form-hint" id="palDownload" style="margin-bottom:12px"></p>
-    <div id="palPendingBox" class="hidden">
-      <h4>Waiting for your approval</h4>
-      <div id="palPending"></div>
-    </div>
-    <h4>Connected PCs</h4>
-    <div id="palDevices"></div>
-    <h4 style="margin-top:14px">Pairing codes</h4>
-    <div id="palCodes"></div>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" data-action="loadPalDevices">Refresh</button>
-      <button class="btn btn-ghost" data-action="hideModal" data-arg="palModal">Close</button>
-      <button class="btn btn-primary" data-action="showPalAdd">Add a PC</button>
-    </div>
-  </div>
-</div>
-
 <div id="palAddModal" class="modal-backdrop hidden">
   <div class="modal cf-modal">
     <h3>Add a Windows PC</h3>
@@ -984,7 +1004,7 @@
         </div>
       </div>
       <h4>Revocation (CRL) checks the PC may use <button type="button" class="banner-more" data-action="palAllCrl">All</button></h4>
-      <p class="form-hint" style="margin:-4px 0 6px">Each one ticked becomes a profile in the Pal; the user picks one, and its certificates check revocation there.</p>
+      <p class="form-hint" style="margin:-4px 0 6px">Each one ticked becomes a CRL profile in the Pal; the user picks one, and its certificates check revocation there.</p>
       <div class="pal-crl-choices" id="palCrlDps">
         <label class="cf-choice"><input type="checkbox" value="server" checked> <span><strong>This server</strong> <span class="dim">PCs on your LAN see revocations at once</span></span></label>
         <label class="cf-choice"><input type="checkbox" value="cloudflare"> <span><strong>The CA's Cloudflare Worker</strong> <span class="dim">reachable from anywhere</span></span></label>

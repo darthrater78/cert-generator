@@ -1099,6 +1099,21 @@ def revoke_pal_device(device_id: str) -> bool:
         return True
 
 
+def delete_pal_device(device_id: str) -> bool:
+    """Forget a disconnected device: its requests, nonces and pairing code go with it. The
+    certificates it was issued stay (revoked, and listed under the CA)."""
+    with _connect() as conn:
+        row = conn.execute("SELECT code_id FROM pal_devices WHERE id = ? AND revoked_at IS NOT NULL",
+                           (device_id,)).fetchone()
+        if row is None:
+            return False
+        conn.execute("DELETE FROM pal_requests WHERE device_id = ?", (device_id,))
+        conn.execute("DELETE FROM pal_nonces WHERE device_id = ?", (device_id,))
+        conn.execute("DELETE FROM pal_devices WHERE id = ?", (device_id,))
+        conn.execute("DELETE FROM pal_codes WHERE id = ?", (row["code_id"],))
+        return True
+
+
 def list_pal_device_certs(device_id: str) -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(

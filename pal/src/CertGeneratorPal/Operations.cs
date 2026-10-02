@@ -60,7 +60,7 @@ internal static class Operations
         }
         var switched = await SwitchAsync(state.DeviceId, state.CrlDps[0]).ConfigureAwait(false);
         return OpResult.Success($"Connected to {code.Server.Host} as {state.Fqdn}. " + switched.Message +
-            (state.CrlDps.Count > 1 ? $" This code allows {state.CrlDps.Count} revocation types: switch profiles at the top." : ""));
+            (state.CrlDps.Count > 1 ? $" This code allows {state.CrlDps.Count} revocation types: switch CRL profiles at the top." : ""));
     }
 
     /// <summary>
@@ -71,7 +71,7 @@ internal static class Operations
     public static async Task<OpResult> SwitchAsync(string deviceId, string crlDp)
     {
         var target = DeviceState.LoadAll().FirstOrDefault(p => p.DeviceId == deviceId)
-            ?? throw new PalException("Profile not found. It may have been removed.");
+            ?? throw new PalException("CRL profile not found. It may have been removed.");
         if (!target.CrlDps.Contains(crlDp) && target.CrlDps.Count > 0)
         {
             throw new PalException($"Revocation type not allowed. This pairing allows {string.Join(", ", target.CrlDps.Select(CrlTypes.Label))}.");
@@ -100,7 +100,7 @@ internal static class Operations
             }
         }
         AppLog.Info($"Active profile: {target.CaName} ({target.DeviceId[..8]}), revocation {crlDp}");
-        return OpResult.Success($"Profile: {target.CaName} · {CrlTypes.Label(crlDp)}. " + string.Join(" ", notes.Where(n => n.Length > 0)));
+        return OpResult.Success($"CRL profile: {target.CaName} · {CrlTypes.Label(crlDp)}. " + string.Join(" ", notes.Where(n => n.Length > 0)));
     }
 
     /// <summary>Take the active profile's certificates, listener and pending requests off this PC.</summary>
@@ -189,7 +189,7 @@ internal static class Operations
     public static async Task<OpResult> RemoveProfileAsync(string deviceId)
     {
         var profile = DeviceState.LoadAll().FirstOrDefault(p => p.DeviceId == deviceId)
-            ?? throw new PalException("Profile not found.");
+            ?? throw new PalException("CRL profile not found.");
         string backedOut = "";
         if (DeviceState.Load() is { } active && active.DeviceId == deviceId)
         {

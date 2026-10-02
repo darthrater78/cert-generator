@@ -309,6 +309,7 @@ async function selectCA(caId) {
 
   document.getElementById('welcomeView').classList.add('hidden');
   document.getElementById('sshKeyView').classList.add('hidden');
+  hidePalView();
   document.getElementById('caView').classList.remove('hidden');
   document.getElementById('caViewTitle').textContent = ca.name;
 
@@ -385,11 +386,25 @@ async function loadCerts(caId) {
         (c.has_key
           ? '<button type="button" class="import-chip" data-action="toggleImportHelp" data-arg="' + c.id + '" aria-haspopup="dialog" aria-expanded="false">' +
             (c.revoked ? 'Export ▾' : 'Export / install ▾') + '</button> '
-          : '<span class="badge" title="Requested by Cert Generator Pal: the private key never left that PC">Key on PC</span> ') +
-        (!c.revoked ? '<button class="btn btn-ghost btn-sm" data-action="revokeCert" data-arg="' + c.id + '\">Revoke</button> ' : '') +
+          : '<span class="key-chip" title="Requested by Cert Generator Pal: the private key never left that PC">Key on PC</span> ') +
+        (!c.revoked ? '<button class="btn btn-ghost btn-sm" data-action="revokeCert" data-arg="' + c.id + '\">Revoke</button> ' : '<span></span>') +
         '<button class="btn btn-danger btn-sm" data-action="deleteCert" data-arg="' + c.id + '\">Delete</button>' +
       '</div></td></tr>';
   }).join('');
+}
+
+async function refreshCerts() {
+  if (!currentCAId) return;
+  const btn = document.getElementById('certRefreshBtn');
+  btn.disabled = true;
+  try {
+    await loadCerts(currentCAId);
+    if (SERVER_MODE) checkPalPending();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function lifetimeDaysFromInputs(valueId, unitId) {
@@ -1536,6 +1551,7 @@ async function selectSSHKey(keyId) {
 
   document.getElementById('welcomeView').classList.add('hidden');
   document.getElementById('caView').classList.add('hidden');
+  hidePalView();
   document.getElementById('sshKeyView').classList.remove('hidden');
   document.getElementById('sshKeyViewTitle').textContent = key.name;
   document.getElementById('sshKeyViewEyebrow').textContent =
@@ -1742,6 +1758,7 @@ async function restoreBackup() {
     currentSSHKeyId = null;
     document.getElementById('caView').classList.add('hidden');
     document.getElementById('sshKeyView').classList.add('hidden');
+    hidePalView();
     document.getElementById('welcomeView').classList.remove('hidden');
     loadCAs();
     loadSSHKeys();
@@ -2278,6 +2295,10 @@ async function initApp() {
     else showQuickStartIfPending();
   }
   checkLegacyExports();
+  if (SERVER_MODE && ready) {
+    checkPalPending();
+    setInterval(checkPalPending, 60000);
+  }
 }
 
 
@@ -2677,29 +2698,42 @@ function palNames(names) {
 function palCertSummary(d) {
   const live = d.certs.filter(c => c.state === 'installed' || c.state === 'unchecked');
   const rows = live.map(c =>
-    '<div>' + escapeHtml(PAL_USE_CASES[c.use_case] || c.use_case) + ' <span class="dim mono">' + escapeHtml(c.name) + '</span>' +
-    (c.state === 'unchecked' ? ' <span class="dim">(not checked yet)</span>' : '') + '</div>');
+    '<li>' + escapeHtml(PAL_USE_CASES[c.use_case] || c.use_case) + ' <span class="dim mono">' + escapeHtml(c.name) + '</span>' +
+    (c.state === 'unchecked' ? ' <span class="dim">(not checked yet)</span>' : '') + '</li>');
   const gone = d.certs.filter(c => !live.includes(c));
   if (gone.length) {
     const counts = {};
     gone.forEach(c => { counts[c.state] = (counts[c.state] || 0) + 1; });
-    const labels = { removed: 'removed', revoked: 'revoked', expired: 'expired' };
-    rows.push('<div class="dim">' + gone.length + ' no longer on the PC (' +
-      Object.entries(counts).map(([k, n]) => n + ' ' + (labels[k] || k)).join(', ') + ')</div>');
+    rows.push('<li class="dim">' + gone.length + ' no longer on the PC (' +
+      Object.entries(counts).map(([k, n]) => n + ' ' + k).join(', ') + ')</li>');
   }
-  if (d.pending) rows.push('<div><span class="badge badge-expired">' + d.pending + ' waiting for approval</span></div>');
-  return rows.join('') || '<span class="dim">none</span>';
+  if (d.pending) rows.push('<li><span class="badge badge-expired">' + d.pending + ' waiting for approval</span></li>');
+  return rows.length ? '<ul class="pal-list">' + rows.join('') + '</ul>' : '<span class="dim">Nothing yet</span>';
 }
 
-const PAL_CRL_LABELS = { server: 'this server', cloudflare: 'Cloudflare', placeholder: 'self-hosted', none: 'no CRL' };
+const PAL_CRL_LABELS = { server: 'This server', cloudflare: 'Cloudflare', placeholder: 'Self-hosted', none: 'No CRL' };
 
+function palUseCaseChips(policy) {
+  const chips = Object.entries(PAL_USE_CASES)
+    .filter(([key]) => policy.use_cases[key] && policy.use_cases[key] !== 'off')
+    .map(([key, label]) => '<span class="pal-chip' + (policy.use_cases[key] === 'approve' ? ' pal-chip-approve" title="Needs your approval' : '') + '">' +
+      escapeHtml(label) + (policy.use_cases[key] === 'approve' ? ' · approval' : '') + '</span>');
+  return chips.join('') || '<span class="dim">Nothing</span>';
+}
+
+function palCrlChips(policy) {
+  return (policy.crl_dps || []).map((m, i) => '<span class="pal-chip"' + (i === 0 ? ' title="Default"' : '') + '>' +
+    escapeHtml(PAL_CRL_LABELS[m] || m) + '</span>').join('') || '<span class="dim">None</span>';
+}
+
+// A one-line summary for the pairing codes table.
 function palPolicySummary(policy) {
   const kinds = Object.entries(PAL_USE_CASES)
     .filter(([key]) => policy.use_cases[key] && policy.use_cases[key] !== 'off')
     .map(([key, label]) => label + (policy.use_cases[key] === 'approve' ? ' (approval)' : ''))
     .join(' · ') || 'nothing';
   const crls = (policy.crl_dps || []).map(m => PAL_CRL_LABELS[m] || m).join(', ');
-  return kinds + (crls ? ' — revocation: ' + crls : '');
+  return kinds + (crls ? ' — CRL profiles: ' + crls : '');
 }
 
 function palAllCrl() {
@@ -2708,9 +2742,16 @@ function palAllCrl() {
 }
 
 async function showPalDevices() {
+  closeMobileMenu();
   hideModal('palAddModal');
-  showModal('palModal');
+  ['welcomeView', 'caView', 'sshKeyView'].forEach(id => document.getElementById(id).classList.add('hidden'));
+  document.getElementById('palView').classList.remove('hidden');
   await Promise.all([loadPalDevices(), loadPalDownload()]);
+}
+
+function hidePalView() {
+  const view = document.getElementById('palView');
+  if (view) view.classList.add('hidden');
 }
 
 let palDownloadPath = '/pal/CertGeneratorPal.exe';
@@ -2732,7 +2773,8 @@ async function loadPalDownload() {
 
 async function loadPalDevices() {
   const boxes = ['palPending', 'palDevices', 'palCodes'].map(id => document.getElementById(id));
-  boxes.forEach(b => { b.innerHTML = '<p class="dim">Loading…</p>'; });
+  const btn = document.getElementById('palRefreshBtn');
+  btn.disabled = true;
   let codes, devices, pending;
   try {
     [codes, devices, pending] = await Promise.all([
@@ -2743,59 +2785,100 @@ async function loadPalDevices() {
   } catch (e) {
     boxes.forEach(b => { b.innerHTML = '<p class="dim">' + escapeHtml(e.message) + '</p>'; });
     return;
+  } finally {
+    btn.disabled = false;
   }
   renderPalPending(pending);
   renderPalDevices(devices);
   renderPalCodes(codes);
+  showPalPendingCount(pending.length);
 }
 
 function renderPalPending(rows) {
   document.getElementById('palPendingBox').classList.toggle('hidden', rows.length === 0);
-  document.getElementById('palPending').innerHTML = '<table class="cf-workers"><tbody>' + rows.map(r =>
-    '<tr><td><strong>' + escapeHtml(PAL_USE_CASES[r.use_case] || r.use_case) + '</strong>' +
-      (r.crl_dp ? ' <span class="dim">(revocation: ' + escapeHtml(PAL_CRL_LABELS[r.crl_dp] || r.crl_dp) + ')</span>' : '') + ' for ' +
-      '<span class="pal-names">' + escapeHtml(palNames(r.names)) + '</span>' +
-      '<div class="dim">' + escapeHtml(r.device_label) + (r.hostname ? ' (' + escapeHtml(r.hostname) + ')' : '') +
-      ' · ' + r.lifetime_days + ' days · asked ' + formatDateTime(r.created_at) + '</div></td>' +
-    '<td><button class="btn btn-ghost btn-sm" data-action="denyPalRequest" data-id="' + r.id + '">Deny</button> ' +
-      '<button class="btn btn-primary btn-sm" data-action="approvePalRequest" data-id="' + r.id + '">Approve</button></td></tr>'
-  ).join('') + '</tbody></table>';
+  document.getElementById('palPendingNote').textContent = rows.length + (rows.length === 1 ? ' request' : ' requests');
+  document.getElementById('palPending').innerHTML = rows.map(r =>
+    '<div class="pal-row">' +
+      '<div class="pal-row-main"><strong>' + escapeHtml(PAL_USE_CASES[r.use_case] || r.use_case) + '</strong> for ' +
+        '<span class="pal-names">' + escapeHtml(palNames(r.names)) + '</span>' +
+        '<div class="dim">' + escapeHtml(r.device_label) + (r.hostname ? ' (' + escapeHtml(r.hostname) + ')' : '') +
+        ' · ' + r.lifetime_days + ' days' + (r.crl_dp ? ' · CRL profile: ' + escapeHtml(PAL_CRL_LABELS[r.crl_dp] || r.crl_dp) : '') +
+        ' · asked ' + formatDateTime(r.created_at) + '</div></div>' +
+      '<div class="pal-row-actions"><button class="btn btn-ghost btn-sm" data-action="denyPalRequest" data-id="' + r.id + '">Deny</button>' +
+        '<button class="btn btn-primary btn-sm" data-action="approvePalRequest" data-id="' + r.id + '">Approve</button></div>' +
+    '</div>').join('');
 }
 
 function renderPalDevices(devices) {
   const box = document.getElementById('palDevices');
+  const connected = devices.filter(d => !d.revoked_at).length;
+  document.getElementById('palDevicesNote').textContent = devices.length
+    ? connected + ' connected' + (devices.length > connected ? ' · ' + (devices.length - connected) + ' disconnected' : '') : '';
   if (!devices.length) {
     box.innerHTML = '<p class="dim">No PCs connected yet. Choose <strong>Add a PC</strong> to make a pairing code.</p>';
     return;
   }
-  box.innerHTML = '<table class="cf-workers"><thead><tr><th>PC</th><th>May request</th><th>Installed on it</th><th></th></tr></thead><tbody>' +
-    devices.map(d => '<tr' + (d.revoked_at ? ' class="revoked"' : '') + '><td><strong>' + escapeHtml(d.label) + '</strong>' +
-      '<div class="dim mono">' + escapeHtml(d.fqdn || d.hostname) + '</div>' +
-      '<div class="dim">' + escapeHtml(d.os) + (d.last_seen ? ' · seen ' + formatDateTime(d.last_seen) : '') + '</div></td>' +
-      '<td>' + escapeHtml(palPolicySummary(d.policy)) + '</td>' +
-      '<td>' + palCertSummary(d) + '</td>' +
-      '<td>' + (d.revoked_at
-        ? '<span class="badge badge-revoked">Disconnected</span>'
-        : '<button class="btn btn-danger btn-sm" data-action="revokePalDevice" data-id="' + escapeHtml(d.id) + '" data-label="' +
-          escapeHtml(d.label) + '" data-certs="' + d.certs.filter(c => c.state !== 'revoked' && c.state !== 'expired').length + '">Disconnect</button>') + '</td></tr>').join('') +
-    '</tbody></table>';
+  box.innerHTML = devices.map(d => {
+    const live = d.certs.filter(c => c.state !== 'revoked' && c.state !== 'expired').length;
+    const data = ' data-id="' + escapeHtml(d.id) + '" data-label="' + escapeHtml(d.label) + '" data-certs="' + live + '"';
+    return '<div class="pal-device' + (d.revoked_at ? ' revoked' : '') + '">' +
+      '<div class="pal-device-head">' +
+        '<div class="pal-device-title"><strong>' + escapeHtml(d.label) + '</strong> ' +
+          (d.revoked_at ? '<span class="badge badge-revoked">Disconnected</span>' : '<span class="badge badge-active">Connected</span>') +
+          '<div class="dim mono">' + escapeHtml(d.fqdn || d.hostname) + '</div>' +
+          '<div class="dim">' + escapeHtml(d.os) + (d.last_seen ? ' · seen ' + formatDateTime(d.last_seen) : '') + '</div></div>' +
+        '<div class="pal-row-actions">' +
+          (d.revoked_at ? '' : '<button class="btn btn-ghost btn-sm" data-action="revokePalDevice"' + data + '>Disconnect</button>') +
+          '<button class="btn btn-danger btn-sm" data-action="deletePalDevice"' + data + '>Delete</button></div>' +
+      '</div>' +
+      '<div class="pal-device-grid">' +
+        '<div><label>May request</label><div>' + palUseCaseChips(d.policy) + '</div></div>' +
+        '<div><label>CRL profiles</label><div>' + palCrlChips(d.policy) + '</div></div>' +
+        '<div><label>On this PC</label>' + palCertSummary(d) + '</div>' +
+      '</div></div>';
+  }).join('');
 }
 
 function renderPalCodes(codes) {
   const box = document.getElementById('palCodes');
+  const unused = codes.filter(c => c.state === 'unused').length;
+  document.getElementById('palCodesNote').textContent = codes.length ? unused + ' not used yet' : '';
   if (!codes.length) { box.innerHTML = '<p class="dim">No pairing codes.</p>'; return; }
-  box.innerHTML = '<table class="cf-workers"><thead><tr><th>Code</th><th>State</th><th>Expires</th><th></th></tr></thead><tbody>' +
-    codes.map(c => '<tr><td>' + (c.device_name
+  box.innerHTML = codes.map(c => '<div class="pal-row">' +
+      '<div class="pal-row-main">' + (c.device_name
         ? 'Used by <strong>' + escapeHtml(c.device_name) + '</strong> <span class="mono dim">' + escapeHtml(c.device_fqdn || '') + '</span>'
-        : escapeHtml(c.label || 'Any one PC')) +
+        : escapeHtml(c.label || 'Any one PC')) + ' ' + (PAL_CODE_STATES[c.state] || escapeHtml(c.state)) +
       (c.device_name && c.label ? '<div class="dim">' + escapeHtml(c.label) + '</div>' : '') +
-      '<div class="dim">' + escapeHtml(palPolicySummary(c.policy)) + '</div></td>' +
-      '<td>' + (PAL_CODE_STATES[c.state] || escapeHtml(c.state)) + '</td>' +
-      '<td>' + formatDateTime(c.expires_at) + '</td>' +
-      '<td>' + (c.state === 'unused'
+      '<div class="dim">' + escapeHtml(palPolicySummary(c.policy)) + ' · expires ' + formatDateTime(c.expires_at) + '</div></div>' +
+      '<div class="pal-row-actions">' + (c.state === 'unused'
         ? '<button class="btn btn-ghost btn-sm" data-action="revokePalCode" data-id="' + escapeHtml(c.id) + '">Revoke</button>' : '') +
-      '</td></tr>').join('') +
-    '</tbody></table>';
+      '</div></div>').join('');
+}
+
+// Requests waiting for approval: a count on the sidebar link, a banner, and a toast when new ones arrive.
+let palPendingSeen = null;
+
+function showPalPendingCount(count) {
+  const badge = document.getElementById('palPendingCount');
+  if (!badge) return;
+  badge.textContent = count;
+  badge.classList.toggle('hidden', count === 0);
+  document.getElementById('palPendingBanner').classList.toggle('hidden', count === 0);
+  document.getElementById('palPendingBannerText').textContent = count === 1
+    ? 'A Windows PC is waiting for your approval of a certificate request.'
+    : count + ' certificate requests from Windows PCs are waiting for your approval.';
+  if (palPendingSeen !== null && count > palPendingSeen) {
+    toast((count - palPendingSeen === 1 ? 'New certificate request' : (count - palPendingSeen) + ' new certificate requests') +
+      ' waiting for your approval');
+  }
+  palPendingSeen = count;
+}
+
+async function checkPalPending() {
+  if (!document.getElementById('palPendingCount') || document.hidden) return;
+  try {
+    showPalPendingCount((await (await api('/api/pal/requests?status=pending')).json()).length);
+  } catch (_e) { /* signed out or locked: try again next time */ }
 }
 
 async function showPalAdd() {
@@ -2811,7 +2894,6 @@ async function showPalAdd() {
   document.getElementById('palAddForm').classList.remove('hidden');
   document.getElementById('palCodeResult').classList.add('hidden');
   onPalCaChange(null, select);
-  hideModal('palModal');
   showModal('palAddModal');
   document.getElementById('palCaseWeb').focus();
 }
@@ -2888,6 +2970,19 @@ async function revokePalCode(_arg, el) {
   loadPalDevices();
 }
 
+async function deletePalDevice(_arg, el) {
+  const certs = Number(el.dataset.certs);
+  if (!confirm('Delete ' + el.dataset.label + ' from this list?' +
+    (certs ? '\n\nIt is disconnected first and its ' + certs + (certs === 1 ? ' certificate is' : ' certificates are') + ' revoked.' : '') +
+    '\n\nIts certificates stay listed under the CA. To use the PC again, pair it with a new code.')) return;
+  try {
+    const result = await (await api('/api/pal/devices/' + encodeURIComponent(el.dataset.id), { method: 'DELETE' })).json();
+    toast(result.revoked_certs ? 'Deleted; ' + result.revoked_certs + ' certificates revoked' : 'Deleted');
+  } catch (e) { toast(e.message, 'error'); }
+  loadPalDevices();
+  if (currentCAId) loadCerts(currentCAId);
+}
+
 async function revokePalDevice(_arg, el) {
   const certs = Number(el.dataset.certs);
   if (!confirm('Disconnect ' + el.dataset.label + '? It can no longer request or renew certificates.' +
@@ -2928,6 +3023,8 @@ const UI_ACTIONS = new Set([
   'approvePalRequest',
   'copyPalCode',
   'createPalCode',
+  'deletePalDevice',
+  'refreshCerts',
   'denyPalRequest',
   'loadPalDevices',
   'loadPalDownload',

@@ -220,6 +220,7 @@ def test_device_api_sets_no_cookies(paired):
 def test_admin_api_requires_login(client):
     assert client.get("/api/pal/codes").status_code in (302, 401)
     assert client.post("/api/pal/codes", json={}).status_code in (302, 401)
+    assert client.delete("/api/pal/devices/abc").status_code in (302, 401)
 
 
 @pytest.mark.parametrize("overrides, message", [
@@ -771,3 +772,27 @@ def test_approval_keeps_the_requested_revocation_type(admin_client):
 def test_old_single_type_policies_still_load():
     policy = pal.Policy.from_json('{"use_cases":{},"dns":[],"users":[],"max_days":30,"crl_dp":"server","crl_base_url":null}')
     assert policy.crl_dps == ["server"] and policy.crl_dp == "server"
+
+
+def test_delete_device_disconnects_and_forgets_it(paired):
+    client, device, _ = paired
+    issued, _ = device.request("web-server", {"dns": ["pc01.lan"]})
+    resp = client.delete(f"/api/pal/devices/{device.device_id}")
+    assert resp.get_json() == {"ok": True, "revoked_certs": 1}
+    assert db.get_pal_device(device.device_id) is None
+    assert all(d["id"] != device.device_id for d in client.get("/api/pal/devices").get_json())
+    assert client.get("/api/pal/codes").get_json() == []
+    cert = db.get_cert_summary(issued.get_json()["cert_id"])
+    assert cert["revoked"] == 1  # the certificate stays, revoked
+    assert client.delete(f"/api/pal/devices/{device.device_id}").status_code == 404
+    assert device.signed("GET", "/api/pal/v1/device").status_code in (401, 403)
+
+
+def test_device_info_lists_a_test_address_per_revocation_type(admin_client):
+    ca_id = _make_ca(admin_client)
+    device = FakePal(admin_client, _code(admin_client, ca_id, crl_dps=["server", "placeholder", "none"]).get_json()["pairing_code"])
+    assert device.enroll().status_code == 201
+    urls = device.signed("GET", "/api/pal/v1/device").get_json()["crl_urls"]
+    assert set(urls) == {"server", "placeholder"}
+    assert urls["server"].endswith(f"/crl/{ca_id}.crl")
+    assert urls["placeholder"].startswith("http://pki.lan/crl/")

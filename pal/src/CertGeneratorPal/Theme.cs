@@ -27,6 +27,7 @@ internal static partial class Theme
     public static readonly Color Selection = Blend(Accent, Surface, Dark ? 0.28 : 0.22);
 
     public static readonly Font Ui = new("Segoe UI", 9.75f);
+    public static readonly Font UiBold = new("Segoe UI", 9.75f, FontStyle.Bold);
     public static readonly Font Display = new("Georgia", 21f);
     public static readonly Font Heading = new("Georgia", 13f);
     public static readonly Font Serif = new("Georgia", 10.5f);

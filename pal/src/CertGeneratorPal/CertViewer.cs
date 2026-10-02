@@ -26,7 +26,7 @@ internal sealed partial class CertViewer : Form
     private readonly AuditItem _item;
     private readonly TableLayoutPanel _grid = new() { ColumnCount = 2, AutoSize = true, Dock = DockStyle.Top, Padding = new Padding(0, 4, 0, 0) };
 
-    public CertViewer(AuditItem item, IReadOnlyList<string> chainRootFirst)
+    public CertViewer(AuditItem item, IReadOnlyList<string> chainRootFirst, string renew = "")
     {
         _item = item;
         var cert = item.Cert;
@@ -107,6 +107,17 @@ internal sealed partial class CertViewer : Form
             Row("Private key", PrivateKeyText(cert));
         }
 
+        Section("Validity");
+        Row("Valid from", cert.NotBefore.ToString("dddd d MMMM yyyy, HH:mm:ss", CultureInfo.CurrentCulture));
+        Row("Valid to", cert.NotAfter.ToString("dddd d MMMM yyyy, HH:mm:ss", CultureInfo.CurrentCulture));
+        Row("Time left", TimeLeft(cert));
+        if (renew.Length > 0 && item.FromPal?.RenewFromTime is { } opens)
+        {
+            Row("Renewal", renew == "now"
+                ? "Open now: choose Renew for a new key and certificate"
+                : $"Opens {opens.ToLocalTime().ToString("d MMM yyyy, HH:mm", CultureInfo.CurrentCulture)} ({renew})");
+        }
+
         Section("On this PC");
         Row("Installed in", (item.Location == StoreLocation.LocalMachine ? "Computer" : "Current user") + " › " + StoreLabel(item.StoreName));
         Row("Server says", item.ServerStatus switch
@@ -121,6 +132,20 @@ internal sealed partial class CertViewer : Form
         Row("Serial number", Spaced(cert.SerialNumber), mono: true);
         Row("SHA-256 fingerprint", Spaced(Convert.ToHexString(cert.GetCertHash(HashAlgorithmName.SHA256))), mono: true);
         Row("SHA-1 thumbprint", Spaced(cert.Thumbprint), mono: true);
+
+        // Everything else in the certificate, as Windows' own Details tab lists it.
+        Section("All details");
+        Row("Version", "V" + cert.Version.ToString(CultureInfo.InvariantCulture));
+        Row("Subject", cert.SubjectName.Format(true).TrimEnd());
+        Row("Issuer", cert.IssuerName.Format(true).TrimEnd());
+        Row("Signature algorithm", cert.SignatureAlgorithm.FriendlyName ?? cert.SignatureAlgorithm.Value ?? "");
+        Row("Public key parameters", PublicKeyDetail(cert), mono: true);
+        foreach (var ext in cert.Extensions)
+        {
+            string name = (ext.Oid?.FriendlyName is { Length: > 0 } friendly ? friendly : ext.Oid?.Value ?? "Extension") + (ext.Critical ? " (critical)" : "");
+            string value = ext.Format(true).Trim();
+            Row(name, value.Length > 0 ? value : Convert.ToHexString(ext.RawData), mono: value.Length == 0);
+        }
 
         scroll.Controls.Add(_grid);
         scroll.Controls.Add(header);
@@ -224,6 +249,24 @@ internal sealed partial class CertViewer : Form
         return days >= 0
             ? range + $" · {days.ToString("N0", CultureInfo.CurrentCulture)} days left"
             : range + $" · expired {(-days).ToString("N0", CultureInfo.CurrentCulture)} days ago";
+    }
+
+    private static string TimeLeft(X509Certificate2 cert)
+    {
+        var left = cert.NotAfter - DateTime.Now;
+        if (left <= TimeSpan.Zero)
+        {
+            return "Expired";
+        }
+        int days = (int)left.TotalDays;
+        return days >= 1 ? $"{days.ToString("N0", CultureInfo.CurrentCulture)} days, {left.Hours} hours" : $"{left.Hours} hours, {left.Minutes} minutes";
+    }
+
+    private static string PublicKeyDetail(X509Certificate2 cert)
+    {
+        string oid = cert.PublicKey.Oid.FriendlyName ?? cert.PublicKey.Oid.Value ?? "";
+        byte[] key = cert.PublicKey.EncodedKeyValue.RawData;
+        return $"{oid}, {key.Length} bytes\n{Spaced(Convert.ToHexString(key))}";
     }
 
     private static List<(string, string)> SubjectAltNames(X509Certificate2 cert)

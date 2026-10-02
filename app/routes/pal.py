@@ -352,6 +352,7 @@ def device_info():
         "crl_dp": Policy.from_json(device["policy"]).crl_dp,
         "crl_dps": Policy.from_json(device["policy"]).crl_dps,
         "self_hosted": _self_hosted_addresses(device["ca_id"]),
+        "crl_urls": _crl_test_urls(device),
         "chain": _chain_root_first(device["ca_id"]),
         "crls": _crls(device["ca_id"]),
         "requests": [_request_view(r, False) for r in db.list_pal_requests(device_id=device["id"])[:100]],
@@ -359,6 +360,23 @@ def device_info():
                                         "not_after", "revoked")}, "renew_from": _renew_from(c)}
                   for c in db.list_pal_device_certs(device["id"])],
     })
+
+
+def _crl_test_urls(device: dict[str, Any]) -> dict[str, str]:
+    """For each revocation type the PC may use, the CRL address its certificates would name,
+    so the Pal can show whether each one answers."""
+    ca = db.get_ca_summary(device["ca_id"])
+    if ca is None:
+        return {}
+    policy = Policy.from_json(device["policy"])
+    urls = {}
+    for mode in policy.crl_dps:
+        if mode == "none" or (mode == "server" and not policy.crl_base_url):
+            continue
+        url = crl_dp_url_for(ca, mode, policy.crl_base_url)
+        if url:
+            urls[mode] = url
+    return urls
 
 
 def _self_hosted_addresses(ca_id: int) -> list[dict[str, str]]:
@@ -720,6 +738,11 @@ def revoke_device(device_id: str):
     device = db.get_pal_device(device_id)
     if device is None or device["revoked_at"]:
         return error("Device not found or already revoked", 404)
+    return jsonify({"ok": True, "revoked_certs": _disconnect(device_id, revoke_certs)})
+
+
+def _disconnect(device_id: str, revoke_certs: bool) -> int:
+    """Stop the device's requests, and revoke its certificates; how many were revoked."""
     certs = [c for c in db.list_pal_device_certs(device_id) if not c["revoked"]] if revoke_certs else []
     if certs:
         db.require_unlocked()  # re-signing CRLs needs the CA keys: fail before changing anything
@@ -729,7 +752,19 @@ def revoke_device(device_id: str):
     for ca_id in {c["ca_id"] for c in certs}:
         crl_publisher.publish(ca_id)
     log.info("Pal device revoked: %s (%d certificates revoked)", device_id, len(certs))
-    return jsonify({"ok": True, "revoked_certs": len(certs)})
+    return len(certs)
+
+
+@bp.delete("/api/pal/devices/<device_id>")
+def delete_device(device_id: str):
+    """Remove a PC from the list. A connected one is disconnected first and its certificates revoked."""
+    device = db.get_pal_device(device_id)
+    if device is None:
+        return error("Device not found", 404)
+    revoked_certs = 0 if device["revoked_at"] else _disconnect(device_id, revoke_certs=True)
+    db.delete_pal_device(device_id)
+    log.info("Pal device deleted: %s", device_id)
+    return jsonify({"ok": True, "revoked_certs": revoked_certs})
 
 
 @bp.get("/api/pal/requests")

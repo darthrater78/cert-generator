@@ -49,18 +49,17 @@ internal sealed class MainForm : Form
         Padding = new Padding(16, 0, 16, 0), BackColor = Theme.Surface, ForeColor = Theme.TextDim, Font = Theme.Mono,
         AutoEllipsis = true,
     };
-    private readonly LinkLabel _disconnect = new() { Text = "Remove this profile", AutoSize = true, Visible = false };
+    private readonly LinkLabel _disconnect = new() { Text = "Disconnect this PC", AutoSize = true, Visible = false };
     private readonly ComboBox _profileBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 460, FlatStyle = FlatStyle.Flat, Margin = new Padding(0, 0, 8, 0) };
-    private readonly Button _addProfile = new() { Text = "Add profile", AutoSize = true };
     private readonly FlowLayoutPanel _profileRow = new() { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 6), Visible = false };
-    private readonly FlowLayoutPanel _healthRow = new() { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 8), Visible = false };
-    private readonly Label _health = new() { AutoSize = true, Margin = new Padding(0, 6, 8, 0), Font = Theme.Mono };
-    private readonly Button _repair = new() { Text = "Repair", AutoSize = true, Tag = Theme.ButtonKind.Primary, Visible = false };
-    private readonly Button _cancelAdd = new() { Text = "Cancel", AutoSize = true, Visible = false };
+    private readonly TableLayoutPanel _crlPanel = new() { AutoSize = true, ColumnCount = 4, Margin = new Padding(0, 0, 0, 8), Visible = false };
     private bool _fillingProfiles;
-    private readonly ToolTip _healthTip = new();
+    private readonly ToolTip _crlTip = new();
 
-    /// <summary>One profile: a pairing with one of the revocation types its code allowed.</summary>
+    /// <summary>The last check of each revocation type's address, by type.</summary>
+    private Dictionary<string, CrlCheck.Result> _crlResults = [];
+
+    /// <summary>One CRL profile: a pairing with one of the revocation types its code allowed.</summary>
     private sealed record ProfileChoice(DeviceState Pairing, string CrlDp)
     {
         public override string ToString() => $"{Pairing.CaName}  ·  {CrlTypes.Label(CrlDp)}  ·  {Pairing.ServerUri.Host}";
@@ -95,15 +94,12 @@ internal sealed class MainForm : Form
         header.Controls.Add(Theme.Eyebrow("Certificate authority · Windows companion"));
         header.Controls.Add(new Label { Text = "Cert Generator Pal", AutoSize = true, Font = Theme.Display, Margin = new Padding(0) });
         header.Controls.Add(_subtitle);
-        var profileLabel = Theme.Eyebrow("Profile");
+        var profileLabel = Theme.Eyebrow("CRL profile");
         profileLabel.Margin = new Padding(0, 8, 8, 0);
-        _profileRow.Controls.AddRange([profileLabel, _profileBox, _addProfile]);
+        _profileRow.Controls.AddRange([profileLabel, _profileBox]);
         _profileBox.SelectedIndexChanged += async (_, _) => await ProfileChosenAsync();
-        _addProfile.Click += (_, _) => ShowConnect(adding: true);
         header.Controls.Add(_profileRow);
-        _healthRow.Controls.AddRange([_health, _repair]);
-        _repair.Click += async (_, _) => await RepairAsync();
-        header.Controls.Add(_healthRow);
+        header.Controls.Add(_crlPanel);
         var rule = Theme.RuleLine();
         rule.Dock = DockStyle.None;
         rule.Anchor = AnchorStyles.Left | AnchorStyles.Right;
@@ -163,11 +159,7 @@ internal sealed class MainForm : Form
         layout.Controls.Add(_codeBox);
         _connectButton.Margin = new Padding(0, 10, 0, 0);
         _connectButton.Click += async (_, _) => await ConnectAsync();
-        var connectRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 10, 0, 0) };
-        _connectButton.Margin = new Padding(0, 0, 8, 0);
-        _cancelAdd.Click += async (_, _) => await LoadStateAsync();
-        connectRow.Controls.AddRange([_connectButton, _cancelAdd]);
-        layout.Controls.Add(connectRow);
+        layout.Controls.Add(_connectButton);
         layout.Controls.Add(Wrapping("LAN only: Cert Generator Pal talks to your server on your local network and nowhere else. " +
             "Keys are created on this PC and never leave it.", SystemColors.GrayText, new Padding(0, 14, 0, 0)));
         _connectPanel.Controls.Add(layout);
@@ -232,6 +224,7 @@ internal sealed class MainForm : Form
         _list.Columns.Add("Use", 120);
         _list.Columns.Add("Store", 150);
         _list.Columns.Add("Expires", 95);
+        _list.Columns.Add("Renew", 95);
         _list.Columns.Add("Status", 80);
         _list.Columns.Add("Notes", 260);
         _list.SelectedIndexChanged += (_, _) => UpdateActions();
@@ -302,8 +295,8 @@ internal sealed class MainForm : Form
         FillProfiles();
         if (_state is null)
         {
-            ShowConnect(adding: false);
-            _subtitle.Text = _profileBox.Items.Count > 0 ? "No active profile: pick one above, or add one" : "Not connected";
+            ShowConnect();
+            _subtitle.Text = _profileBox.Items.Count > 0 ? "No active CRL profile: pick one above" : "Not connected";
             await ShowPcNameAsync();
             return;
         }
@@ -315,14 +308,13 @@ internal sealed class MainForm : Form
         await RefreshAsync();
     }
 
-    private void ShowConnect(bool adding)
+    private void ShowConnect()
     {
         _connectPanel.Visible = true;
         _mainPanel.Visible = false;
         _disconnect.Visible = false;
-        _healthRow.Visible = false;
-        _cancelAdd.Visible = adding && _state is not null;
-        SetStatus(adding ? "Paste another pairing code: it becomes a new profile." : "Paste a pairing code to connect this PC.");
+        _crlPanel.Visible = false;
+        SetStatus("Paste a pairing code to connect this PC.");
         _codeBox.Focus();
     }
 
@@ -360,12 +352,12 @@ internal sealed class MainForm : Form
             lines.Add("• the self-hosted CRL listener");
         }
         string backOut = _state is null ? "" : lines.Count == 0
-            ? "\n\nNothing from the current profile is installed, so nothing is removed."
-            : $"\n\nThe current profile is backed out. Removed from this PC:\n{string.Join("\n", lines.Take(12))}"
+            ? "\n\nNothing from the current CRL profile is installed, so nothing is removed."
+            : $"\n\nThe current CRL profile is backed out. Removed from this PC:\n{string.Join("\n", lines.Take(12))}"
               + (lines.Count > 12 ? $"\n• …and {lines.Count - 12} more" : "") + "\n\nThe root CA stays trusted.";
-        string extra = choice.CrlDp == "placeholder" ? "\n\nThe self-hosted CRL listener is set up for the new profile." : "";
-        if (MessageBox.Show(this, $"Switch to {choice}?{backOut}{extra}", "Switch profile", MessageBoxButtons.OKCancel,
-                MessageBoxIcon.Question) != DialogResult.OK || !BeginBusy("Switching profile… approve the Windows prompt."))
+        string extra = choice.CrlDp == "placeholder" ? "\n\nThe self-hosted CRL listener is set up for the new CRL profile." : "";
+        if (MessageBox.Show(this, $"Switch to {choice}?{backOut}{extra}", "Switch CRL profile", MessageBoxButtons.OKCancel,
+                MessageBoxIcon.Question) != DialogResult.OK || !BeginBusy("Switching CRL profile… approve the Windows prompt."))
         {
             FillProfiles();  // put the selection back
             return;
@@ -385,45 +377,102 @@ internal sealed class MainForm : Form
         await LoadStateAsync();
     }
 
-    /// <summary>Can this PC reach the revocation addresses its certificates name (and its own listener)?</summary>
-    private async Task UpdateHealthAsync()
+    /// <summary>Check every revocation type this PC may use: does its CRL address answer?</summary>
+    private async Task CheckCrlsAsync()
     {
+        if (_device is null)
+        {
+            _crlResults = [];
+            return;
+        }
+        var checks = _device.CrlUrls.Select(async kv => (kv.Key, await CrlCheck.TestAsync(kv.Value, kv.Key == "placeholder")));
+        _crlResults = (await Task.WhenAll(checks)).ToDictionary(r => r.Key, r => r.Item2);
+    }
+
+    /// <summary>One row per revocation type: a status dot, its name, what the check found, and a Test link.</summary>
+    private void FillCrlPanel()
+    {
+        _crlPanel.SuspendLayout();
+        foreach (Control c in _crlPanel.Controls.Cast<Control>().ToList())
+        {
+            c.Dispose();
+        }
+        _crlPanel.Controls.Clear();
+        _crlPanel.RowStyles.Clear();
+        _crlPanel.RowCount = 0;
         if (_state is null || _device is null)
         {
-            _healthRow.Visible = false;
+            _crlPanel.Visible = false;
+            _crlPanel.ResumeLayout();
             return;
         }
-        var urls = _items.Where(i => i.FromPal is not null && !i.IsCa).SelectMany(i => StoreAudit.CrlUrls(i.Cert)).ToHashSet();
-        bool selfHosted = _state.CrlDp == "placeholder";
-        if (selfHosted)
+        var heading = Theme.Eyebrow("Revocation (CRL) status");
+        heading.Margin = new Padding(0, 2, 0, 4);
+        _crlPanel.Controls.Add(heading, 0, 0);
+        _crlPanel.SetColumnSpan(heading, 4);
+        int row = 1;
+        var types = _device.CrlDps.Count > 0 ? _device.CrlDps : [_device.CrlDp];
+        foreach (string type in types)
         {
-            urls.UnionWith(_device.SelfHosted.Select(a => a.Url));
-        }
-        _healthRow.Visible = true;
-        if (urls.Count == 0)
-        {
-            _health.Text = _state.CrlDp == "none" ? "REVOCATION: NOT CHECKED (THIS PROFILE HAS NONE)" : "REVOCATION: NO CERTIFICATES TO CHECK YET";
-            _health.ForeColor = Theme.TextDim;
-            _repair.Visible = false;
-            return;
-        }
-        var selfUrls = _device.SelfHosted.Select(a => a.Url).ToHashSet();
-        var failed = new List<string>();
-        foreach (string url in urls)
-        {
-            bool ok = selfUrls.Contains(url) ? _crlAnswering.GetValueOrDefault(url) : await StoreAudit.ReachableAsync(url);
-            if (!ok)
+            bool active = type == _state.CrlDp;
+            _crlResults.TryGetValue(type, out var result);
+            string? url = _device.CrlUrls.GetValueOrDefault(type);
+            (string dot, Color color, string status) = type == "none" ? ("○", Theme.TextDim, "No revocation checks")
+                : url is null ? ("○", Theme.TextDim, "No address yet")
+                : result is null ? ("○", Theme.TextDim, "Not checked")
+                : result.Ok ? ("●", Theme.Success, result.Summary)
+                : ("●", Theme.Danger, result.Summary);
+            var name = new Label
             {
-                failed.Add(url);
+                Text = $"{dot}  {CrlTypes.Label(type)}{(active ? "  (active)" : "")}",
+                AutoSize = true, ForeColor = color, Font = active ? Theme.UiBold : Theme.Ui, Margin = new Padding(0, 2, 16, 2),
+            };
+            var state = new Label { Text = status, AutoSize = true, ForeColor = result is { Ok: false } ? Theme.Danger : Theme.TextDim, Margin = new Padding(0, 2, 16, 2) };
+            if (url is not null)
+            {
+                _crlTip.SetToolTip(name, url);
+                _crlTip.SetToolTip(state, url);
             }
+            _crlPanel.Controls.Add(name, 0, row);
+            _crlPanel.Controls.Add(state, 1, row);
+            if (url is not null)
+            {
+                var test = new LinkLabel { Text = "Test", AutoSize = true, Margin = new Padding(0, 2, 12, 2) };
+                test.LinkColor = test.ActiveLinkColor = test.VisitedLinkColor = Theme.AccentText;
+                test.LinkClicked += async (_, _) => await TestCrlAsync(type, url);
+                _crlTip.SetToolTip(test, "Fetch " + url + " now");
+                _crlPanel.Controls.Add(test, 2, row);
+            }
+            if (type == "placeholder" && active && result is { Ok: false })
+            {
+                var repair = new LinkLabel { Text = "Repair", AutoSize = true, Margin = new Padding(0, 2, 0, 2) };
+                repair.LinkColor = repair.ActiveLinkColor = repair.VisitedLinkColor = Theme.AccentText;
+                repair.LinkClicked += async (_, _) => await RepairAsync();
+                _crlTip.SetToolTip(repair, "Reinstall this PC's CRL listener and refresh its CRLs");
+                _crlPanel.Controls.Add(repair, 3, row);
+            }
+            row++;
         }
-        _health.Text = failed.Count == 0
-            ? $"REVOCATION: ✓ REACHABLE ({urls.Count} ADDRESS{(urls.Count == 1 ? "" : "ES")})"
-            : $"REVOCATION: ✗ NOT REACHABLE: {string.Join(", ", failed.Select(u => new Uri(u).Host).Distinct())}";
-        _health.ForeColor = failed.Count == 0 ? Theme.Success : Theme.Danger;
-        _repair.Visible = failed.Count > 0 && selfHosted;
-        _healthTip.SetToolTip(_health, failed.Count == 0 ? string.Join("\n", urls) :
-            selfHosted ? "Repair reinstalls this PC's CRL listener and refreshes its CRLs." : "Check that this PC can reach " + string.Join(", ", failed));
+        _crlPanel.RowCount = row;
+        _crlPanel.Visible = true;
+        _crlPanel.ResumeLayout();
+    }
+
+    private async Task TestCrlAsync(string type, string url)
+    {
+        if (_busy)
+        {
+            return;
+        }
+        UseWaitCursor = true;
+        SetStatus($"Testing {CrlTypes.Label(type)}: {url}");
+        var result = await CrlCheck.TestAsync(url, type == "placeholder");
+        UseWaitCursor = false;
+        _crlResults[type] = result;
+        FillCrlPanel();
+        SetStatus($"{CrlTypes.Label(type)}: {result.Summary}");
+        MessageBox.Show(this, result.Detail, $"{CrlTypes.Label(type)}: {result.Summary}", MessageBoxButtons.OK,
+            result.Ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
     }
 
     private async Task RepairAsync()
@@ -470,7 +519,7 @@ internal sealed class MainForm : Form
                 _items = await Task.Run(() => StoreAudit.Run(state));
                 status = await client.StatusAsync(signer, _items.Select(i => i.Serial).Distinct().ToList());
                 _crlAnswering = await LocalCrlServer.ProbeAsync(_device.SelfHosted);
-                await UpdateHealthAsync();
+                await CheckCrlsAsync();
             }
             catch (Exception e) when (e is PalException or DeviceKeyUnavailableException or HttpRequestException)
             {
@@ -478,6 +527,7 @@ internal sealed class MainForm : Form
                 _items = await Task.Run(() => StoreAudit.Run(state));
             }
             StoreAudit.ApplyServer(_items, status, _device);
+            FillCrlPanel();
             UpdateTiles();
             FillList();
             UpdatePending();
@@ -503,6 +553,7 @@ internal sealed class MainForm : Form
         {
             if (tile == CrlTile)
             {
+                button.Visible = _state?.CrlDp == "placeholder";
                 bool answering = _crlAnswering.Count > 0 && _crlAnswering.Values.All(v => v);
                 (string crlText, Color crlColor) = answering ? ("Running", Theme.Success)
                     : _device?.CrlDp == "placeholder" ? ("Recommended: install", Theme.Warning)
@@ -519,6 +570,7 @@ internal sealed class MainForm : Form
                 continue;
             }
             string mode = policy?.Mode(tile) ?? "off";
+            button.Visible = policy is null || mode != "off";  // not allowed: not shown
             // A certificate this PC already holds can't be requested again: renew it near expiry instead.
             var installed = _items.FirstOrDefault(i => i.FromPal is { Revoked: 0 } pal && UseCases.FromTemplate(pal.Template) == tile
                 && i.ServerStatus != "revoked" && i.Cert.NotAfter > DateTime.Now);
@@ -527,7 +579,7 @@ internal sealed class MainForm : Form
                 {
                     "auto" => ("Get it now", Theme.AccentText),
                     "approve" => ("Your admin approves", Theme.Warning),
-                    _ => (policy is null ? "Server unreachable" : "Not allowed", Theme.TextDim),
+                    _ => ("Server unreachable", Theme.TextDim),
                 };
             button.SetStatus(note, color);
             button.Enabled = mode != "off" && installed is null && !_busy;
@@ -544,6 +596,7 @@ internal sealed class MainForm : Form
             row.SubItems.Add(item.UseLabel + (item.FromPal is not null ? " (Pal)" : ""));
             row.SubItems.Add(item.StoreLabel);
             row.SubItems.Add(item.Cert.NotAfter.ToString("d MMM yyyy", CultureInfo.CurrentCulture));
+            row.SubItems.Add(RenewText(item));
             row.SubItems.Add(item.ServerStatus);
             row.SubItems.Add(string.Join("; ", item.Flags));
             if (item.ServerStatus == "revoked" || item.Flags.Any(f => f.StartsWith("Expired", StringComparison.Ordinal)))
@@ -583,14 +636,30 @@ internal sealed class MainForm : Form
         var item = Selected;
         var renewFrom = item?.FromPal?.RenewFromTime;
         _renew.Enabled = !_busy && item?.FromPal is { Revoked: 0 } && item.StoreName == "My" && renewFrom is { } from && from <= DateTimeOffset.UtcNow;
-        _renew.Text = item?.FromPal is { Revoked: 0 } && renewFrom is { } opens && opens > DateTimeOffset.UtcNow
-            ? "RENEW FROM " + opens.ToLocalTime().ToString("d MMM yyyy", CultureInfo.CurrentCulture).ToUpperInvariant()
-            : "RENEW";
+        bool waiting = item?.FromPal is { Revoked: 0 } && renewFrom is { } opens && opens > DateTimeOffset.UtcNow;
+        _renew.Text = waiting ? "RENEW " + RenewText(item!).ToUpperInvariant() : "RENEW";
+        _crlTip.SetToolTip(_renew, waiting
+            ? "Renewal opens " + renewFrom!.Value.ToLocalTime().ToString("d MMM yyyy HH:mm", CultureInfo.CurrentCulture) + ", near the end of the certificate's life."
+            : "");
         int count = _list.SelectedItems.Count;
         _remove.Enabled = !_busy && count > 0;
         _remove.Text = count > 1 ? $"REMOVE {count}" : "REMOVE";
         _details.Enabled = item is not null;
     }
+
+    /// <summary>When a certificate this PC was issued can be renewed: "now", "in 245 days", or "" for others.</summary>
+    internal static string RenewText(AuditItem item)
+    {
+        if (item.FromPal is not { Revoked: 0 } pal || item.IsCa || pal.RenewFromTime is not { } opens)
+        {
+            return "";
+        }
+        return opens <= DateTimeOffset.UtcNow ? "now" : "in " + Remaining(opens - DateTimeOffset.UtcNow);
+    }
+
+    internal static string Remaining(TimeSpan left) => left.TotalDays >= 2 ? $"{(int)Math.Ceiling(left.TotalDays)} days"
+        : left.TotalHours >= 2 ? $"{(int)Math.Ceiling(left.TotalHours)} hours"
+        : $"{Math.Max(1, (int)Math.Ceiling(left.TotalMinutes))} minutes";
 
     // ── Actions ─────────────────────────────────────────────────────
 
@@ -605,21 +674,6 @@ internal sealed class MainForm : Form
         {
             MessageBox.Show(this, e.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
-        }
-        if (_state is not null)
-        {
-            var lines = _items.Where(i => i.FromPal is not null && !i.IsCa).Select(i => $"• {i.Names}  ({i.UseLabel})").ToList();
-            if (_state.CrlDp == "placeholder")
-            {
-                lines.Add("• the self-hosted CRL listener");
-            }
-            string backOut = lines.Count == 0 ? "Nothing from it is installed, so nothing is removed."
-                : "Removed from this PC:\n" + string.Join("\n", lines.Take(12));
-            if (MessageBox.Show(this, $"Add this profile and switch to it?\n\nThe current profile ({_state.CaName} · {CrlTypes.Label(_state.CrlDp)}) " +
-                    $"stays in the list but is backed out. {backOut}", "Add profile", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
-            {
-                return;
-            }
         }
         if (!BeginBusy("Connecting… approve the Windows prompt to trust your CA."))
         {
@@ -833,7 +887,7 @@ internal sealed class MainForm : Form
         {
             return;
         }
-        using var viewer = new CertViewer(item, _state.Chain);
+        using var viewer = new CertViewer(item, _state.Chain, RenewText(item));
         viewer.ShowDialog(this);
     }
 
@@ -850,10 +904,10 @@ internal sealed class MainForm : Form
         }
         string removed = lines.Count == 0 ? "Nothing from it is installed on this PC."
             : "Removed from this PC:\n" + string.Join("\n", lines.Take(12)) + (lines.Count > 12 ? $"\n• …and {lines.Count - 12} more" : "");
-        if (MessageBox.Show(this, $"Remove the profile {_state.CaName} · {CrlTypes.Label(_state.CrlDp)}?\n\n{removed}\n\n" +
-                $"This removes the whole {_state.CaName} pairing (all its revocation types); using it again needs a new pairing code. " +
-                "The root CA stays trusted.", "Remove profile", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK
-            || !BeginBusy("Removing the profile…"))
+        if (MessageBox.Show(this, $"Disconnect this PC from {_state.CaName} ({_state.ServerUri.Host})?\n\n{removed}\n\n" +
+                "Every CRL profile of this pairing goes with it; connecting again needs a new pairing code. " +
+                "The root CA stays trusted.", "Disconnect", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK
+            || !BeginBusy("Disconnecting…"))
         {
             return;
         }
@@ -995,18 +1049,19 @@ internal sealed class MainForm : Form
         }
         Color color = e.ColumnIndex switch
         {
-            4 => e.SubItem.Text switch
+            4 => e.SubItem.Text == "now" ? Theme.Success : Theme.TextDim,
+            5 => e.SubItem.Text switch
             {
                 "valid" => Theme.Success,
                 "revoked" or "expired" => Theme.Danger,
                 _ => Theme.TextDim,
             },
-            5 => e.Item.ForeColor == Theme.Danger ? Theme.Danger : Theme.Warning,
+            6 => e.Item.ForeColor == Theme.Danger ? Theme.Danger : Theme.Warning,
             0 => e.Item.ForeColor == SystemColors.WindowText || e.Item.ForeColor == Theme.Text ? Theme.Text : e.Item.ForeColor,
             _ => Theme.Text,
         };
-        var font = e.ColumnIndex == 4 ? Theme.MonoSmall : e.ColumnIndex == 0 ? Theme.Serif : Theme.Ui;
-        string text = e.ColumnIndex == 4 ? e.SubItem.Text.ToUpperInvariant() : e.SubItem.Text;
+        var font = e.ColumnIndex == 5 ? Theme.MonoSmall : e.ColumnIndex == 0 ? Theme.Serif : Theme.Ui;
+        string text = e.ColumnIndex == 5 ? e.SubItem.Text.ToUpperInvariant() : e.SubItem.Text;
         var bounds = Rectangle.Inflate(e.Bounds, -LogicalToDeviceUnits(6), 0);
         TextRenderer.DrawText(e.Graphics, text, font, bounds, color, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
     }

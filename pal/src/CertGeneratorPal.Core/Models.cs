@@ -140,6 +140,9 @@ public sealed class DeviceInfo
     public string CrlDp { get; set; } = "none";
     public List<string> CrlDps { get; set; } = [];
     public List<SelfHostedCrl> SelfHosted { get; set; } = [];
+
+    /// <summary>For each revocation type the PC may use, the CRL address its certificates name.</summary>
+    public Dictionary<string, string> CrlUrls { get; set; } = [];
     public string DeviceId { get; set; } = "";
     public string Label { get; set; } = "";
     public string Fqdn { get; set; } = "";
