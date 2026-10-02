@@ -59,11 +59,14 @@ internal sealed class MainForm : Form
 
     /// <summary>The last check of each revocation type's address, by type.</summary>
     private Dictionary<string, CrlCheck.Result> _crlResults = [];
+    private CrlCheck.Result? _serverCheck;
 
     /// <summary>One CRL profile: a pairing with one of the revocation types its code allowed.</summary>
     private sealed record ProfileChoice(DeviceState Pairing, string CrlDp)
     {
-        public override string ToString() => $"{Pairing.CaName}  ·  {CrlTypes.Label(CrlDp)}  ·  {Pairing.ServerUri.Host}";
+        public override string ToString() => CrlDp.Length == 0
+            ? "None: pick a CRL profile"
+            : $"{Pairing.CaName}  ·  {CrlTypes.Label(CrlDp)}  ·  {Pairing.ServerUri.Host}";
     }
 
     private DeviceState? _state;
@@ -150,9 +153,16 @@ internal sealed class MainForm : Form
         var paste = new Button { Text = "Paste", AutoSize = true, Margin = new Padding(0, 0, 0, 4) };
         paste.Click += (_, _) =>
         {
-            if (Clipboard.ContainsText())
+            try
             {
-                _codeBox.Text = Clipboard.GetText().Trim();
+                if (Clipboard.ContainsText())
+                {
+                    _codeBox.Text = Clipboard.GetText().Trim();
+                }
+            }
+            catch (System.Runtime.InteropServices.ExternalException)
+            {
+                SetStatus("Couldn't read the clipboard (another program has it open). Paste with Ctrl+V instead.");
             }
         };
         codeHeader.Controls.Add(paste);
@@ -163,7 +173,7 @@ internal sealed class MainForm : Form
         _connectButton.Margin = new Padding(0, 10, 0, 0);
         _connectButton.Click += async (_, _) => await ConnectAsync();
         layout.Controls.Add(_connectButton);
-        layout.Controls.Add(Wrapping("LAN only: Cert Generator Pal talks to your server on your local network and nowhere else. " +
+        layout.Controls.Add(Wrapping("LAN only: Cert Generator Pal talks to your server on your local network (or a private overlay such as Tailscale or Zscaler) and nowhere else. " +
             "Keys are created on this PC and never leave it.", SystemColors.GrayText, new Padding(0, 14, 0, 0)));
         _connectPanel.Controls.Add(layout);
     }
@@ -356,6 +366,12 @@ internal sealed class MainForm : Form
     {
         _fillingProfiles = true;
         _profileBox.Items.Clear();
+        if (_state is { CrlDp.Length: 0 })
+        {
+            var none = new ProfileChoice(_state, "");
+            _profileBox.Items.Add(none);
+            _profileBox.SelectedItem = none;
+        }
         foreach (var pairing in DeviceState.LoadAll())
         {
             foreach (string crl in pairing.CrlDps.Count > 0 ? pairing.CrlDps : [pairing.CrlDp.Length > 0 ? pairing.CrlDp : "server"])
@@ -374,7 +390,7 @@ internal sealed class MainForm : Form
 
     private async Task ProfileChosenAsync()
     {
-        if (_fillingProfiles || _profileBox.SelectedItem is not ProfileChoice choice
+        if (_fillingProfiles || _profileBox.SelectedItem is not ProfileChoice choice || choice.CrlDp.Length == 0
             || (_state is not null && choice.Pairing.DeviceId == _state.DeviceId && choice.CrlDp == _state.CrlDp))
         {
             return;
@@ -384,12 +400,14 @@ internal sealed class MainForm : Form
         {
             lines.Add("• the self-hosted CRL listener");
         }
-        string backOut = _state is null ? "" : lines.Count == 0
+        bool first = _state is null || _state.CrlDp.Length == 0;  // nothing picked yet: nothing to back out
+        string backOut = first ? "" : lines.Count == 0
             ? "\n\nNothing from the current CRL profile is installed, so nothing is removed."
             : $"\n\nThe current CRL profile is backed out. Removed from this PC:\n{string.Join("\n", lines.Take(12))}"
               + (lines.Count > 12 ? $"\n• …and {lines.Count - 12} more" : "") + "\n\nThe root CA stays trusted.";
         string extra = choice.CrlDp == "placeholder" ? "\n\nThe self-hosted CRL listener is set up for the new CRL profile." : "";
-        if (MessageBox.Show(this, $"Switch to {choice}?{backOut}{extra}", "Switch CRL profile", MessageBoxButtons.OKCancel,
+        if (MessageBox.Show(this, (first ? $"Use {choice}?\n\nThis PC's certificates will check revocation there." : $"Switch to {choice}?")
+                + $"{backOut}{extra}", first ? "Pick CRL profile" : "Switch CRL profile", MessageBoxButtons.OKCancel,
                 MessageBoxIcon.Question) != DialogResult.OK || !BeginBusy("Switching CRL profile… approve the Windows prompt."))
         {
             FillProfiles();  // put the selection back
@@ -410,19 +428,29 @@ internal sealed class MainForm : Form
         await LoadStateAsync();
     }
 
-    /// <summary>Check every revocation type this PC may use: does its CRL address answer?</summary>
+    /// <summary>Check the CRL profile in use: does its CRL address answer?</summary>
     private async Task CheckCrlsAsync()
     {
-        if (_device is null)
+        _crlResults = [];
+        if (_device is null || _state is null || !_device.CrlUrls.TryGetValue(_state.CrlDp, out string? url))
         {
-            _crlResults = [];
             return;
         }
-        var checks = _device.CrlUrls.Select(async kv => (kv.Key, await CrlCheck.TestAsync(kv.Value, kv.Key == "placeholder")));
-        _crlResults = (await Task.WhenAll(checks)).ToDictionary(r => r.Key, r => r.Item2);
+        _crlResults[_state.CrlDp] = await CrlCheck.TestAsync(url, _state.CrlDp == "placeholder");
     }
 
-    /// <summary>One row per revocation type: a status dot, its name, what the check found, and a Test link.</summary>
+    /// <summary>Switching CRL profile talks to the server (and backs certificates out): locked while it can't be reached.</summary>
+    private void UpdateProfileLock()
+    {
+        bool reachable = _state is null || _serverCheck is { Ok: true };  // no active pairing: nothing to check yet
+        _profileBox.Enabled = reachable && !_busy;
+        _crlTip.SetToolTip(_profileBox, reachable ? "" : "Locked: the cert server can't be reached. Check Connectivity below, then Refresh.");
+    }
+
+    /// <summary>
+    /// Connectivity: the cert server, then the CRL profile in use (none until one is picked). Each row has a
+    /// status dot, what the last check found, and a Test link.
+    /// </summary>
     private void FillCrlPanel()
     {
         _crlPanel.SuspendLayout();
@@ -433,50 +461,44 @@ internal sealed class MainForm : Form
         _crlPanel.Controls.Clear();
         _crlPanel.RowStyles.Clear();
         _crlPanel.RowCount = 0;
-        if (_state is null || _device is null)
+        if (_state is null)
         {
             _crlPanel.Visible = false;
             _crlPanel.ResumeLayout();
             return;
         }
-        var heading = Theme.Eyebrow("Revocation (CRL) status");
-        heading.Margin = new Padding(0, 2, 0, 4);
+        var heading = Theme.Eyebrow("Connectivity");
+        heading.Margin = new Padding(0, 2, 16, 4);
         _crlPanel.Controls.Add(heading, 0, 0);
-        _crlPanel.SetColumnSpan(heading, 4);
-        int row = 1;
-        var types = _device.CrlDps.Count > 0 ? _device.CrlDps : [_device.CrlDp];
-        foreach (string type in types)
+        var tools = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+        tools.Controls.Add(PanelLink("Refresh", "Check the cert server and CRL again", async () => await RecheckAsync()));
+        tools.Controls.Add(PanelLink("Log", "Show the Pal's log, and turn debug logging on or off", () =>
         {
-            bool active = type == _state.CrlDp;
+            using var log = new LogDialog();
+            log.ShowDialog(this);
+            return Task.CompletedTask;
+        }));
+        _crlPanel.Controls.Add(tools, 1, 0);
+        _crlPanel.SetColumnSpan(tools, 3);
+
+        string serverUrl = _state.ServerUri.GetLeftPart(UriPartial.Authority);
+        AddStatusRow(1, "Cert server", serverUrl, _serverCheck, async () => await TestServerAsync());
+        int row = 2;
+        if (_state.CrlDp.Length > 0)
+        {
+            string type = _state.CrlDp;
+            string? url = _device?.CrlUrls.GetValueOrDefault(type);
             _crlResults.TryGetValue(type, out var result);
-            string? url = _device.CrlUrls.GetValueOrDefault(type);
-            (string dot, Color color, string status) = type == "none" ? ("○", Theme.TextDim, "No revocation checks")
-                : url is null ? ("○", Theme.TextDim, "No address yet")
-                : result is null ? ("○", Theme.TextDim, "Not checked")
-                : result.Ok ? ("●", Theme.Success, result.Summary)
-                : ("●", Theme.Danger, result.Summary);
-            var name = new Label
+            string label = "CRL · " + CrlTypes.Label(type);
+            if (type == "none")
             {
-                Text = $"{dot}  {CrlTypes.Label(type)}{(active ? "  (active)" : "")}",
-                AutoSize = true, ForeColor = color, Font = active ? Theme.UiBold : Theme.Ui, Margin = new Padding(0, 2, 16, 2),
-            };
-            var state = new Label { Text = status, AutoSize = true, ForeColor = result is { Ok: false } ? Theme.Danger : Theme.TextDim, Margin = new Padding(0, 2, 16, 2) };
-            if (url is not null)
-            {
-                _crlTip.SetToolTip(name, url);
-                _crlTip.SetToolTip(state, url);
+                AddStatusRow(row, label, null, new CrlCheck.Result(true, "No revocation checks", ""), null, neutral: true);
             }
-            _crlPanel.Controls.Add(name, 0, row);
-            _crlPanel.Controls.Add(state, 1, row);
-            if (url is not null)
+            else
             {
-                var test = new LinkLabel { Text = "Test", AutoSize = true, Margin = new Padding(0, 2, 12, 2) };
-                test.LinkColor = test.ActiveLinkColor = test.VisitedLinkColor = Theme.AccentText;
-                test.LinkClicked += async (_, _) => await TestCrlAsync(type, url);
-                _crlTip.SetToolTip(test, "Fetch " + url + " now");
-                _crlPanel.Controls.Add(test, 2, row);
+                AddStatusRow(row, label, url, result, url is null ? null : async () => await TestCrlAsync(type, url));
             }
-            if (type == "placeholder" && active && result is { Ok: false })
+            if (type == "placeholder" && result is { Ok: false })
             {
                 var repair = new LinkLabel { Text = "Repair", AutoSize = true, Margin = new Padding(0, 2, 0, 2) };
                 repair.LinkColor = repair.ActiveLinkColor = repair.VisitedLinkColor = Theme.AccentText;
@@ -489,6 +511,105 @@ internal sealed class MainForm : Form
         _crlPanel.RowCount = row;
         _crlPanel.Visible = true;
         _crlPanel.ResumeLayout();
+        UpdateProfileLock();
+    }
+
+    private void AddStatusRow(int row, string label, string? url, CrlCheck.Result? result, Func<Task>? test, bool neutral = false)
+    {
+        (string dot, Color color, string status) = neutral ? ("○", Theme.TextDim, result?.Summary ?? "")
+            : result is null ? ("○", Theme.TextDim, url is null ? "No address yet" : "Not checked")
+            : result.Ok ? ("●", Theme.Success, result.Summary)
+            : ("●", Theme.Danger, result.Summary);
+        var name = new Label { Text = $"{dot}  {label}", AutoSize = true, ForeColor = color, Font = Theme.UiBold, Margin = new Padding(0, 2, 16, 2) };
+        var state = new Label
+        {
+            Text = status + (url is null ? "" : "  ·  " + url),
+            AutoSize = true, ForeColor = neutral || result is null ? Theme.TextDim : result.Ok ? Theme.Success : Theme.Danger,
+            Margin = new Padding(0, 2, 16, 2),
+        };
+        _crlPanel.Controls.Add(name, 0, row);
+        _crlPanel.Controls.Add(state, 1, row);
+        if (test is not null && url is not null)
+        {
+            var link = new LinkLabel { Text = "Test", AutoSize = true, Margin = new Padding(0, 2, 12, 2) };
+            link.LinkColor = link.ActiveLinkColor = link.VisitedLinkColor = Theme.AccentText;
+            link.LinkClicked += async (_, _) => await test();
+            _crlTip.SetToolTip(link, "Check " + url + " now");
+            _crlPanel.Controls.Add(link, 2, row);
+        }
+    }
+
+    private LinkLabel PanelLink(string text, string tip, Func<Task> action)
+    {
+        var link = new LinkLabel { Text = text, AutoSize = true, Margin = new Padding(0, 0, 12, 4), Font = Theme.MonoSmall };
+        link.LinkColor = link.ActiveLinkColor = link.VisitedLinkColor = Theme.AccentText;
+        link.LinkClicked += async (_, _) => await action();
+        _crlTip.SetToolTip(link, tip);
+        return link;
+    }
+
+    /// <summary>Re-run the connectivity checks only (no store audit), for the Refresh link.</summary>
+    private async Task RecheckAsync()
+    {
+        if (_state is null || !BeginBusy("Checking connectivity…"))
+        {
+            return;
+        }
+        try
+        {
+            _serverCheck = await CheckServerAsync(_state);
+            _crlAnswering = _device is null ? [] : await LocalCrlServer.ProbeAsync(_device.SelfHosted);
+            await CheckCrlsAsync();
+            FillCrlPanel();
+            UpdateDrift();
+            SetStatus("Cert server: " + _serverCheck.Summary + (_state.CrlDp.Length > 0 && _crlResults.TryGetValue(_state.CrlDp, out var crl)
+                ? " · CRL: " + crl.Summary : ""));
+        }
+        finally
+        {
+            EndBusy();
+        }
+    }
+
+    /// <summary>A signed call to the server, timed: the same path every request and renewal takes.</summary>
+    private async Task<CrlCheck.Result> CheckServerAsync(DeviceState state)
+    {
+        string url = state.ServerUri.GetLeftPart(UriPartial.Authority);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            using var signer = new DeviceSigner(state);
+            using var client = new PalClient(state.ServerUri, state.RootSha256);
+            var device = await client.GetDeviceAsync(signer);
+            watch.Stop();
+            _device = device;
+            AppLog.Debug($"Server check {url}: ok in {watch.ElapsedMilliseconds} ms (server v{device.ServerVersion})");
+            string ms = watch.ElapsedMilliseconds.ToString(CultureInfo.CurrentCulture);
+            return new CrlCheck.Result(true, $"Reachable · {ms} ms",
+                $"{url}\n\nAnswered a signed request in {ms} ms.\nServer v{device.ServerVersion} · CA {device.CaName} · this PC {device.Fqdn}");
+        }
+        catch (Exception e) when (e is PalException or DeviceKeyUnavailableException or HttpRequestException or TaskCanceledException)
+        {
+            string message = Operations.FriendlyMessage(e);
+            AppLog.Debug($"Server check {url}: FAILED after {watch.ElapsedMilliseconds} ms: {e.GetType().Name}: {e.Message}");
+            return new CrlCheck.Result(false, message.Split(". ")[0].TrimEnd('.'), $"{url}\n\n{message}");
+        }
+    }
+
+    private async Task TestServerAsync()
+    {
+        if (_busy || _state is null)
+        {
+            return;
+        }
+        UseWaitCursor = true;
+        SetStatus("Testing the cert server…");
+        _serverCheck = await CheckServerAsync(_state);
+        UseWaitCursor = false;
+        FillCrlPanel();
+        SetStatus("Cert server: " + _serverCheck.Summary);
+        MessageBox.Show(this, _serverCheck.Detail, "Cert server: " + _serverCheck.Summary, MessageBoxButtons.OK,
+            _serverCheck.Ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
     }
 
     private async Task TestCrlAsync(string type, string url)
@@ -542,9 +663,13 @@ internal sealed class MainForm : Form
             Dictionary<string, string> status = [];
             try
             {
+                _serverCheck = await CheckServerAsync(state);  // sets _device
+                if (!_serverCheck.Ok || _device is null)
+                {
+                    throw new PalException(_serverCheck.Summary + ".");
+                }
                 using var signer = new DeviceSigner(state);
                 using var client = new PalClient(state.ServerUri, state.RootSha256);
-                _device = await client.GetDeviceAsync(signer);
                 if (ChainCheck.RootMatches(_device.Chain, state.RootSha256))
                 {
                     state.Chain = _device.Chain;  // picks up a new intermediate; saved by the next elevated step
@@ -608,15 +733,18 @@ internal sealed class MainForm : Form
             // A certificate this PC already holds can't be requested again: renew it near expiry instead.
             var installed = _items.FirstOrDefault(i => i.FromPal is { Revoked: 0 } pal && UseCases.FromTemplate(pal.Template) == tile
                 && i.ServerStatus != "revoked" && i.Cert.NotAfter > DateTime.Now);
+            bool noProfile = _state is { CrlDp.Length: 0 };
             (string note, Color color) = installed is not null ? ("Installed", Theme.Success)
+                : policy is null ? ("Server unreachable", Theme.Danger)
+                : noProfile && mode != "off" ? ("Pick a CRL profile first", Theme.Warning)
                 : mode switch
                 {
                     "auto" => ("Get it now", Theme.AccentText),
                     "approve" => ("Your admin approves", Theme.Warning),
-                    _ => ("Server unreachable", Theme.TextDim),
+                    _ => ("Not allowed", Theme.TextDim),
                 };
             button.SetStatus(note, color);
-            button.Enabled = mode != "off" && installed is null && !_busy;
+            button.Enabled = mode != "off" && installed is null && !noProfile && !_busy;
         }
     }
 
@@ -970,6 +1098,7 @@ internal sealed class MainForm : Form
         }
         _busy = true;
         UseWaitCursor = true;
+        _profileBox.Enabled = false;
         foreach (Control control in _tileButtons.Values.Cast<Control>().Append(_connectButton).Append(_refresh))
         {
             control.Enabled = false;
@@ -983,6 +1112,7 @@ internal sealed class MainForm : Form
     {
         _busy = false;
         UseWaitCursor = false;
+        UpdateProfileLock();
         _connectButton.Enabled = _refresh.Enabled = true;
         UpdateTiles();
         UpdateActions();

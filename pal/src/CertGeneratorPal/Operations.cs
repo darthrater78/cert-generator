@@ -58,9 +58,10 @@ internal static class Operations
             deviceKey.Delete();
             throw;
         }
-        var switched = await SwitchAsync(state.DeviceId, state.CrlDps[0]).ConfigureAwait(false);
+        // No CRL profile yet: the user picks where this PC's certificates check revocation.
+        var switched = await SwitchAsync(state.DeviceId, "").ConfigureAwait(false);
         return OpResult.Success($"Connected to {code.Server.Host} as {state.Fqdn}. " + switched.Message +
-            (state.CrlDps.Count > 1 ? $" This code allows {state.CrlDps.Count} revocation types: switch CRL profiles at the top." : ""));
+            " Next, pick a CRL profile at the top: it decides where this PC's certificates check revocation.");
     }
 
     /// <summary>
@@ -72,7 +73,7 @@ internal static class Operations
     {
         var target = DeviceState.LoadAll().FirstOrDefault(p => p.DeviceId == deviceId)
             ?? throw new PalException("CRL profile not found. It may have been removed.");
-        if (!target.CrlDps.Contains(crlDp) && target.CrlDps.Count > 0)
+        if (crlDp.Length > 0 && !target.CrlDps.Contains(crlDp) && target.CrlDps.Count > 0)
         {
             throw new PalException($"Revocation type not allowed. This pairing allows {string.Join(", ", target.CrlDps.Select(CrlTypes.Label))}.");
         }
@@ -100,7 +101,8 @@ internal static class Operations
             }
         }
         AppLog.Info($"Active profile: {target.CaName} ({target.DeviceId[..8]}), revocation {crlDp}");
-        return OpResult.Success($"CRL profile: {target.CaName} · {CrlTypes.Label(crlDp)}. " + string.Join(" ", notes.Where(n => n.Length > 0)));
+        return OpResult.Success((crlDp.Length > 0 ? $"CRL profile: {target.CaName} · {CrlTypes.Label(crlDp)}. " : "")
+            + string.Join(" ", notes.Where(n => n.Length > 0)));
     }
 
     /// <summary>Take the active profile's certificates, listener and pending requests off this PC.</summary>
@@ -206,6 +208,10 @@ internal static class Operations
     public static async Task<OpResult> RequestAsync(DeviceState state, string useCase, Dictionary<string, object> names, int? lifetime,
         int? renewOf, string? replaceThumbprint)
     {
+        if (state.CrlDp.Length == 0)
+        {
+            throw new PalException("No CRL profile. Pick one at the top: it decides where these certificates check revocation.");
+        }
         bool machine = UseCases.IsMachine(useCase);
         using var signer = new DeviceSigner(state);
         using var key = Keys.CreateLeafKey(machine);
@@ -214,7 +220,7 @@ internal static class Operations
         {
             using var client = new PalClient(state.ServerUri, state.RootSha256);
             view = await client.CreateRequestAsync(signer, useCase, names, Keys.CsrPem(key), lifetime, renewOf,
-                state.CrlDp.Length > 0 ? state.CrlDp : null).ConfigureAwait(false);
+                state.CrlDp).ConfigureAwait(false);
         }
         catch
         {

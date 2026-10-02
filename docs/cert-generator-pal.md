@@ -11,7 +11,9 @@ key never leaves the PC, and everything the PC may ask for is set by the admin.
 the public internet:
 
 - The server answers `/api/pal/v1/*` only from private source addresses
-  (RFC 1918, loopback, link-local, IPv6 ULA); anything else gets `404`. Behind a
+  (RFC 1918, CGNAT `100.64.0.0/10`, loopback, link-local, IPv6 ULA); anything
+  else gets `404`. CGNAT is included because SSE / ZTNA overlays (Tailscale,
+  Zscaler and the like) give PCs and servers addresses there. Behind a
   reverse proxy the source is the proxy, so **don't publish `/api/pal/` through
   an internet-facing proxy** (README says so).
 - The Pal accepts a pairing code only when the server address is a private IP
@@ -328,3 +330,82 @@ the admin set.
 3. **Pal core + UI** — connect, four use cases, trust, renew, store audit.
 4. **Bindings** — IIS and RDP.
 5. **CI / release, README, screenshots, real-PC test.**
+
+## 8. Remote relay (planned for v2.9)
+
+A PC away from the LAN (a laptop at home, on the road) still renews and
+requests certificates, **without exposing the server**. Decisions, 2026-10-02:
+no token, end-to-end encrypted, LAN-paired PCs only, automatic LAN ↔ relay
+switching with a manual button and both statuses shown.
+
+### Shape: a mailbox, not a proxy
+
+```
+ Pal ──HTTPS──▶ relay Worker (Durable Object mailbox) ◀──outbound── server
+```
+
+- **Docker app:** *Tools › Remote connection › Set up* deploys one relay Worker
+  per server, the same way CRL Workers are deployed (encrypted Cloudflare token,
+  `workers.dev` or your own domain, Test / Tear down). It never calls the server.
+- **The server connects out:** it keeps one WebSocket to the mailbox's Durable
+  Object and polls as a fallback. It authenticates with a secret held only by
+  the server and the Worker (a Worker secret binding). **Nothing on the LAN opens
+  inbound**, and the direct API stays LAN-only, unchanged.
+- **The Worker is fixed code:** it accepts a request from a PC, holds it until the
+  server collects it, and holds the reply until the PC collects it (long poll).
+  It stores only encrypted blobs, with a short TTL (10 min), and caps their size
+  and count per PC.
+
+### No token: the Worker checks each PC's key
+
+- The server pushes to the Worker the **public keys of PCs allowed to use the
+  relay**, and nothing else. The Worker refuses any message not signed by one of
+  them (the same ECDSA P-256 signature, timestamp and nonce as the LAN API), so a
+  leaked relay address lets nobody in.
+- **Revoking or deleting a PC, or turning its remote access off, removes its key**
+  from the Worker at once. A pairing code carries an **Allow remote** switch;
+  the Windows PCs page can change it per PC.
+
+### End-to-end encryption, and signed replies
+
+- At pairing (on the LAN only) the server also hands over a **relay public key**
+  (P-256), pinned by the Pal like the root CA.
+- Each request is encrypted to the server: ephemeral ECDH with the relay key →
+  HKDF-SHA256 → AES-256-GCM, with the request's path, timestamp and nonce as
+  associated data. Replies are encrypted back to the device key the same way and
+  **signed with the relay key**, binding the request's nonce, so the Worker
+  cannot read, alter, reorder or replay either side.
+- Cloudflare sees only: a device id, sizes and times.
+
+### LAN-paired only
+
+- Pairing never happens through the relay: a new PC pairs on the LAN with a
+  pairing code, as today. The relay serves the signed API afterwards (requests,
+  status, renewals, CRL refresh for the self-hosted listener).
+- The EXE download stays LAN-only.
+
+### The Pal: automatic, with a button and both statuses
+
+- The status area shows **two rows, LAN and Remote**, each with a dot (reachable /
+  unreachable / not set up), the last check time and a **Test** link.
+- **Automatic:** each operation tries the LAN first (short timeout), then the relay.
+  The status bar names the path used.
+- **Connect to remote** forces the relay (for testing, or a LAN that answers but
+  shouldn't be used). The relay address arrives with the pairing, so there is
+  nothing to paste. An existing pairing picks it up the next time the PC is on the LAN.
+
+### Server side
+
+- New table columns: `pal_devices.remote_allowed`, server relay key pair (private
+  key encrypted with the database key when encryption is on).
+- The collector runs in the server process, like the CRL renewal timer. It
+  dispatches each decrypted request through the same handlers as the LAN API,
+  so policy, approvals and rate limits are identical.
+- The Windows PCs page shows per PC: last path used (LAN / remote) and the
+  relay's health (connected, queue depth, last delivery).
+
+### Open questions for the build
+
+- Durable Objects on the free plan (SQLite-backed) and their request limits.
+- A PC that is remote for longer than a CRL's lifetime: the self-hosted listener's
+  CRL refresh goes through the relay too.

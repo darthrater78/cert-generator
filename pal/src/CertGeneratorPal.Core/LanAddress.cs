@@ -6,7 +6,8 @@ namespace CertGeneratorPal.Core;
 /// <summary>Cert Generator Pal is LAN only: it talks to private addresses and nothing else.</summary>
 public static class LanAddress
 {
-    /// <summary>Loopback, RFC 1918, link-local, IPv6 ULA (and IPv4-mapped forms of them). Mirrors app/pal.py.</summary>
+    /// <summary>Loopback, RFC 1918, CGNAT 100.64.0.0/10 (SSE / ZTNA overlays), link-local, IPv6 ULA
+    /// (and IPv4-mapped forms of them). Mirrors app/pal.py.</summary>
     public static bool IsPrivate(IPAddress address)
     {
         ArgumentNullException.ThrowIfNull(address);
@@ -24,6 +25,7 @@ public static class LanAddress
             return b[0] == 10
                 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
                 || (b[0] == 192 && b[1] == 168)
+                || (b[0] == 100 && b[1] >= 64 && b[1] <= 127)
                 || (b[0] == 169 && b[1] == 254);
         }
         if (address.AddressFamily == AddressFamily.InterNetworkV6)

@@ -1,6 +1,6 @@
 # Cert Generator
 
-**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.8.0-dev.1 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.8.0-dev.1)**
+**[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.8.0-dev.2 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.8.0-dev.2)**
 
 A tool for creating Certificate Authorities and issuing self-signed certificates for posture demos. Runs as a **Docker web app** or a **Windows desktop app** — both use the same interface and database format, and backups created in one mode can be restored in the other.
 
@@ -104,7 +104,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.8.0-dev.1
+    image: ghcr.io/darthrater78/cert-generator:2.8.0-dev.2
     container_name: cert-generator
     restart: unless-stopped
     security_opt:
@@ -477,6 +477,17 @@ The database format is identical in both modes. Use **Backup** to create an encr
 ## Version history
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
+
+### v2.8.0-dev.2 — 2026-10-02
+
+Second pre-release for testing Cert Generator Pal on a real PC. Not for production.
+
+#### Docker
+- **CGNAT addresses count as LAN:** the Pal API and the Pal accept `100.64.0.0/10` along with RFC 1918, so PCs and servers on SSE / ZTNA overlays such as Tailscale or Zscaler can pair and request
+- **Pal (served by this image) — Connectivity:** one row for the **cert server** (a signed request, timed) and one for the **CRL profile in use**, each with a coloured status and a **Test** link; **Refresh** re-checks both, and **Log** shows the Pal's log with a **Debug logging** switch (every request and check; never keys or pairing codes)
+- **Pal — no CRL profile until you pick one:** after pairing the dropdown reads *None: pick a CRL profile*, and nothing can be requested until one is chosen. The CRL profile is locked while the cert server can't be reached
+- **Pal — certificate view:** values line up and are never cut off, long labels wrap, and the window resizes. **Copy PEM** is gone (it could crash when another program held the clipboard); **Save…** writes PEM or .cer
+- **Pal:** request tiles keep their status colour when disabled (red when the server can't be reached), and an unexpected error is logged and shown as a short message instead of the .NET crash dialog
 
 ### v2.8.0-dev.1 — 2026-10-02
 

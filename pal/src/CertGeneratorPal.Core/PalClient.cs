@@ -204,7 +204,38 @@ public sealed class PalClient : IDisposable
         return content;
     }
 
+    /// <summary>Debug logging hook: one line per request (method, path, status, time). Never bodies or headers,
+    /// so no signatures, codes or keys.</summary>
+    public static Action<string>? Trace { get; set; }
+
     private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+    {
+        var trace = Trace;
+        if (trace is null)
+        {
+            return await SendCoreAsync(request, token).ConfigureAwait(false);
+        }
+        string target = $"{request.Method} {request.RequestUri?.GetLeftPart(UriPartial.Path)}";
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            var response = await SendCoreAsync(request, token).ConfigureAwait(false);
+            trace($"{target} → {(int)response.StatusCode} in {watch.ElapsedMilliseconds} ms");
+            return response;
+        }
+        catch (Exception e) when (Traced(trace, $"{target} failed after {watch.ElapsedMilliseconds} ms", e))
+        {
+            throw;  // never reached: the filter only logs
+        }
+    }
+
+    private static bool Traced(Action<string> trace, string what, Exception e)
+    {
+        trace($"{what}: {e.GetType().Name}: {e.Message}" + (e.InnerException is { } inner ? $" ({inner.GetType().Name}: {inner.Message})" : ""));
+        return false;
+    }
+
+    private async Task<HttpResponseMessage> SendCoreAsync(HttpRequestMessage request, CancellationToken token)
     {
         try
         {

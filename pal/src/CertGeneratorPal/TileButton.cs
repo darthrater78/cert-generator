@@ -71,6 +71,7 @@ internal sealed class TileButton : Control
         var sub = new Rectangle(pad, title.Bottom + LogicalToDeviceUnits(1), title.Width, Theme.Ui.Height);
         TextRenderer.DrawText(g, Subtitle, SubtitleFont, sub, Theme.TextDim, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
         var status = new Rectangle(pad, sub.Bottom + LogicalToDeviceUnits(3), title.Width, Theme.MonoSmall.Height);
-        TextRenderer.DrawText(g, _status, Theme.MonoSmall, status, live ? _statusColor : Theme.TextDim, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        // The status keeps its colour on a disabled tile too: it says why (red unreachable, green installed…).
+        TextRenderer.DrawText(g, _status, Theme.MonoSmall, status, _statusColor, TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
     }
 }

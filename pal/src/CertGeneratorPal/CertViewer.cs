@@ -25,6 +25,8 @@ internal sealed partial class CertViewer : Form
 
     private readonly AuditItem _item;
     private readonly TableLayoutPanel _grid = new() { ColumnCount = 2, AutoSize = true, Dock = DockStyle.Top, Padding = new Padding(0, 4, 0, 0) };
+    private readonly List<TextBox> _values = [];
+    private bool _fitting;
 
     public CertViewer(AuditItem item, IReadOnlyList<string> chainRootFirst, string renew = "")
     {
@@ -39,6 +41,9 @@ internal sealed partial class CertViewer : Form
         StartPosition = FormStartPosition.CenterParent;
         ShowInTaskbar = false;
         MinimizeBox = false;
+        FormBorderStyle = FormBorderStyle.Sizable;
+        MaximizeBox = true;
+        SizeGripStyle = SizeGripStyle.Show;
 
         var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(20, 16, 20, 8) };
         _grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -154,18 +159,15 @@ internal sealed partial class CertViewer : Form
         var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
         var windows = new Button { Text = "Open in Windows", AutoSize = true };
         var save = new Button { Text = "Save…", AutoSize = true };
-        var copy = new Button { Text = "Copy PEM", AutoSize = true };
         windows.Click += (_, _) => OpenInWindows();
         save.Click += (_, _) => Save();
-        copy.Click += (_, _) =>
-        {
-            Clipboard.SetText(cert.ExportCertificatePem());
-            copy.Text = "Copied ✓";
-        };
-        buttons.Controls.AddRange([close, windows, save, copy]);
+        buttons.Controls.AddRange([close, windows, save]);
         Controls.Add(scroll);
         Controls.Add(buttons);
         CancelButton = close;
+        // Values wrap to the window: refit their heights whenever the width changes.
+        scroll.ClientSizeChanged += (_, _) => FitValues();
+        Shown += (_, _) => FitValues();
         Theme.Apply(this);
         ResumeLayout(false);
         PerformLayout();
@@ -192,30 +194,48 @@ internal sealed partial class CertViewer : Form
         {
             Text = label,
             AutoSize = true,
+            MaximumSize = new Size(190, 0),  // long extension names wrap instead of squeezing the values
             ForeColor = SystemColors.GrayText,
-            Margin = new Padding(0, 3, 16, 3),
+            Margin = new Padding(0, 4, 16, 4),
         });
-        // A borderless read-only box: looks like text, but can be selected and copied.
-        int lines = value.Split('\n').Length;
+        // A borderless read-only box: looks like text, but can be selected and copied. Always
+        // multiline, so every value starts at the same inset; FitValues sizes it to its text.
         var box = new TextBox
         {
             Text = value.ReplaceLineEndings(Environment.NewLine),
             ReadOnly = true,
             BorderStyle = BorderStyle.None,
             BackColor = SystemColors.Control,
-            Multiline = lines > 1 || value.Length > 60,
+            Multiline = true,
             WordWrap = true,
+            ScrollBars = ScrollBars.None,
             Anchor = AnchorStyles.Left | AnchorStyles.Right,
-            Margin = new Padding(0, 3, 0, 3),
+            Margin = new Padding(0, 4, 0, 4),
             TabStop = false,
             Font = mono ? Theme.Mono : Theme.Ui,
         };
-        if (box.Multiline)
-        {
-            int estimated = Math.Max(lines, (value.Length / 60) + 1);
-            box.Height = (box.Font.Height * estimated) + 4;
-        }
+        _values.Add(box);
         _grid.Controls.Add(box);
+    }
+
+    /// <summary>Each value box exactly as tall as its text wrapped at the current width.</summary>
+    private void FitValues()
+    {
+        if (_fitting || _grid.ColumnCount < 2 || _grid.GetColumnWidths() is not [_, int width] || width <= 0)
+        {
+            return;
+        }
+        _fitting = true;
+        _grid.SuspendLayout();
+        foreach (var box in _values)
+        {
+            // TextBox wraps inside a small internal margin, and breaks long words too.
+            var size = TextRenderer.MeasureText(box.Text.Length > 0 ? box.Text : " ", box.Font, new Size(Math.Max(40, width - 8), int.MaxValue),
+                TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
+            box.Height = size.Height + 2;
+        }
+        _grid.ResumeLayout();
+        _fitting = false;
     }
 
     // ── Content ─────────────────────────────────────────────────────

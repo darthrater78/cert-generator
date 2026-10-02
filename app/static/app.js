@@ -2936,15 +2936,27 @@ async function createPalCode() {
     document.getElementById('palCodeFor').textContent = label ? ' (' + label + ')' : '';
     document.getElementById('palCodeExpires').textContent = formatDateTime(data.expires_at);
     document.getElementById('palCodeText').value = data.pairing_code;
+    // The address the admin typed: only an http(s) URL becomes a link (the server checks it too).
     const link = document.getElementById('palCodeDownload');
-    link.href = body.server_url.replace(/\/+$/, '') + palDownloadPath;
-    link.textContent = link.href;
+    const download = palDownloadUrl(body.server_url);
+    link.removeAttribute('href');
+    if (download) link.href = download;
+    link.textContent = download || body.server_url;
     document.getElementById('palAddForm').classList.add('hidden');
     document.getElementById('palCodeResult').classList.remove('hidden');
   } catch (e) {
     toast(e.message, 'error');
   } finally {
     btn.disabled = false;
+  }
+}
+
+function palDownloadUrl(serverUrl) {
+  try {
+    const url = new URL(palDownloadPath.replace(/^\/+/, ''), serverUrl.replace(/\/+$/, '') + '/');  // keeps a path prefix
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
+  } catch (_e) {
+    return null;
   }
 }
 

@@ -394,7 +394,9 @@ def normalize_serial(raw: Any) -> str | None:
 
 
 def is_private_address(address: str | None) -> bool:
-    """LAN-only API: loopback, RFC 1918, link-local, IPv6 ULA (and IPv4-mapped forms of them)."""
+    """LAN-only API: loopback, RFC 1918, CGNAT / shared address space (100.64.0.0/10, used by
+    SSE and ZTNA overlays such as Tailscale or Zscaler), link-local, IPv6 ULA (and IPv4-mapped
+    forms of them)."""
     if not address:
         return False
     try:
@@ -410,5 +412,5 @@ def is_private_address(address: str | None) -> bool:
     return ip in _ULA_V6
 
 
-_PRIVATE_V4 = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+_PRIVATE_V4 = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"))
 _ULA_V6 = ipaddress.ip_network("fc00::/7")

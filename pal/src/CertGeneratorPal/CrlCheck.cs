@@ -13,6 +13,13 @@ internal static class CrlCheck
     /// <param name="onThisPc">The self-hosted address: it must be answered by this PC's own listener, not the network.</param>
     public static async Task<Result> TestAsync(string url, bool onThisPc)
     {
+        var result = await TestCoreAsync(url, onThisPc).ConfigureAwait(false);
+        AppLog.Debug($"CRL check {url}{(onThisPc ? " (this PC)" : "")}: {(result.Ok ? "ok" : "FAILED")}: {result.Detail.ReplaceLineEndings(" | ")}");
+        return result;
+    }
+
+    private static async Task<Result> TestCoreAsync(string url, bool onThisPc)
+    {
         var watch = Stopwatch.StartNew();
         try
         {

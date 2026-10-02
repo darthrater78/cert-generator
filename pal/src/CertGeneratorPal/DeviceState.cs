@@ -22,7 +22,7 @@ internal sealed class DeviceState
     public List<string> CrlDps { get; set; } = [];
     public DateTimeOffset ConnectedAt { get; set; }
 
-    /// <summary>The revocation type this profile issues with (set on the active one when loaded).</summary>
+    /// <summary>The revocation type this profile issues with (set on the active one when loaded); "" until the user picks one.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public string CrlDp { get; set; } = "";
 
@@ -81,7 +81,9 @@ internal sealed class DeviceState
             : all.FirstOrDefault(p => p.DeviceId == active.DeviceId);
         if (state is not null)
         {
-            state.CrlDp = active?.CrlDp is { Length: > 0 } crl ? crl : state.CrlDps.FirstOrDefault() ?? "";
+            // "" = paired, but no CRL profile picked yet (the user must choose one). A pairing from
+            // before profiles (no active.json) keeps the revocation type it was issuing with.
+            state.CrlDp = active is not null ? active.CrlDp : state.CrlDps.FirstOrDefault() ?? "";
         }
         return state;
     }
