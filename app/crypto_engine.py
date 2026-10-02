@@ -19,6 +19,8 @@ from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import NameOID
 
+from .errors import UserError
+
 MS_UPN_OID = x509.ObjectIdentifier("1.3.6.1.4.1.311.20.2.3")
 SMARTCARD_LOGON_OID = x509.ObjectIdentifier("1.3.6.1.4.1.311.20.2.2")
 
@@ -276,13 +278,17 @@ def issue_certificate(
     email: str | None = None,
     upn: str | None = None,
     crl_dp_url: str | None = None,
+    public_key: CertificatePublicKey | None = None,
 ) -> tuple[bytes, bytes, str, str, str]:
+    """Sign a leaf certificate. With ``public_key`` (from a CSR, see ``load_csr``) no key is
+    generated here and the returned key PEM is empty: the private key stays with the requester."""
     tmpl = CERT_TEMPLATES.get(template, CERT_TEMPLATES["web-server"])
 
     ca_cert = x509.load_pem_x509_certificate(ca_cert_pem)
     ca_key = serialization.load_pem_private_key(ca_key_pem, password=None)
 
-    leaf_key = _generate_key(algorithm)
+    leaf_key = _generate_key(algorithm) if public_key is None else None
+    leaf_public = public_key if public_key is not None else leaf_key.public_key()
     now = datetime.now(timezone.utc)
     not_after = now + timedelta(days=lifetime_days)
     serial = _serial_number()
@@ -305,7 +311,7 @@ def issue_certificate(
         x509.CertificateBuilder()
         .subject_name(subject)
         .issuer_name(ca_cert.subject)
-        .public_key(leaf_key.public_key())
+        .public_key(leaf_public)
         .serial_number(serial)
         .not_valid_before(now)
         .not_valid_after(not_after)
@@ -322,7 +328,7 @@ def issue_certificate(
             critical=False,
         )
         .add_extension(
-            x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()),
+            x509.SubjectKeyIdentifier.from_public_key(leaf_public),
             critical=False,
         )
         .add_extension(
@@ -355,7 +361,7 @@ def issue_certificate(
     cert = builder.sign(ca_key, hash_alg)
 
     cert_pem = cert.public_bytes(serialization.Encoding.PEM)
-    key_pem = leaf_key.private_bytes(
+    key_pem = b"" if leaf_key is None else leaf_key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
@@ -368,6 +374,48 @@ def issue_certificate(
         now.isoformat(),
         not_after.isoformat(),
     )
+
+
+CertificatePublicKey = ec.EllipticCurvePublicKey | rsa.RSAPublicKey
+
+# Keys a certificate signing request may carry: what Windows CNG creates and Schannel uses.
+CSR_KEY_TYPES = ("ecdsa-p256", "ecdsa-p384", "rsa-2048", "rsa-3072", "rsa-4096")
+MAX_CSR_BYTES = 16 * 1024
+
+
+def public_key_algorithm(key) -> str | None:
+    """'ecdsa-p256', 'rsa-3072', … for a key a CSR may carry; None for anything else."""
+    if isinstance(key, ec.EllipticCurvePublicKey):
+        return {"secp256r1": "ecdsa-p256", "secp384r1": "ecdsa-p384"}.get(key.curve.name)
+    if isinstance(key, rsa.RSAPublicKey) and key.key_size in (2048, 3072, 4096):
+        return f"rsa-{key.key_size}"
+    return None
+
+
+def load_csr(csr_pem: bytes) -> tuple[CertificatePublicKey, str]:
+    """The public key of a PEM CSR whose self-signature verifies (proof that the requester
+    holds the private key), with its algorithm label. Raises ValueError otherwise. Only the
+    key is used: the subject and extensions in the CSR are ignored by the caller."""
+    if len(csr_pem) > MAX_CSR_BYTES:
+        raise UserError("The certificate request is too large")
+    try:
+        csr = x509.load_pem_x509_csr(csr_pem)
+        valid = csr.is_signature_valid
+        key = csr.public_key()
+    except (ValueError, UnsupportedAlgorithm) as e:
+        raise UserError("The certificate request could not be read") from e
+    if not valid:
+        raise UserError("The certificate request's signature does not verify")
+    algorithm = public_key_algorithm(key)
+    if algorithm is None:
+        raise UserError(f"Unsupported key type. Use one of: {', '.join(CSR_KEY_TYPES)}")
+    return key, algorithm
+
+
+def cert_der_sha256(cert_pem: bytes) -> str:
+    """SHA-256 of the certificate's DER encoding, lowercase hex (what Windows calls the SHA-256 thumbprint)."""
+    cert = x509.load_pem_x509_certificate(cert_pem)
+    return hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
 
 
 def _san_name(value: str) -> x509.GeneralName:

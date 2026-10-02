@@ -12,7 +12,7 @@ from flask.sessions import SecureCookieSessionInterface
 from werkzeug.exceptions import HTTPException
 
 from . import __version__, db, state
-from .routes import account, auth, cloudflare, pki, settings, ssh
+from .routes import account, auth, cloudflare, pal, pki, settings, ssh
 from .security import is_cross_site_request
 from .web import auth_limiter
 
@@ -51,18 +51,19 @@ app.config.update(
 
 
 class _SessionInterface(SecureCookieSessionInterface):
-    """No session cookie, refresh or ``Vary: Cookie`` on the public CRL path: those
-    responses are cacheable by proxies and must never carry a visitor's session."""
+    """No session cookie, refresh or ``Vary: Cookie`` on the public CRL path (those
+    responses are cacheable by proxies and must never carry a visitor's session) or
+    on the Pal device API, which authenticates every request by signature."""
 
     def save_session(self, app, session, response) -> None:
-        if request.path.startswith("/crl/"):
+        if request.path.startswith(("/crl/", pal.DEVICE_PREFIX)):
             return
         super().save_session(app, session, response)
 
 
 app.session_interface = _SessionInterface()
 
-for blueprint in (auth.bp, account.bp, pki.bp, ssh.bp, settings.bp, cloudflare.bp):
+for blueprint in (auth.bp, account.bp, pki.bp, ssh.bp, settings.bp, cloudflare.bp, pal.bp):
     app.register_blueprint(blueprint)
 
 with app.app_context():
@@ -168,6 +169,8 @@ def _auth_check() -> Response | None:
         return rejection
     if request.path in _PUBLIC_PATHS or request.path.startswith(("/static/", "/crl/")):
         return None
+    if request.path.startswith(pal.DEVICE_PREFIX):
+        return None  # PCs sign every request; routes/pal.py checks the signature and the LAN source
     if not db.has_users():
         return redirect("/setup")
     # MFA pending: user authenticated with password but hasn't completed MFA yet
