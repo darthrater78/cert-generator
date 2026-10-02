@@ -3,6 +3,8 @@
 FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.401@sha256:83e0db97c45d2e39b80123fe42940a23c423405a17f80b608a4b8768033d6392 AS pal
 WORKDIR /src
 COPY pal/ pal/
+# The Pal takes its version from the server's (pal/Directory.Build.props).
+COPY app/__init__.py app/__init__.py
 RUN dotnet publish pal/src/CertGeneratorPal -c Release -o /out \
     && rm -f /out/*.pdb
 

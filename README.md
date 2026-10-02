@@ -484,7 +484,7 @@ Pre-release for testing Cert Generator Pal against a real server. Not for produc
 
 #### Docker
 - **Cert Generator Pal (preview)**, a Windows companion app: **Windows PCs** (sidebar, under Devices) › **Add a PC** makes a single-use pairing code that says what the PC may request (web server / RDP, this computer, the signed-in user, code signing; each issued at once or after your approval) and which CRL profiles it may use. The PC makes its own keys, so they never leave it, requests and installs certificates in one click, and renews them near expiry. LAN only
-- The image serves the Pal at `/pal/CertGeneratorPal.exe` to PCs on your LAN, no sign-in needed
+- The Pal ships only inside the Docker image, served at `/pal/CertGeneratorPal.exe` to PCs on your LAN with no sign-in needed. It always carries the server's version: the Windows PCs page and the Pal itself warn when a PC runs a Pal from another release
 - **Windows PCs** page: each PC with what it may request, its CRL profiles and what is installed on it right now; approve or deny requests; disconnect or delete a PC (its certificates are revoked). Requests waiting for approval show a count in the sidebar and a banner, checked every minute
 - Issued certificates: a **Refresh** button, and the row actions line up whether a certificate offers Export or has its key on a PC
 - Fixed: a library's error text could reach the browser on a failed export, SSH key import, encryption change or restore; those now answer with the app's own message

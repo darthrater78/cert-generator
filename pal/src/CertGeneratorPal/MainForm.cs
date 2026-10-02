@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
 using CertGeneratorPal.Core;
 
@@ -9,9 +8,7 @@ namespace CertGeneratorPal;
 internal sealed class MainForm : Form
 {
     private const string RepoUrl = "https://github.com/darthrater78/cert-generator";
-    // The informational version keeps a pre-release suffix (2.8.0-dev.1); the build adds "+<commit>".
-    private static readonly string Version = (typeof(MainForm).Assembly
-        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0").Split('+')[0];
+    private static readonly string Version = PalClient.AppVersion;
     private static readonly string ReleaseNotesUrl = RepoUrl + "/releases/tag/v" + Version;
 
     private const string TrustTile = "trust";
@@ -56,6 +53,7 @@ internal sealed class MainForm : Form
     private readonly ComboBox _profileBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 460, FlatStyle = FlatStyle.Flat, Margin = new Padding(0, 0, 8, 0) };
     private readonly FlowLayoutPanel _profileRow = new() { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 6), Visible = false };
     private readonly TableLayoutPanel _crlPanel = new() { AutoSize = true, ColumnCount = 4, Margin = new Padding(0, 0, 0, 8), Visible = false };
+    private readonly LinkLabel _drift = new() { AutoSize = true, Visible = false, Margin = new Padding(0, 0, 0, 8) };
     private bool _fillingProfiles;
     private readonly ToolTip _crlTip = new();
 
@@ -103,6 +101,8 @@ internal sealed class MainForm : Form
         _profileBox.SelectedIndexChanged += async (_, _) => await ProfileChosenAsync();
         header.Controls.Add(_profileRow);
         header.Controls.Add(_crlPanel);
+        _drift.LinkClicked += (_, _) => OpenServerDownload();
+        header.Controls.Add(_drift);
         var rule = Theme.RuleLine();
         rule.Dock = DockStyle.None;
         rule.Anchor = AnchorStyles.Left | AnchorStyles.Right;
@@ -290,6 +290,35 @@ internal sealed class MainForm : Form
         }
     }
 
+    /// <summary>The Pal ships with the server and carries its version: a different one may not match its features.</summary>
+    private void UpdateDrift()
+    {
+        string server = _device?.ServerVersion ?? "";
+        _drift.Visible = _state is not null && server.Length > 0 && server != Version;
+        if (!_drift.Visible)
+        {
+            return;
+        }
+        const string link = "Download the matching Pal";
+        _drift.Text = $"⚠ This Pal is v{Version}; your server is v{server}, so features may not match. {link}";
+        _drift.ForeColor = Theme.Warning;
+        _drift.LinkColor = _drift.ActiveLinkColor = _drift.VisitedLinkColor = Theme.AccentText;
+        _drift.Links.Clear();
+        _drift.Links.Add(_drift.Text.Length - link.Length, link.Length);
+    }
+
+    /// <summary>The Pal that shipped with the paired server, from that server only.</summary>
+    private void OpenServerDownload()
+    {
+        if (_state is null || !Uri.TryCreate(_state.ServerUri, "/pal/CertGeneratorPal.exe", out var uri)
+            || uri.Host != _state.ServerUri.Host || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return;
+        }
+        string explorer = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");
+        Process.Start(new ProcessStartInfo(explorer, "\"" + uri.AbsoluteUri + "\"") { UseShellExecute = false })?.Dispose();
+    }
+
     // ── State ───────────────────────────────────────────────────────
 
     private async Task LoadStateAsync()
@@ -317,6 +346,7 @@ internal sealed class MainForm : Form
         _mainPanel.Visible = false;
         _disconnect.Visible = false;
         _crlPanel.Visible = false;
+        _drift.Visible = false;
         SetStatus("Paste a pairing code to connect this PC.");
         _codeBox.Focus();
     }
@@ -531,6 +561,7 @@ internal sealed class MainForm : Form
             }
             StoreAudit.ApplyServer(_items, status, _device);
             FillCrlPanel();
+            UpdateDrift();
             UpdateTiles();
             FillList();
             UpdatePending();

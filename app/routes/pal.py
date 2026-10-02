@@ -14,6 +14,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,7 +24,7 @@ from urllib.parse import urlsplit
 from cryptography import x509
 from flask import Blueprint, Response, g, jsonify, request, send_file
 
-from .. import crl_publisher, crypto_engine, db, pal, state
+from .. import __version__, crl_publisher, crypto_engine, db, pal, state
 from ..errors import UserError
 from ..pal import PalError, Policy
 from ..security import AttemptLimiter, RateLimiter
@@ -323,8 +324,17 @@ def _signed_device() -> tuple[dict[str, Any] | None, tuple[Response, int] | None
         return None, error("Request replayed. The same request arrived twice; try again", 401)
     if device["revoked_at"]:
         return None, error(DEVICE_REVOKED, 403)
-    db.touch_pal_device(device_id)
+    db.touch_pal_device(device_id, _pal_version())
     return device, None
+
+
+_PAL_AGENT = re.compile(r"\bCertGeneratorPal/([0-9A-Za-z.+-]{1,40})(?:\s|$)")
+
+
+def _pal_version() -> str | None:
+    """The Pal's version from its User-Agent (informational: it is not signed)."""
+    match = _PAL_AGENT.search(request.headers.get("User-Agent", ""))
+    return match.group(1) if match else None
 
 
 def _device_json() -> tuple[dict[str, Any] | None, tuple[Response, int] | None]:
@@ -345,6 +355,7 @@ def device_info():
     ca = db.get_ca_summary(device["ca_id"]) or {}
     return jsonify({
         "device_id": device["id"],
+        "server_version": __version__,
         "label": device["label"],
         "fqdn": device["fqdn"],
         "ca_name": ca.get("name", ""),
@@ -720,6 +731,7 @@ def list_devices():
     for device in devices:
         device["policy"] = Policy.from_json(device["policy"]).public()
         device["certs"] = by_device.get(device["id"], [])
+        device["version_matches"] = device["pal_version"] in (None, __version__)
     return jsonify(devices)
 
 

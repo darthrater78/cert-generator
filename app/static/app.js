@@ -2826,7 +2826,11 @@ function renderPalDevices(devices) {
         '<div class="pal-device-title"><strong>' + escapeHtml(d.label) + '</strong> ' +
           (d.revoked_at ? '<span class="badge badge-revoked">Disconnected</span>' : '<span class="badge badge-active">Connected</span>') +
           '<div class="dim mono">' + escapeHtml(d.fqdn || d.hostname) + '</div>' +
-          '<div class="dim">' + escapeHtml(d.os) + (d.last_seen ? ' · seen ' + formatDateTime(d.last_seen) : '') + '</div></div>' +
+          '<div class="dim">' + escapeHtml(d.os) + (d.last_seen ? ' · seen ' + formatDateTime(d.last_seen) : '') +
+            (d.pal_version ? ' · Pal v' + escapeHtml(d.pal_version) : '') + '</div>' +
+          (d.version_matches ? '' : '<div class="pal-drift">Pal v' + escapeHtml(d.pal_version) + ' on this PC, server v' +
+            escapeHtml(document.body.dataset.appVersion) + ': features may not match. Update the Pal on the PC from this server.</div>') +
+          '</div>' +
         '<div class="pal-row-actions">' +
           (d.revoked_at ? '' : '<button class="btn btn-ghost btn-sm" data-action="revokePalDevice"' + data + '>Disconnect</button>') +
           '<button class="btn btn-danger btn-sm" data-action="deletePalDevice"' + data + '>Delete</button></div>' +

@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 import secrets
+import sys
 import time
+from pathlib import Path
 
 import pytest
 from cryptography import x509
@@ -75,7 +77,7 @@ class FakePal:
             self.chain = data["chain"]
         return resp
 
-    def signed(self, method: str, path: str, payload=None, *, timestamp=None, nonce=None, sign_with=None):
+    def signed(self, method: str, path: str, payload=None, *, timestamp=None, nonce=None, sign_with=None, agent=None):
         body = b"" if payload is None else json.dumps(payload).encode()
         timestamp = str(timestamp if timestamp is not None else int(time.time()))
         nonce = nonce or pal.b64url(secrets.token_bytes(16))
@@ -83,6 +85,8 @@ class FakePal:
         signature = (sign_with or self.device_key).sign(message, ec.ECDSA(hashes.SHA256()))
         headers = {"X-Pal-Device": self.device_id, "X-Pal-Time": timestamp, "X-Pal-Nonce": nonce,
                    "X-Pal-Signature": pal.b64url(signature)}
+        if agent:
+            headers["User-Agent"] = agent
         return self.client.open(path, method=method, data=body, headers=headers,
                                 content_type="application/json", environ_base=LAN)
 
@@ -556,6 +560,8 @@ def _write_exe(folder, data: bytes):
 
 @pytest.fixture
 def fake_exe(tmp_path, monkeypatch):
+    if sys.platform == "win32":
+        pytest.skip("serving the EXE relies on POSIX read-only permissions (the Docker image)")
     exe = _write_exe(tmp_path / "pal", b"MZ" + b"\0" * 1000)
     monkeypatch.setattr(pal_routes, "PAL_EXE", exe)
     yield exe
@@ -647,7 +653,7 @@ def test_renew_window_rule():
     assert pal.renew_opens(start, start + timedelta(days=30)) == start + timedelta(days=20)
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root can write anything")
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: -1)() == 0, reason="root can write anything")
 def test_writable_exe_is_not_served(client, fake_exe):
     fake_exe.parent.chmod(0o755)  # the folder is writable: someone could swap the EXE
     assert client.get("/pal/CertGeneratorPal.exe", environ_base=LAN).status_code == 404
@@ -796,3 +802,25 @@ def test_device_info_lists_a_test_address_per_revocation_type(admin_client):
     assert set(urls) == {"server", "placeholder"}
     assert urls["server"].endswith(f"/crl/{ca_id}.crl")
     assert urls["placeholder"].startswith("http://pki.lan/crl/")
+
+
+def test_pal_version_is_recorded_and_compared_with_the_server(paired):
+    from app import __version__
+    client, device, _ = paired
+    info = device.signed("GET", "/api/pal/v1/device").get_json()
+    assert info["server_version"] == __version__
+    [row] = client.get("/api/pal/devices").get_json()
+    assert row["pal_version"] is None and row["version_matches"]  # not reported yet: no warning
+    device.signed("GET", "/api/pal/v1/device", agent=f"CertGeneratorPal/{__version__}")
+    [row] = client.get("/api/pal/devices").get_json()
+    assert row["pal_version"] == __version__ and row["version_matches"]
+    device.signed("GET", "/api/pal/v1/device", agent="CertGeneratorPal/2.7.0")
+    [row] = client.get("/api/pal/devices").get_json()
+    assert row["pal_version"] == "2.7.0" and not row["version_matches"]
+    device.signed("GET", "/api/pal/v1/device", agent="CertGeneratorPal/<script>")  # not a version: ignored
+    assert client.get("/api/pal/devices").get_json()[0]["pal_version"] == "2.7.0"
+
+
+def test_pal_takes_its_version_from_the_server():
+    props = (Path(__file__).parents[1] / "pal" / "Directory.Build.props").read_text(encoding="utf-8")
+    assert "../app/__init__.py" in props and "<Version>2" not in props

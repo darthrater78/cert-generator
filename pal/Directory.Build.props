@@ -1,6 +1,9 @@
 <Project>
   <PropertyGroup>
-    <Version>2.8.0-dev.1</Version>
+    <!-- The Pal ships only inside the Docker image and always carries the server's version
+         (app/__init__.py), so either side can tell when a PC runs a Pal from another release. -->
+    <AppVersionFile>$(MSBuildThisFileDirectory)../app/__init__.py</AppVersionFile>
+    <Version>$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText($(AppVersionFile))), '__version__ = "([^"]+)"').Groups[1].Value)</Version>
     <Company>Cert Generator</Company>
     <Product>Cert Generator Pal</Product>
     <Copyright>darthrater78/cert-generator</Copyright>

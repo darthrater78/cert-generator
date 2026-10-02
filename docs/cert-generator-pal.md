@@ -309,9 +309,14 @@ the admin set.
 - **Server:** existing `scripts/` + pytest; new `tests/test_pal_api.py`.
 - **Pal locally:** `dotnet build -p:EnableWindowsTargeting=true` and
   `dotnet test` (Core) on Linux, `dotnet publish -r win-x64` for the EXE.
-- **CI:** `ci.yml` gains a Pal job (build + Core tests); `release.yml` publishes
-  `CertGeneratorPal.exe` + `.sha256` + build attestation next to `CertGenerator.exe`.
-  Unsigned, like `CertGenerator.exe` (SmartScreen warns).
+- **Distribution:** the Pal is never a separate release artifact. It is built in
+  the Dockerfile's `pal` stage and ships only inside the server image, which
+  serves it on the LAN at `/pal/CertGeneratorPal.exe`. Unsigned (SmartScreen warns).
+- **One version:** `pal/Directory.Build.props` reads the version from
+  `app/__init__.py`, so a Pal always carries the version of the server it shipped
+  with. The Pal sends it in its User-Agent; the server records it per PC, the
+  Windows PCs page flags a PC whose Pal differs from the server, and the Pal
+  shows the same warning with a link to download the matching build from its server.
 - **Real-PC test before merge:** connect, each use case, approval flow, renew,
   IIS/RDP binding, revoke device — with and without TPM.
 

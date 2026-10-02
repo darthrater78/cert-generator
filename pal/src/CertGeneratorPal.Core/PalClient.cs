@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
@@ -42,9 +43,13 @@ public sealed class PalClient : IDisposable
             },
         };
         _http = new HttpClient(handler) { Timeout = Timeout };
-        _http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("CertGeneratorPal",
-            typeof(PalClient).Assembly.GetName().Version?.ToString(3) ?? "0"));
+        // The server records this, to show PCs running a Pal from another release.
+        _http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("CertGeneratorPal", AppVersion));
     }
+
+    /// <summary>This Pal's version, the same as the server release it shipped in (e.g. 2.8.0-dev.1).</summary>
+    public static string AppVersion { get; } = (typeof(PalClient).Assembly
+        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0").Split('+')[0];
 
     public void Dispose() => _http.Dispose();
 

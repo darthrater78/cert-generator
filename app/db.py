@@ -180,7 +180,8 @@ _MIGRATIONS = (
     ("certificates", "pal_device_id", "TEXT"),  # issued to a Cert Generator Pal device; key_pem is empty
     ("certificates", "pal_present", "INTEGER"),  # 1/0: still installed on that PC at its last check; NULL = not checked
     ("certificates", "pal_checked_at", "TEXT"),
-    ("pal_requests", "crl_dp", "TEXT"),  # the revocation type (profile) the PC asked with; NULL = the policy's default
+    ("pal_requests", "crl_dp", "TEXT"),
+    ("pal_devices", "pal_version", "TEXT"),  # the Pal's version at its last request (it ships with the server's)  # the revocation type (profile) the PC asked with; NULL = the policy's default
 )
 
 CF_COLUMNS = ("cf_worker", "cf_account_id", "cf_crl_path", "cf_hostname", "cf_domain_id", "cf_dp_url",
@@ -1061,7 +1062,8 @@ def enroll_pal_device(code_id: str, device: dict[str, Any]) -> bool:
         return True
 
 
-_PAL_DEVICE_COLUMNS = "id, label, hostname, fqdn, os, public_key, ca_id, policy, code_id, created_at, last_seen, revoked_at"
+_PAL_DEVICE_COLUMNS = ("id, label, hostname, fqdn, os, public_key, ca_id, policy, code_id, created_at, last_seen, "
+                       "revoked_at, pal_version")
 
 
 def get_pal_device(device_id: str) -> dict[str, Any] | None:
@@ -1073,7 +1075,7 @@ def get_pal_device(device_id: str) -> dict[str, Any] | None:
 def list_pal_devices() -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT d.id, d.label, d.hostname, d.fqdn, d.os, d.ca_id, d.policy, d.created_at, d.last_seen, d.revoked_at, "
+            "SELECT d.id, d.label, d.hostname, d.fqdn, d.os, d.ca_id, d.policy, d.created_at, d.last_seen, d.revoked_at, d.pal_version, "
             "(SELECT COUNT(*) FROM certificates c WHERE c.pal_device_id = d.id) AS cert_count, "
             "(SELECT COUNT(*) FROM pal_requests r WHERE r.device_id = d.id AND r.status = 'pending') AS pending "
             "FROM pal_devices d ORDER BY d.created_at DESC"
@@ -1081,9 +1083,10 @@ def list_pal_devices() -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
-def touch_pal_device(device_id: str) -> None:
+def touch_pal_device(device_id: str, pal_version: str | None = None) -> None:
     with _connect() as conn:
-        conn.execute("UPDATE pal_devices SET last_seen = ? WHERE id = ?", (_utc_now(), device_id))
+        conn.execute("UPDATE pal_devices SET last_seen = ?, pal_version = COALESCE(?, pal_version) WHERE id = ?",
+                     (_utc_now(), pal_version, device_id))
 
 
 def revoke_pal_device(device_id: str) -> bool:

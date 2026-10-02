@@ -137,6 +137,9 @@ internal sealed class SelfHostedCrlsReply
 
 public sealed class DeviceInfo
 {
+    /// <summary>The server's release; the Pal that shipped with it has the same version.</summary>
+    public string ServerVersion { get; set; } = "";
+
     public string CrlDp { get; set; } = "none";
     public List<string> CrlDps { get; set; } = [];
     public List<SelfHostedCrl> SelfHosted { get; set; } = [];

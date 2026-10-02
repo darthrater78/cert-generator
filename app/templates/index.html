@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="/static/theme.css?v={{ app_version }}">
 <link rel="stylesheet" href="/static/app.css?v={{ app_version }}">
 </head>
-<body data-server-mode="{{ 'true' if server_mode else 'false' }}">
+<body data-server-mode="{{ 'true' if server_mode else 'false' }}" data-app-version="{{ app_version }}">
 <div id="unlockOverlay" class="unlock-overlay hidden">
   <div class="unlock-box">
     <div class="lock-icon">Keystore sealed</div>
