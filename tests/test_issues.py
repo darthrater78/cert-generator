@@ -76,9 +76,10 @@ def test_desktop_crl_export_reports_next_update(fresh_app):
 def test_templates_have_no_inline_script_or_handlers():
     for template in TEMPLATES.glob("*.html"):
         text = template.read_text(encoding="utf-8")
-        assert not re.search(r"\son[a-z]+\s*=", text), f"inline event handler in {template.name}"
-        assert not re.search(r"<script(?![^>]*\ssrc=)[^>]*>", text), f"inline <script> in {template.name}"
-        assert "javascript:" not in text, f"javascript: URL in {template.name}"
+        assert not re.search(r"\son[a-z]+\s*=", text, re.IGNORECASE), f"inline event handler in {template.name}"
+        assert not re.search(r"<script(?![^>]*\ssrc=)[^>]*>", text, re.IGNORECASE), \
+            f"inline <script> in {template.name}"
+        assert "javascript:" not in text.lower(), f"javascript: URL in {template.name}"
 
 
 def test_every_ui_action_is_allowlisted_and_defined():

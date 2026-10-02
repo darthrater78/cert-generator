@@ -28,16 +28,17 @@ log = logging.getLogger("cert-generator")
 def _run_admin_resets() -> None:
     reset_mfa = os.environ.get("RESET_MFA")
     if reset_mfa:
+        # Log only names read back from the database, never the environment value.
         user = get_user(reset_mfa)
         if user is None:
-            log.error("RESET_MFA: user '%s' not found", reset_mfa)
+            log.error("RESET_MFA: no account has that username")
         else:
             update_user_totp(user["id"], None, False)
             update_user_require_password(user["id"], False)
             delete_trusted_devices(user["id"])
             bump_session_version(user["id"])
             log.warning("RESET_MFA: disabled MFA, cleared trusted devices, and ended sessions for '%s'. "
-                        "Remove RESET_MFA from the environment now.", reset_mfa)
+                        "Remove RESET_MFA from the environment now.", user["username"])
 
     reset_pw = os.environ.get("RESET_PASSWORD")
     if reset_pw:
@@ -45,13 +46,14 @@ def _run_admin_resets() -> None:
             log.error("RESET_PASSWORD: expected 'username:newpassword'")
         else:
             username, new_password = reset_pw.split(":", 1)
+            user = get_user(username)
             if len(new_password) < 8 or password_too_long(new_password):
                 log.error("RESET_PASSWORD: new password must be 8 characters to 72 bytes")
-            elif reset_user_password(username, new_password):
-                log.warning("RESET_PASSWORD: password reset, trusted devices cleared, and sessions ended for '%s'. "
-                            "Remove RESET_PASSWORD from the environment now.", username)
+            elif user is None or not reset_user_password(user["username"], new_password):
+                log.error("RESET_PASSWORD: no account has that username")
             else:
-                log.error("RESET_PASSWORD: user '%s' not found", username)
+                log.warning("RESET_PASSWORD: password reset, trusted devices cleared, and sessions ended for '%s'. "
+                            "Remove RESET_PASSWORD from the environment now.", user["username"])
 
 
 def _warn_about_configuration() -> None:

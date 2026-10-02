@@ -14,6 +14,7 @@ from typing import Any
 from flask import Response, abort, g, jsonify, request, send_file, session
 
 from . import state
+from .errors import UserError
 from .security import AttemptLimiter
 
 # Shared by login, MFA, and password re-entry endpoints.
@@ -141,18 +142,26 @@ def safe_filename(name: str) -> str:
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name).strip('. ') or "export"
 
 
+def _inside(directory: str, name: str) -> str:
+    """``directory``/``name``, refusing anything that would land outside ``directory``."""
+    path = os.path.normpath(os.path.join(directory, name))
+    if not path.startswith(directory + os.sep):
+        raise UserError("That file name can't be used for an export")
+    return path
+
+
 def _save_export(data: bytes, filename: str) -> str:
     safe_name = safe_filename(filename)
-    target_dir = downloads_dir()
-    out = target_dir / safe_name
+    target_dir = os.path.normpath(str(downloads_dir().resolve()))
+    out = _inside(target_dir, safe_name)
     counter = 1
-    while out.exists():
+    while os.path.exists(out):
         stem = Path(safe_name).stem
         suffix = Path(safe_name).suffix
-        out = target_dir / f"{stem} ({counter}){suffix}"
+        out = _inside(target_dir, f"{stem} ({counter}){suffix}")
         counter += 1
-    out.write_bytes(data)
-    return str(out)
+    Path(out).write_bytes(data)
+    return out
 
 
 def deliver_export(data: bytes, filename: str, extra: dict[str, str] | None = None) -> Response:
