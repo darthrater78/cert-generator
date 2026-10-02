@@ -1031,9 +1031,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 /* Cert Generator Pal */
 .pal-cases td:last-child { width: 1%; }
 .pal-cases select { min-width: 170px; }
-.pal-code-wrap { position: relative; }
-.pal-code-copy { position: absolute; top: 6px; right: 6px; background: var(--surface); }
-.pal-code { width: 100%; padding-right: 76px; font-family: var(--font-mono, monospace); font-size: 12.5px; word-break: break-all; resize: none; }
+/* the code fills the box; Copy sits under it, never over the text */
+.pal-code-wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.pal-code { width: 100%; font-family: var(--font-mono, monospace); font-size: 12.5px; word-break: break-all; resize: none; }
+/* a hostname wraps as a whole; it breaks inside only when it alone is wider than the column */
+.pal-name { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
+.pal-all { margin-left: 8px; vertical-align: middle; }
 .pal-names { font-family: var(--font-mono, monospace); font-size: 12.5px; }
 .pal-sha { word-break: break-all; }
 
@@ -1083,6 +1086,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   font-size: 13px;
 }
 .pal-recommend p { flex: 1 1 280px; margin: 0; }
+.pal-recommend-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .pal-get {
   display: flex; align-items: center; gap: 16px 28px; flex-wrap: wrap;
   margin-bottom: 22px; padding: 18px 22px;
@@ -1099,7 +1103,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .pal-get-url input { flex: 1; min-width: 0; padding: 5px 8px; font-size: 12.5px; background: var(--surface); color: var(--text); border: 1px solid var(--border); }
 .pal-get-meta { font-size: 12px !important; color: var(--text-dim); overflow-wrap: anywhere; }
 .pal-get-button { font-size: 13px; padding: 14px 26px; white-space: nowrap; }
-@media (max-width: 768px) { .pal-get-button { width: 100%; text-align: center; } }
+@media (max-width: 768px) {
+  .pal-get-button { width: 100%; text-align: center; }
+  .pal-get { padding: 16px; }
+  .pal-get h3 { font-size: 22px; overflow-wrap: anywhere; }
+  .pal-get h3 small { display: block; margin: 2px 0 0; }
+}
 a.btn { text-decoration: none; display: inline-block; }
 .pal-chip-on { border-color: color-mix(in srgb, var(--success) 60%, var(--border)); color: var(--success); }
 .pal-relay-row { display: flex; align-items: center; gap: 8px; margin: 6px 0 8px; overflow-wrap: anywhere; }
@@ -1108,3 +1117,4 @@ a.btn { text-decoration: none; display: inline-block; }
 .pal-dot.bad { background: var(--danger); }
 .pal-dot.wait { background: var(--warning); }
 .pal-bad { color: var(--danger); }
+#palCodeResult a { color: var(--accent-text); overflow-wrap: anywhere; }

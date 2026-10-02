@@ -4,6 +4,12 @@
 
 A tool for creating Certificate Authorities and issuing self-signed certificates for posture demos. Runs as a **Docker web app** or a **Windows desktop app** — both use the same interface and database format, and backups created in one mode can be restored in the other.
 
+> ### ✨ New in 2.8: Cert Generator Pal for Windows PCs
+>
+> **[Cert Generator Pal](#cert-generator-pal-windows-pcs)** is a small Windows app that ships with the Docker version. Pair a PC once with a code, and from then on it **requests, installs and renews its own certificates**: web server / RDP, the computer's own certificate for Wi-Fi, VPN and 802.1X, the signed-in user's, and code signing. **Keys are made on the PC and never leave it.** You decide per PC what it may request and what needs your approval, and the **Windows PCs** page shows what each PC holds. With the optional **[remote connection](#remote-connection-pcs-away-from-the-lan)**, paired PCs keep working away from your LAN through a Cloudflare Worker, end-to-end encrypted, without opening anything on your network.
+>
+> 2.8 is in pre-release (`2.8.0-dev.N` tags) while the Pal is tested on real PCs.
+
 ## Deployment options
 
 | Mode | Best for | How it runs |
@@ -20,12 +26,14 @@ Both use the same interface and database format. Where they differ:
 | Access | Browser, from any machine that can reach it | Native window on one PC, no network port |
 | Sign-in | User accounts, optional TOTP 2FA, trusted devices | Optional username + master password (turns on encryption) |
 | CRL distribution point | **Cert Generator (LAN)** (this server), a **Cloudflare Worker**, or **endpoint-hosted** | Endpoint-hosted only: each machine gets the CRL from the install .zip or an import |
+| Windows PCs (Cert Generator Pal) | Yes: PCs request and install their own certificates | No |
 | Encryption at rest + recovery key | Optional | Optional |
 
 For a CRL that clients fetch over the network, you need the Docker version.
 
 ## Features
 
+- **Cert Generator Pal for Windows PCs** (Docker only, new in 2.8) — a companion app that pairs a PC with a one-time code, then requests, installs and renews its certificates with keys made on the PC. Per-PC permissions and approvals, CRL profiles, a store audit, and an optional end-to-end encrypted remote connection through Cloudflare. See [Cert Generator Pal](#cert-generator-pal-windows-pcs)
 - **Create Certificate Authorities** with configurable domain, name, algorithm, and lifetime
 - **Intermediate CAs** — create subordinate CAs from any root CA; intermediates can issue their own certificates (intermediates are issued with path length 0, so they cannot create further CAs)
 - **Issue leaf certificates** signed by any CA (root or intermediate), with SAN (Subject Alternative Name) support including wildcards and IP addresses
@@ -65,12 +73,97 @@ For a CRL that clients fetch over the network, you need the Docker version.
 
 <img width="49%" alt="Tools › Cloudflare: the connected account and the Workers this app created, each with its CA and state" src="docs/screenshots/cloudflare-settings.png" /> <img width="49%" alt="The CRL viewer: the intermediate CA's published CRL with its revoked serials, one linked to its certificate" src="docs/screenshots/crl-viewer.png" />
 
-<img width="49%" alt="The sign-in page, set as an engraved certificate over a faint openssl readout" src="docs/screenshots/sign-in.png" /> <img width="49%" alt="The Issue Certificate dialog with Include CRL Distribution Point ticked: the distribution point choice and the address clients fetch the CRL from" src="docs/screenshots/issue-certificate.png" />
+<img width="49%" alt="The sign-in page, set as an engraved certificate over a faint openssl readout" src="docs/screenshots/sign-in.png" /> <img width="49%" alt="The Issue Certificate dialog: the Cert Generator Pal recommendation for Windows PCs at the top, then Include CRL Distribution Point ticked with Cert Generator (LAN) and the address clients fetch the CRL from" src="docs/screenshots/issue-certificate.png" />
 
 <img width="49%" alt="The certificate viewer: a web server certificate's general fields, subject, issuer, extensions, fingerprints and the issuing CA's CRL" src="docs/screenshots/cert-viewer.png" /> <img width="49%" alt="An SSH key's particulars, public key and export options" src="docs/screenshots/ssh-key.png" />
 
 <img width="1440" alt="The Umber theme with the Appearance menu open: six themes and the accent colour picker" src="docs/screenshots/themes.png" />
 
+
+## Cert Generator Pal (Windows PCs)
+
+Cert Generator Pal is a Windows companion app for the Docker version. You pair a PC with a **one-time pairing code**; from then on the PC asks your server for certificates, installs them in the right Windows store, and renews them near expiry, all in one click. **The private keys are made on the PC, never leave it, and can't be exported** (in the TPM when the PC has one). The server only ever sees certificate requests.
+
+<img width="1440" alt="The Windows PCs page: the Cert Generator Pal download card with the LAN link and SHA-256, two requests waiting for approval, and the connected PCs, each with what it may request, its CRL profiles, what is installed on it and its remote access" src="docs/screenshots/pal-windows-pcs.png" />
+
+### What a PC can get
+
+| In the Pal | Certificate | Installed in |
+|---|---|---|
+| **Web server / RDP** | TLS server certificate named after the PC, plus names you allow (IIS sites, Remote Desktop) | Local Computer › Personal |
+| **This computer** | The computer's own certificate, named like a Windows CA names it (Wi-Fi, VPN, 802.1X) | Local Computer › Personal |
+| **Me** | The signed-in user's client certificate (client authentication, smart card logon) | Current User › Personal |
+| **Code signing** | Signing scripts and programs | Current User › Personal |
+| **TLS inspection** | Trusts your CA for HTTPS inspection (no request) | Local Computer › Trusted Root |
+
+Only what the pairing code allows appears. The CA chain is checked before every install and any missing root or intermediate is added. Binding a web server certificate to an IIS site or to Remote Desktop is still yours to do: the Pal installs it, with its key, ready to bind.
+
+### Setting up a PC
+
+1. **Get the app.** Open **Windows PCs** (sidebar, under Devices). The download card at the top has the EXE, its LAN address to copy, and its SHA-256. PCs on your LAN download it from your server without signing in. It is one file with nothing else to install, and it is **only** shipped inside the Docker image, with the same version as the server.
+2. **Add a PC.** Choose **Add a PC** and set what this code allows:
+   - **What the PC may request**: each kind is *Off*, *Issue right away* or *Needs my approval*.
+   - **Allowed DNS names and addresses** (`*.home.arpa`, `10.0.0.0/24`) and **allowed user names** (`*@home.arpa`). The PC's own name must fit. Wildcard certificates are never issued to a PC.
+   - **Longest lifetime**, how long the code works for, and the address the PC uses for this server.
+   - **CRL profiles**: which revocation checks the PC may use: **Cert Generator (LAN)** (this server), **the CA's Cloudflare Worker**, **On each PC (self-hosted)** or **None**. Each one ticked becomes a CRL profile in the Pal.
+   - **Allow remote connection**: whether the PC may use the [remote connection](#remote-connection-pcs-away-from-the-lan) once paired.
+3. **Send the pairing code** to the PC the way you'd send a password. It is shown only once, works for one PC, and expires.
+4. **On the PC**, run `CertGeneratorPal.exe` (it is unsigned, so Windows SmartScreen asks: choose **More info › Run anyway**), paste the code and choose **Connect**. Windows asks for administrator approval once, to trust your CA. The PC names itself from its own fully qualified name.
+5. **Pick a CRL profile** in the Pal. Until you do, nothing can be requested: the profile decides where the PC's certificates check revocation.
+
+<img width="49%" alt="The Add a Windows PC dialog: what the PC may request with an approval mode for each, allowed DNS and user names, lifetime, code expiry, server address, the CRL profiles the PC may use and Allow remote connection" src="docs/screenshots/pal-add-pc.png" /> <img width="49%" alt="The one-time pairing code, with Copy, the download address and the three steps on the PC" src="docs/screenshots/pal-pairing-code.png" />
+
+### Using the Pal
+
+- **Request** with a tile. *Issue right away* installs the certificate in seconds. *Needs approval* waits for you: the request appears on the **Windows PCs** page with a banner and a count in the sidebar, and the Pal's **Check again** installs it once you approve.
+- **The certificate list** shows every certificate on the PC that chains to your CA, in the user's and the computer's stores, with the server's view of each (valid, revoked, expired) and anything that needs a look. **Details** opens a full certificate view (every field and extension, the chain, where the key lives). **Remove** takes one or several out, with one administrator prompt for the computer's.
+- **Renew** opens in a certificate's last 30 days (the last third for short-lived ones). Until then the button says how long is left. Renewing makes a new key and replaces the old certificate, which is then revoked.
+- **One live certificate** per PC, kind and name: the server refuses duplicates and early renewals.
+- **CRL profiles**: switching profile backs out the current one first (its certificates leave the PC); the root CA stays trusted. **Self-hosted** adds a small listener on the PC that answers its own revocation checks, for laptops away from the LAN; its tile shows only under that profile.
+- **Connectivity** shows the cert server (over the LAN, and through the relay when the PC has one) and the CRL of the profile in use, each with a coloured status and **Test**. **Refresh** re-checks, and **Log** shows the Pal's log with a **Debug logging** switch (every request and check; never keys or pairing codes). The CRL profile is locked while the server can't be reached.
+- **Disconnect this PC** removes the pairing and every certificate it installed.
+
+The Pal keeps its pairings in `C:\ProgramData\CertGeneratorPal` (written only with administrator approval) and its log in `%LOCALAPPDATA%\CertGeneratorPal\pal.log`.
+
+### Managing PCs
+
+The **Windows PCs** page lists each PC with what it may request, its CRL profiles, what its last check-in found installed, its Pal version and how its last request arrived. From there you **approve or deny** requests, **allow or turn off** remote access, **Disconnect** a PC (it can't request again, and its certificates are revoked) or **Delete** it from the list. Pairing codes that haven't been used can be revoked. A PC whose Pal comes from another release is flagged, so you know to update it from the server.
+
+### How it stays secure
+
+- **Keys stay on the PC**, non-exportable, in the TPM when there is one. The server stores no Pal private keys.
+- **Pairing** proves both sides hold the code's secret without sending it, and **pins your root CA**: a server or network in the middle can't plant another CA.
+- **Every request is signed** by the PC's own device key, with a timestamp and a single-use nonce. What a PC may ask for is enforced by the server, not the app.
+- **LAN only**: the server answers the Pal's API only from private addresses (RFC 1918, CGNAT `100.64.0.0/10` for SSE / ZTNA overlays such as Tailscale or Zscaler, link-local, IPv6 ULA), and the Pal connects only to such addresses. Don't publish `/api/pal/` through an internet-facing reverse proxy; use the remote connection instead.
+- **Disconnecting** a PC revokes its certificates; a renewal revokes the certificate it replaces.
+
+### Remote connection (PCs away from the LAN)
+
+A PC allowed remote access keeps requesting and renewing when it isn't on your LAN, through a **relay Worker** on your Cloudflare account. **Nothing on your network opens to the internet**: your server connects *out* to the Worker and collects the requests waiting there.
+
+<img width="1440" alt="The Remote connection card once set up: the relay address with a green status, when the server last collected, how many PCs are allowed and requests answered, the Worker's queues, and Check now, Update Worker and Tear down" src="docs/screenshots/pal-remote.png" />
+
+1. Turn on **database encryption** and connect **Cloudflare** (**Tools › Cloudflare**) if you haven't: the relay's keys are only ever stored encrypted.
+2. On **Windows PCs › Remote connection**, choose **Set up remote connection**. It deploys a relay Worker on your `workers.dev` subdomain and the server starts collecting from it. **Check now** shows the server collecting within a minute.
+3. **Allow** remote access for a PC on its card (or tick **Allow remote connection** when you make its pairing code).
+4. The PC learns the relay the next time it checks in **on the LAN**. From then on, when the LAN can't be reached, each request goes through the relay instead. In the Pal, **Cert server · Remote** shows the relay, and **Connect to remote** uses only the relay for the session (to test it).
+
+What Cloudflare sees: a PC's device id, sizes and times. Each request is **end-to-end encrypted** to a key only your server holds (a one-time P-256 key per request, AES-256-GCM), and each reply to a key only that request's sender can derive, so the Worker can't read, change or replay either. The Worker only takes envelopes signed by a PC you allowed, and **pairing never goes through the relay**. **Tear down** deletes the Worker; the relay key stays, so PCs pick up a new relay without pairing again.
+
+### Troubleshooting
+
+| The Pal says | What to do |
+|---|---|
+| **Wrong domain.** / **No DNS suffix.** | The PC's full name must fit the code's allowed DNS names; set the PC's primary DNS suffix, or allow its domain on a new code |
+| **Code already used / expired / revoked.** | Make a new pairing code |
+| **… isn't a LAN address.** | The server address resolves to a public address: use its LAN name or address (or set up the remote connection) |
+| **Clock wrong.** | The PC's clock is more than 5 minutes off the server's |
+| **Not allowed.** / **Revocation type not allowed.** | The pairing doesn't allow that; make a new code with it |
+| **Too early to renew.** | Renewal opens in the certificate's last 30 days |
+| **Remote access refused.** | Allow remote for the PC on the Windows PCs page; the relay hears about it within a minute |
+| Windows SmartScreen blocks the EXE | It's unsigned: **More info › Run anyway**, after checking its SHA-256 on the Windows PCs page |
+
+For anything else, turn on **Log › Debug logging** in the Pal and look at the log; the server's log has the matching entries. The design, protocol and relay envelope are documented in [docs/cert-generator-pal.md](docs/cert-generator-pal.md).
 
 ## Requirements
 
@@ -433,8 +526,9 @@ This works the same in Docker and the Windows EXE. In the EXE, if you set a user
 6. Click **Issue certificate** to generate leaf certs
 7. To trust the CA on a machine, **Download** it from the CA page: the default, **DER · Certificate Only**, is the file an endpoint needs
 8. Click **Export / install ▾** on a certificate for step-by-step install commands or a .zip with install scripts, or its **Export file** tab to download it in the format you choose
-9. Docker: to publish a CA's CRL on the internet, connect **Tools › Cloudflare** and deploy a Worker from the CA page (see [Cloudflare Worker CRL](#cloudflare-worker-crl))
-10. Click **+ New** next to **SSH keys** to generate an SSH key pair, or **Tools › Create › Import SSH key** to add an existing key
+9. Docker: for Windows PCs, open **Windows PCs**, download **Cert Generator Pal** and choose **Add a PC**: the PC then requests and installs its own certificates (see [Cert Generator Pal](#cert-generator-pal-windows-pcs))
+10. Docker: to publish a CA's CRL on the internet, connect **Tools › Cloudflare** and deploy a Worker from the CA page (see [Cloudflare Worker CRL](#cloudflare-worker-crl))
+11. Click **+ New** next to **SSH keys** to generate an SSH key pair, or **Tools › Create › Import SSH key** to add an existing key
 
 ## Supported algorithms
 

@@ -1084,7 +1084,7 @@ def list_pal_devices() -> list[dict[str, Any]]:
             "d.remote_allowed, d.last_via, "
             "(SELECT COUNT(*) FROM certificates c WHERE c.pal_device_id = d.id) AS cert_count, "
             "(SELECT COUNT(*) FROM pal_requests r WHERE r.device_id = d.id AND r.status = 'pending') AS pending "
-            "FROM pal_devices d ORDER BY d.created_at DESC"
+            "FROM pal_devices d ORDER BY d.revoked_at IS NOT NULL, d.created_at DESC"  # disconnected PCs last
         ).fetchall()
         return [dict(r) for r in rows]
 

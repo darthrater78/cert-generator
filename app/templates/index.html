@@ -501,8 +501,10 @@
     {% if server_mode %}
     <div class="pal-recommend">
       <p><strong>Recommended for Windows PCs: Cert Generator Pal.</strong> The PC makes its own key, so it never leaves the PC, then requests, installs and renews its certificates itself. Issue here for anything else: servers, appliances, other operating systems.</p>
-      <a class="btn btn-primary btn-sm" href="/pal/CertGeneratorPal.exe" download>Download Pal</a>
-      <button type="button" class="btn btn-ghost btn-sm" data-action="openPalFromIssue">Windows PCs</button>
+      <div class="pal-recommend-actions">
+        <a class="btn btn-primary btn-sm" href="/pal/CertGeneratorPal.exe" download>Download Pal</a>
+        <button type="button" class="btn btn-ghost btn-sm" data-action="openPalFromIssue">Windows PCs</button>
+      </div>
     </div>
     {% endif %}
     <div class="form-row full">
@@ -1024,7 +1026,7 @@
           <input type="text" id="palServerUrl" spellcheck="false" autocomplete="off">
         </div>
       </div>
-      <h4>Revocation (CRL) checks the PC may use <button type="button" class="banner-more" data-action="palAllCrl">All</button></h4>
+      <h4>Revocation (CRL) checks the PC may use <button type="button" class="btn btn-ghost btn-sm pal-all" data-action="palAllCrl">All</button></h4>
       <p class="form-hint" style="margin:-4px 0 6px">Each one ticked becomes a CRL profile in the Pal; the user picks one, and its certificates check revocation there.</p>
       <div class="pal-crl-choices" id="palCrlDps">
         <label class="cf-choice"><input type="checkbox" value="server" checked> <span><strong>Cert Generator (LAN)</strong> <span class="dim">this server answers revocation checks; PCs on your LAN see revocations at once</span></span></label>

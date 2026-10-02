@@ -2698,7 +2698,7 @@ function palNames(names) {
 function palCertSummary(d) {
   const live = d.certs.filter(c => c.state === 'installed' || c.state === 'unchecked');
   const rows = live.map(c =>
-    '<li>' + escapeHtml(PAL_USE_CASES[c.use_case] || c.use_case) + ' <span class="dim mono">' + escapeHtml(c.name) + '</span>' +
+    '<li>' + escapeHtml(PAL_USE_CASES[c.use_case] || c.use_case) + ' <span class="dim mono pal-name">' + escapeHtml(c.name) + '</span>' +
     (c.state === 'unchecked' ? ' <span class="dim">(not checked yet)</span>' : '') + '</li>');
   const gone = d.certs.filter(c => !live.includes(c));
   if (gone.length) {

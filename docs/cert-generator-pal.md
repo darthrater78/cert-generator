@@ -49,17 +49,21 @@ Target release: **v2.8.0** (server API + Pal ship together, one version).
 `CGP1.eyJ1Ijoi…` (one string; it carries the server address, a one-time key
 and the root CA fingerprint).
 
-The Devices page lists pairing codes (unused / used / expired / revoked),
-connected devices (last seen, certs issued, Revoke), and **requests waiting for
-approval** (Approve / Deny).
+The **Windows PCs** page (sidebar › Devices) opens with the Pal download, then
+lists **requests waiting for approval** (Approve / Deny; a banner and a sidebar
+count announce new ones), the PCs (what each may request, its CRL profiles, what
+it holds, its Pal version, remote access and how its last request arrived;
+Disconnect, Delete) and the pairing codes (unused / used / expired / revoked).
 
 ### User, on the PC
 
 1. **Connect (once):** run `CertGeneratorPal.exe` → paste the code → **Connect** →
    UAC → "✅ Connected to *pki.lan* — *Homelab Root CA* is now trusted."
    The root, intermediate(s) and CRL are installed: **"trust only" is done here.**
-2. **Request:** the main window shows four tiles; those the admin turned off are
-   greyed with "Not allowed by your admin".
+2. **Pick a CRL profile.** A new pairing starts with none ("None: pick a CRL
+   profile"); nothing can be requested until the user picks one.
+3. **Request:** the main window shows a tile per use case the code allows (the
+   others are hidden).
    Names are filled in the way a Windows (AD CS) CA builds them, so the
    usual request is a single click with nothing to type:
    - **This computer** — Wi-Fi / VPN / 802.1X machine certificate. **No names
@@ -68,7 +72,8 @@ approval** (Approve / Deny).
      (CN = SAN = `pc01.lan`). The server ignores any names the PC sends.
    - **Web server / RDP** — starts from the same FQDN; extra names (aliases,
      the PC's LAN IP) can be added within the policy, like AD CS's *Web
-     Server* template. Options *Bind to IIS site…* and *Use for Remote Desktop*.
+     Server* template. Binding it to an IIS site or Remote Desktop is not built
+     yet (§4 Bindings): the certificate is installed with its key, ready to bind.
    - **Me** — user/client-auth certificate, filled with the signed-in user's
      UPN (`whoami /upn`, falling back to the e-mail the admin's pattern
      expects); editable only within the user patterns.
@@ -83,14 +88,18 @@ approval** (Approve / Deny).
    `CurrentUser\Root` (Windows asks the user to confirm). Every issued cert
    comes back with its full chain, so this never needs another round trip. A
    chain whose root doesn't match the pinned fingerprint is never installed.
-3. **Certificates from *Homelab Root CA*:** an audit of this PC's user **and**
+4. **Certificates from *Homelab Root CA*:** an audit of this PC's user **and**
    machine stores showing **only certificates that chain to the connected CA** —
    whether the Pal installed them or not (install bundles, manual imports, MMC).
    Each row: subject/names, store (machine/user), expiry, has private key,
    status from the server (valid / **revoked** / expired / not issued by this
-   server), and *Installed by Pal* or *Found*. Actions: **Renew** (Pal-issued),
-   **Replace** (found certs: a new request with the same names, under the
-   policy), **Details**, **Remove**. See §4 "Store audit".
+   server), and *Installed by Pal* or *Found*. Actions: **Renew** (Pal-issued; the
+   button counts down to when renewal opens), **Details** (full certificate view),
+   **Remove**. (*Replace* for found certificates is not built.) See §4 "Store audit".
+5. **Connectivity:** the cert server over the LAN and through the relay, and the
+   CRL of the profile in use, each with a status and **Test**; **Refresh**, and
+   **Log** with a debug-logging switch. The CRL profile locks while the server
+   can't be reached.
 
 Footer on every screen: version · GitHub · release notes.
 
@@ -231,7 +240,7 @@ certificates + pal_device_id TEXT
   strings, HMAC/MAC checks, API client, policy matching, chain/fingerprint
   checks. No Windows APIs; unit-tested on Linux and in CI.
 - `pal/src/CertGeneratorPal` — WinForms UI, CNG keys, CSR building
-  (`CertificateRequest`), `X509Store` installs, IIS/RDP binding.
+  (`CertificateRequest`), `X509Store` installs.
 - `pal/tests/CertGeneratorPal.Tests` — xUnit for Core, including vectors produced
   by the Python server so both sides agree byte for byte.
 - No third-party NuGet packages unless one is unavoidable.
@@ -242,7 +251,7 @@ Machine-scope keys in the machine key store. The device key's ACL also grants
 *use* to Interactive users so the unelevated Pal can sign "Me" / code-signing
 requests (⚠ verify on a real PC, with and without a TPM).
 
-**Bindings (web server / RDP).** IIS: `netsh http` SSL binding plus the site's
+**Bindings (web server / RDP) — not built yet.** Planned: IIS: `netsh http` SSL binding plus the site's
 `https` binding via `appcmd`. RDP: `Win32_TSGeneralSetting.SSLCertificateSHA1Hash`.
 Both run fixed executables with argument lists — never a shell string built from
 input. Renew re-applies the binding to the new thumbprint.
@@ -327,11 +336,15 @@ the admin set.
 1. **Server API** — tables, pairing codes, enroll, signed requests, CSR
    issuance, approval queue, admin endpoints, tests.
 2. **Devices page** in the web UI.
-3. **Pal core + UI** — connect, four use cases, trust, renew, store audit.
-4. **Bindings** — IIS and RDP.
-5. **CI / release, README, screenshots, real-PC test.**
+3. **Pal core + UI** — connect, four use cases, trust, renew, store audit. ✅
+   (v2.8.0-dev.1 – dev.3, then real-PC feedback rounds)
+4. **Bindings** — IIS and RDP. ⬜ not built
+5. **CI / release, README, screenshots, real-PC test.** ⏳ (pre-releases
+   `2.8.0-dev.N` from the branch; README and screenshots done; real-PC test
+   ongoing)
+6. **Remote relay** (§8, R1–R4). ✅ in v2.8.0-dev.5
 
-## 8. Remote relay (planned for v2.9)
+## 8. Remote relay (built in v2.8.0-dev.4 – dev.5)
 
 A PC away from the LAN (a laptop at home, on the road) still renews and
 requests certificates, **without exposing the server**. Decisions, 2026-10-02:
@@ -363,18 +376,19 @@ switching with a manual button and both statuses shown.
   them (the same ECDSA P-256 signature, timestamp and nonce as the LAN API), so a
   leaked relay address lets nobody in.
 - **Revoking or deleting a PC, or turning its remote access off, removes its key**
-  from the Worker at once. A pairing code carries an **Allow remote** switch;
+  from the Worker at the server's next sync (turning remote off syncs at once;
+  within a minute otherwise). A pairing code carries an **Allow remote** switch;
   the Windows PCs page can change it per PC.
 
-### End-to-end encryption, and signed replies
+### End-to-end encryption
 
 - At pairing (on the LAN only) the server also hands over a **relay public key**
-  (P-256), pinned by the Pal like the root CA.
-- Each request is encrypted to the server: ephemeral ECDH with the relay key →
-  HKDF-SHA256 → AES-256-GCM, with the request's path, timestamp and nonce as
-  associated data. Replies are encrypted back to the device key the same way and
-  **signed with the relay key**, binding the request's nonce, so the Worker
-  cannot read, alter, reorder or replay either side.
+  (P-256), which the Pal keeps; a PC allowed remote later learns it from a LAN
+  check-in. Never from an answer that came through the relay.
+- Each request is encrypted to the server with a one-time key; the reply is
+  encrypted with a key derived from the same exchange, which only that request's
+  sender and the server hold, so it needs no separate signature (see "Envelope
+  protocol" below). The Worker can't read, alter, reorder or replay either side.
 - Cloudflare sees only: a device id, sizes and times.
 
 ### LAN-paired only
@@ -469,8 +483,11 @@ outer signature; a time outside ±5 min; an inner path outside `/api/pal/v1/`; a
 - The Windows PCs page shows per PC: last path used (LAN / remote) and the
   relay's health (connected, queue depth, last delivery).
 
-### Open questions for the build
+### Notes from the build
 
-- Durable Objects on the free plan (SQLite-backed) and their request limits.
-- A PC that is remote for longer than a CRL's lifetime: the self-hosted listener's
-  CRL refresh goes through the relay too.
+- Durable Objects with SQLite storage are on the Workers free plan; the first
+  real deploy (dev.4) worked on a free account.
+- Cloudflare answers urllib's default User-Agent with 403 "error code: 1010": the
+  collector and the Pal always send their own.
+- A PC remote for longer than a CRL's lifetime: the self-hosted listener's CRL
+  refresh goes through the relay like any other signed request.
