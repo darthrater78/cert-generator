@@ -1,5 +1,8 @@
 # Cert Generator
 
+<!-- Dev-build banner: drawn by .github/workflows/dev-banner.yml after every release, empty when no pre-release is ahead of the latest release. -->
+<a href="https://github.com/darthrater78/cert-generator/releases"><img alt="Dev build status" src="https://raw.githubusercontent.com/darthrater78/cert-generator/readme-banner/banner.svg" /></a>
+
 **[GitHub repository](https://github.com/darthrater78/cert-generator)** · **[v2.7.0 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.7.0)**
 
 A tool for creating Certificate Authorities and issuing self-signed certificates for posture demos. Runs as a **Docker web app** or a **Windows desktop app** — both use the same interface and database format, and backups created in one mode can be restored in the other.
