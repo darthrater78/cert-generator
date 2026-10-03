@@ -14,6 +14,12 @@ on:
   workflow_run:
     workflows: [Release]
     types: [completed]
+  # A change to the banner itself (its first merge creates readme-banner).
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/dev-banner.yml
+      - scripts/dev_banner.py
   # After deleting or editing a release by hand.
   workflow_dispatch:
 
