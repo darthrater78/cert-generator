@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="150" viewBox="0 0 820 150" role="img" aria-label="Dev build v2.8.0-dev.7 available: docker pull ghcr.io/darthrater78/cert-generator:2.8.0-dev.7">
+<title>Dev build v2.8.0-dev.7 available: docker pull ghcr.io/darthrater78/cert-generator:2.8.0-dev.7</title>
+<clipPath id="card"><rect width="820" height="150" rx="10"/></clipPath>
+<g clip-path="url(#card)"><rect width="820" height="150" fill="#19202b"/><rect width="6" height="150" fill="#d4a017"/></g>
+<text x="30" y="34" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="12" font-weight="700" letter-spacing="1.5" fill="#d4a017">DEV BUILD AVAILABLE · v2.8.0-dev.7 · NOT FOR PRODUCTION</text>
+<text x="30" y="58" font-family="Georgia,'Times New Roman',serif" font-size="16" fill="#e9ebee">Seventh pre-release: Remote Desktop without a web server certificate. A PC that only needs RDP</text>
+<text x="30" y="82" font-family="Georgia,'Times New Roman',serif" font-size="16" fill="#e9ebee">uses its This computer certificate.</text>
+<rect x="30" y="98" width="760" height="30" rx="5" fill="#121821"/>
+<text x="44" y="118" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13" fill="#9aa6b6">$ <tspan fill="#e9ebee">docker pull ghcr.io/darthrater78/cert-generator:2.8.0-dev.7</tspan></text>
+</svg>
