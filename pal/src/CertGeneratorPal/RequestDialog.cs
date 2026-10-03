@@ -17,7 +17,7 @@ internal sealed class RequestDialog : Form
 
     public int LifetimeDays => (int)_lifetime.Value;
 
-    /// <summary>Where to use a web server certificate once installed; null for other kinds or nothing chosen.</summary>
+    /// <summary>Where to use a web server or This computer certificate once installed; null for other kinds or nothing chosen.</summary>
     public BindRequest? Bind => _bind?.Request is { IsEmpty: false } bind ? bind : null;
 
     public RequestDialog(string useCase, DeviceState state, Policy policy, bool rootTrusted)
@@ -47,6 +47,8 @@ internal sealed class RequestDialog : Form
                     MaximumSize = new Size(460, 0),
                     Font = new Font(Font, FontStyle.Bold),
                 });
+                _bind = new BindPanel(() => [state.Fqdn], [], iis: false);
+                layout.Controls.Add(_bind);
                 break;
             case UseCases.WebServer:
                 layout.Controls.Add(new Label { Text = "Names (one per line). The first is the main one:", AutoSize = true });
@@ -117,8 +119,8 @@ internal sealed class RequestDialog : Form
 
     private static string Describe(string useCase) => useCase switch
     {
-        UseCases.Computer => "A machine certificate for Wi-Fi, VPN and 802.1X. Installed in the computer's Personal store.",
-        UseCases.WebServer => "A TLS certificate for IIS sites and Remote Desktop. Installed in the computer's Personal store.",
+        UseCases.Computer => "A machine certificate for Wi-Fi, VPN, 802.1X and Remote Desktop. Installed in the computer's Personal store.",
+        UseCases.WebServer => "A TLS certificate for IIS sites, with the extra names they need. It can serve Remote Desktop too. Installed in the computer's Personal store.",
         UseCases.User => "A certificate for you: client authentication and smart card logon. Installed in your Personal store.",
         _ => "A code-signing certificate for scripts and programs. Installed in your Personal store.",
     };

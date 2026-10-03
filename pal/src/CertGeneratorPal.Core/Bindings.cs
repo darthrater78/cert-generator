@@ -47,6 +47,17 @@ public static partial class BindingRules
     public static string? ValidThumbprint(string? thumbprint) =>
         thumbprint is { Length: 40 } t && t.All(Uri.IsHexDigit) ? t.ToUpperInvariant() : null;
 
+    /// <summary>
+    /// What a newly requested certificate may be bound to: a web server certificate to anything,
+    /// a This computer certificate to Remote Desktop only (it has just the PC's own name). Null for nothing.
+    /// </summary>
+    public static BindRequest? ForUseCase(string useCase, BindRequest? request) => request is not { IsEmpty: false } ? null : useCase switch
+    {
+        UseCases.WebServer => request,
+        UseCases.Computer when request.Rdp => new BindRequest { Rdp = true },
+        _ => null,
+    };
+
     /// <summary>Checks a request from the unelevated app before the helper acts on it. Throws with a short headline.</summary>
     public static void Validate(BindRequest request, IEnumerable<string> certificateNames)
     {

@@ -16,6 +16,21 @@ public class BindingTests
         BindingRules.Validate(new BindRequest { Rdp = true }, []);
     }
 
+    [Fact]
+    public void ComputerCertificatesBindOnlyToRemoteDesktop()
+    {
+        var both = new BindRequest { Rdp = true, IisSite = "Default Web Site", Port = 443 };
+        Assert.Same(both, BindingRules.ForUseCase(UseCases.WebServer, both));
+        var computer = BindingRules.ForUseCase(UseCases.Computer, both);
+        Assert.NotNull(computer);
+        Assert.True(computer.Rdp);
+        Assert.Null(computer.IisSite);
+        Assert.Null(BindingRules.ForUseCase(UseCases.Computer, new BindRequest { IisSite = "Default Web Site" }));
+        Assert.Null(BindingRules.ForUseCase(UseCases.User, new BindRequest { Rdp = true }));
+        Assert.Null(BindingRules.ForUseCase(UseCases.WebServer, new BindRequest()));
+        Assert.Null(BindingRules.ForUseCase(UseCases.WebServer, null));
+    }
+
     [Theory]
     [InlineData("Site'] /+bindings.[protocol='http")]
     [InlineData("a\"b")]

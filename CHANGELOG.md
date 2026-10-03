@@ -6,6 +6,15 @@ What changed in each release of Cert Generator and Cert Generator Pal. The [READ
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
 
+### v2.8.0-dev.7 — 2026-10-03
+
+Seventh pre-release: **Remote Desktop without a web server certificate**. A PC that only needs RDP uses its This computer certificate. Not for production.
+
+#### Docker
+- **Pal (served by this image) — This computer for Remote Desktop:** the This computer request has **Use for Remote Desktop**, so a PC that only needs RDP gets one machine certificate for Wi-Fi, VPN, 802.1X and Remote Desktop. **Bind…** already accepted it for a certificate that's installed
+- **Pal — Web server:** the tile is now just **Web server** (IIS sites and the extra names they need); it keeps **Use for Remote Desktop** for a PC reached by an alias or IP address
+- Windows PCs page: the pairing code's use cases read **Web server** and **This computer … Remote Desktop** to match
+
 ### v2.8.0-dev.6 — 2026-10-02
 
 Sixth pre-release: **Cert Generator Pal binds web server certificates to IIS and Remote Desktop**, and keeps them bound through renewals. Not for production.

@@ -2677,7 +2677,7 @@ async function teardownCloudflareWorker() {
 // ── Event delegation ────────────────────────────────────────────────
 // ── Cert Generator Pal: Windows PCs ────────────────────────────────
 
-const PAL_USE_CASES = { 'web-server': 'Web server / RDP', computer: 'This computer', user: 'Me', 'code-signing': 'Code signing' };
+const PAL_USE_CASES = { 'web-server': 'Web server', computer: 'This computer', user: 'Me', 'code-signing': 'Code signing' };
 const PAL_MODES = { off: 'Off', auto: 'Issue right away', approve: 'Needs approval' };
 const PAL_CODE_STATES = {
   unused: '<span class="badge badge-active">Not used yet</span>',

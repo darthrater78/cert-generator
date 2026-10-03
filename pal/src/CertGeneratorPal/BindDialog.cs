@@ -3,8 +3,8 @@ using CertGeneratorPal.Core;
 namespace CertGeneratorPal;
 
 /// <summary>
-/// "Use for Remote Desktop" and "Bind to IIS site": part of the Web server / RDP request, and
-/// the Bind… dialog for a certificate already installed.
+/// "Use for Remote Desktop" and "Bind to IIS site": part of the Web server request (the This computer
+/// request has Remote Desktop only), and the Bind… dialog for a certificate already installed.
 /// </summary>
 internal sealed class BindPanel : TableLayoutPanel
 {
@@ -16,7 +16,7 @@ internal sealed class BindPanel : TableLayoutPanel
     private readonly ComboBox _host = new() { Width = 220, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Func<IEnumerable<string>> _names;
 
-    public BindPanel(Func<IEnumerable<string>> certificateNames, IReadOnlyCollection<string> usedBy)
+    public BindPanel(Func<IEnumerable<string>> certificateNames, IReadOnlyCollection<string> usedBy, bool iis = true)
     {
         _names = certificateNames;
         ColumnCount = 1;
@@ -30,6 +30,10 @@ internal sealed class BindPanel : TableLayoutPanel
         Controls.Add(_rdp);
         Controls.Add(Hint("Remote Desktop connections to this PC present this certificate instead of a self-signed one."));
 
+        if (!iis)
+        {
+            return;
+        }
         if (Binder.Iis.IsInstalled)
         {
             Controls.Add(_iis);

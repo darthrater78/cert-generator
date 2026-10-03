@@ -37,7 +37,7 @@ Target release: **v2.8.0** (server API + Pal ship together, one version).
 |---|---|
 | Label | `pc01` |
 | CA | — (required) |
-| Use cases, each **Off / Auto-issue / Needs approval** | Web server/RDP: Auto · This computer: Auto · Me: Needs approval · Code signing: Off |
+| Use cases, each **Off / Auto-issue / Needs approval** | Web server: Auto · This computer: Auto · Me: Needs approval · Code signing: Off |
 | Allowed DNS names (patterns) | `*.<CA domain>` |
 | Allowed user names (patterns, for "Me") | `*@<CA domain>` |
 | Max lifetime (days) | 365 |
@@ -66,11 +66,13 @@ Disconnect, Delete) and the pairing codes (unused / used / expired / revoked).
    others are hidden).
    Names are filled in the way a Windows (AD CS) CA builds them, so the
    usual request is a single click with nothing to type:
-   - **This computer** — Wi-Fi / VPN / 802.1X machine certificate. **No names
+   - **This computer** — Wi-Fi / VPN / 802.1X machine certificate, and the usual
+     one for Remote Desktop (option *Use for Remote Desktop*; no IIS option, since it
+     carries only the PC's own name). **No names
      to enter or edit:** like AD CS's *Computer* template (subject built from
      the directory), it is issued to the PC's FQDN recorded at pairing
      (CN = SAN = `pc01.lan`). The server ignores any names the PC sends.
-   - **Web server / RDP** — starts from the same FQDN; extra names (aliases,
+   - **Web server** — starts from the same FQDN; extra names (aliases,
      the PC's LAN IP) can be added within the policy, like AD CS's *Web
      Server* template. Options *Use for Remote Desktop* and *Bind to an IIS site*
      (site, port, every name or one of the certificate's names via SNI); **Bind…**
@@ -108,7 +110,7 @@ Footer on every screen: version · GitHub · release notes.
 
 | Use case | Template | Leaf cert | Key | Elevation |
 |---|---|---|---|---|
-| Web server / RDP | `web-server` | `LocalMachine\My` | machine key | UAC |
+| Web server | `web-server` | `LocalMachine\My` | machine key | UAC |
 | This computer | `computer` | `LocalMachine\My` | machine key | UAC |
 | Me | `user` | `CurrentUser\My` | user key | none |
 | Code signing | `code-signing` | `CurrentUser\My` | user key | none |
@@ -252,7 +254,7 @@ Machine-scope keys in the machine key store. The device key's ACL also grants
 *use* to Interactive users so the unelevated Pal can sign "Me" / code-signing
 requests (⚠ verify on a real PC, with and without a TPM).
 
-**Bindings (web server / RDP).** `Binder.cs`, elevated (`bind` helper op, or as part of
+**Bindings (web server; This computer for RDP).** `Binder.cs`, elevated (`bind` helper op, or as part of
 `request` / `collect`; a request waiting for approval keeps its choice in the pending entry).
 - **http.sys:** the SSL binding is set through `httpapi.dll` (`HttpSetServiceConfiguration`,
   address:port and SNI host:port kinds), not `netsh`, whose output Windows translates.

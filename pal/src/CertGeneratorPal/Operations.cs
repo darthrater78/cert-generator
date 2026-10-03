@@ -209,7 +209,7 @@ internal static class Operations
     public static async Task<OpResult> RequestAsync(DeviceState state, string useCase, Dictionary<string, object> names, int? lifetime,
         int? renewOf, string? replaceThumbprint, BindRequest? bind = null)
     {
-        bind = useCase == UseCases.WebServer && bind is { IsEmpty: false } ? bind : null;
+        bind = BindingRules.ForUseCase(useCase, bind);
         if (state.CrlDp.Length == 0)
         {
             throw new PalException("No CRL profile. Pick one at the top: it decides where these certificates check revocation.");

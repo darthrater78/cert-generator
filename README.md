@@ -17,7 +17,7 @@
 
 | 1 · Add a PC | 2 · Pair it | 3 · Request |
 |---|---|---|
-| On **Windows PCs**, choose **Add a PC**, pick what it may request, and copy the one-time code. | Run `CertGeneratorPal.exe` on the PC (it downloads from your server) and paste the code. | Choose a tile: **Web server / RDP**, **This computer**, **Me** or **Code signing**. It lands in the right Windows store in seconds. |
+| On **Windows PCs**, choose **Add a PC**, pick what it may request, and copy the one-time code. | Run `CertGeneratorPal.exe` on the PC (it downloads from your server) and paste the code. | Choose a tile: **Web server**, **This computer**, **Me** or **Code signing**. It lands in the right Windows store in seconds. |
 
 - **Keys are made on the PC and never leave it**: non-exportable, in the TPM when there is one. The server only ever sees certificate requests.
 - **You stay in charge**: for each PC, every kind of certificate is off, issued right away, or waits for your approval.
@@ -151,7 +151,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.8.0-dev.6
+    image: ghcr.io/darthrater78/cert-generator:2.8.0-dev.7
     container_name: cert-generator
     restart: unless-stopped
     security_opt:
@@ -265,8 +265,8 @@ Cert Generator Pal is a Windows companion app for the Docker version. You pair a
 
 | In the Pal | Certificate | Installed in |
 |---|---|---|
-| **Web server / RDP** | TLS server certificate named after the PC, plus names you allow (IIS sites, Remote Desktop) | Local Computer › Personal |
-| **This computer** | The computer's own certificate, named like a Windows CA names it (Wi-Fi, VPN, 802.1X) | Local Computer › Personal |
+| **Web server** | TLS server certificate named after the PC, plus names you allow (IIS sites; Remote Desktop too) | Local Computer › Personal |
+| **This computer** | The computer's own certificate, named like a Windows CA names it (Wi-Fi, VPN, 802.1X, Remote Desktop) | Local Computer › Personal |
 | **Me** | The signed-in user's client certificate (client authentication, smart card logon) | Current User › Personal |
 | **Code signing** | Signing scripts and programs | Current User › Personal |
 | **TLS inspection** | Trusts your CA for HTTPS inspection (no request) | Local Computer › Trusted Root |

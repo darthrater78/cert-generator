@@ -15,8 +15,8 @@ internal sealed class MainForm : Form
     private const string CrlTile = "crl";
     private static readonly Dictionary<string, string> TileSubtitles = new()
     {
-        [UseCases.Computer] = "Wi-Fi, VPN and 802.1X",
-        [UseCases.WebServer] = "IIS sites and Remote Desktop",
+        [UseCases.Computer] = "Wi-Fi, VPN, 802.1X, Remote Desktop",
+        [UseCases.WebServer] = "IIS sites, any names you need",
         [UseCases.User] = "You: sign-in and smart card",
         [UseCases.CodeSigning] = "Scripts and programs",
         [TrustTile] = "Trust the CA for HTTPS inspection",

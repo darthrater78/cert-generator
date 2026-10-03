@@ -28,7 +28,7 @@ public static class UseCases
 
     public static string Label(string useCase) => useCase switch
     {
-        WebServer => "Web server / RDP",
+        WebServer => "Web server",
         Computer => "This computer",
         User => "Me",
         CodeSigning => "Code signing",
