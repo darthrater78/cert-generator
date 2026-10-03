@@ -12,6 +12,7 @@ from typing import Any
 from flask import Blueprint, g, jsonify, session
 
 from .. import crypto_engine, db, legacy_exports, state
+from ..errors import UserError
 from ..security import lockout_message
 from ..web import (
     auth_limiter,
@@ -21,6 +22,7 @@ from ..web import (
     new_password_error,
     recent_auth_required,
     str_field,
+    value_error,
 )
 
 log = logging.getLogger("cert-generator")
@@ -48,7 +50,7 @@ def _password_attempt(check: Callable[[], dict[str, Any] | None]):
     except ValueError as e:
         if str(e).startswith("Wrong "):
             auth_limiter.failure(limit_key)
-        return error(str(e))
+        return value_error(e)
     auth_limiter.success(limit_key)
     return jsonify({"ok": True, **(extra or {})})
 
@@ -104,7 +106,7 @@ def enable_encryption():
     try:
         recovery_key = db.enable_encryption(password, username or None)
     except ValueError as e:
-        return error(str(e))
+        return value_error(e)
     log.info("Encryption enabled%s", " with a sign-in name" if username else "")
     return jsonify({"ok": True, "recovery_key": recovery_key})
 
@@ -132,7 +134,7 @@ def unlock_encryption():
         # Check both before answering, so the reply doesn't say which one was wrong.
         name_ok = expected_username is None or _same_username(username, expected_username)
         if not db.unlock_if(password, name_ok):
-            raise ValueError("Wrong username or password" if expected_username is not None else "Wrong password")
+            raise UserError("Wrong username or password" if expected_username is not None else "Wrong password")
 
     return _password_attempt(check)
 
@@ -239,7 +241,7 @@ def restore_backup():
     try:
         counts = db.import_all_data(backup)
     except ValueError as e:
-        return error(str(e))
+        return value_error(e)
     # Every session was revoked by the restore; keep this one if its user still exists.
     if g.get("user"):
         restored = db.get_user(g.user["username"])

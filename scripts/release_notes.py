@@ -1,4 +1,4 @@
-"""Build GitHub release notes for a version from README.md's version history.
+"""Build GitHub release notes for a version from CHANGELOG.md's version history.
 
 One version, and the changelog picks what ships. A version entry carries a
 "#### Docker" and/or a "#### Windows EXE" subsection; whichever is present is
@@ -7,7 +7,7 @@ with no section is reported as unchanged, naming the release it last shipped in.
 
 Usage:
   python scripts/release_notes.py v2.1.0 --image-digest sha256:... --exe-sha256 abc... > notes.md
-  python scripts/release_notes.py v2.1.0 --check       # validate the README entry only
+  python scripts/release_notes.py v2.1.0 --check       # validate the changelog entry only
   python scripts/release_notes.py v2.1.0 --components  # docker=<bool> / exe=<bool> for CI
 """
 from __future__ import annotations
@@ -30,9 +30,9 @@ class NotesError(ValueError):
 
 def version_entry(readme: str, version: str) -> str:
     """Body of the '### vX.Y.Z — date' entry, without its heading."""
-    match = re.search(rf"^### v{re.escape(version)}\b[^\n]*\n(.*?)(?=^### v|^## |\Z)", readme, re.S | re.M)
+    match = re.search(rf"^### v{re.escape(version)}(?![\w.-])[^\n]*\n(.*?)(?=^### v|^## |\Z)", readme, re.S | re.M)
     if not match:
-        raise NotesError(f"README.md has no '### v{version}' version history entry")
+        raise NotesError(f"CHANGELOG.md has no '### v{version}' version history entry")
     return match.group(1).strip()
 
 
@@ -64,7 +64,7 @@ def released_components(readme: str, version: str) -> tuple[str, ...]:
 
 def all_versions(readme: str) -> list[str]:
     """Versions in version-history order, newest first."""
-    return re.findall(r"^### v(\d+\.\d+\.\d+)\b", readme, re.M)
+    return re.findall(r"^### v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)(?![\w.-])", readme, re.M)
 
 
 def previous_release_of(readme: str, version: str, component: str) -> str | None:
@@ -85,6 +85,7 @@ def previous_tag(readme: str, version: str) -> str:
 
 def _docker_shipped(version: str, body: str, image_digest: str | None, is_newest: bool) -> list[str]:
     major_minor = ".".join(version.split(".")[:2])
+    prerelease = "-" in version  # a pre-release is tagged with its own version only
     lines = [
         body,
         "",
@@ -92,7 +93,7 @@ def _docker_shipped(version: str, body: str, image_digest: str | None, is_newest
         "```bash",
         f"docker pull {IMAGE}:{version}",
         "```",
-        f"Tags: `{version}`, `{major_minor}`" + (", `latest`" if is_newest else ""),
+        f"Tags: `{version}`" if prerelease else f"Tags: `{version}`, `{major_minor}`" + (", `latest`" if is_newest else ""),
     ]
     if image_digest:
         lines += [
@@ -101,6 +102,11 @@ def _docker_shipped(version: str, body: str, image_digest: str | None, is_newest
             f"Verify provenance: `gh attestation verify oci://{IMAGE}@{image_digest} --repo {REPO}`",
         ]
     return lines
+
+
+def _not_built(previous: str | None, what: str) -> list[str]:
+    """A pre-release builds only what it is testing; the other deliverable is the last release's."""
+    return [f"{what} not built for this pre-release" + (f": use {previous}." if previous else ".")]
 
 
 def _docker_unchanged(previous: str | None) -> list[str]:
@@ -154,6 +160,8 @@ def build_notes(version: str, readme: str, image_digest: str | None, exe_sha256:
     lines += ["## 🐳 Docker (server mode)", ""]
     if DOCKER in shipping:
         lines += _docker_shipped(version, sections[DOCKER], image_digest, is_newest)
+    elif "-" in version:
+        lines += _not_built(previous_release_of(readme, version, DOCKER), "Docker image")
     else:
         lines += _docker_unchanged(previous_release_of(readme, version, DOCKER))
     lines += [""]
@@ -161,6 +169,8 @@ def build_notes(version: str, readme: str, image_digest: str | None, exe_sha256:
     lines += ["## 🪟 Windows EXE (desktop)", ""]
     if EXE in shipping:
         lines += _exe_shipped(sections[EXE], exe_sha256)
+    elif "-" in version:
+        lines += _not_built(previous_release_of(readme, version, EXE), "Windows EXE")
     else:
         lines += _exe_unchanged(previous_release_of(readme, version, EXE))
     lines += [""]
@@ -178,13 +188,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--image-digest")
     parser.add_argument("--exe-sha256")
     parser.add_argument("--not-newest", action="store_true", help="an older version: latest tag does not move")
-    parser.add_argument("--check", action="store_true", help="only validate the README entry")
+    parser.add_argument("--check", action="store_true", help="only validate the changelog entry")
     parser.add_argument("--components", action="store_true",
                         help="print 'docker=<bool>' and 'exe=<bool>' for the deliverables this version ships")
     args = parser.parse_args(argv)
 
     version = args.tag.removeprefix("v")
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     try:
         if args.components:
             shipping = released_components(readme, version)

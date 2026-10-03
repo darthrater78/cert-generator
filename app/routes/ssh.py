@@ -7,7 +7,8 @@ import re
 from flask import Blueprint, jsonify
 
 from .. import crypto_engine, db
-from ..web import deliver_export, error, json_body, reauth_rejection, recent_auth_required, str_field
+from ..web import (deliver_export, error, json_body, reauth_rejection, recent_auth_required, str_field,
+                   value_error)
 
 log = logging.getLogger("cert-generator")
 
@@ -78,7 +79,7 @@ def import_ssh_key():
             crypto_engine.parse_ssh_key(private_key_text, passphrase=passphrase)
         )
     except ValueError as e:
-        return error(str(e))
+        return value_error(e)
 
     if comment:
         public_bytes = public_bytes.rstrip() + b" " + comment.encode("utf-8") + b"\n"
@@ -129,7 +130,7 @@ def export_ssh_key(key_id: int):
             key["private_key"], fmt, passphrase=passphrase, original_passphrase=original_passphrase,
         )
     except ValueError as e:
-        return error(str(e))
+        return value_error(e)
     return deliver_export(export_data, f"{safe_name}-{filename}")
 
 

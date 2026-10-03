@@ -1,6 +1,6 @@
 name: Release
 
-# One tag, and the changelog picks what ships. README.md's entry for the version
+# One tag, and the changelog picks what ships. CHANGELOG.md's entry for the version
 # carries a "#### Docker" and/or a "#### Windows EXE" section; each one present
 # builds and publishes that deliverable, and at least one is required. A
 # deliverable with no section is left at the version it last shipped, and the
@@ -44,9 +44,13 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
+          case "$GITHUB_REF_NAME" in
+            *-dev.*|*-alpha.*|*-beta.*|*-rc.*) echo "Pre-release tag: built from its branch, skipping the branch check."; exit 0 ;;
+          esac
           if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"; then
             echo "Tag $GITHUB_REF_NAME is not on $DEFAULT_BRANCH."
             echo "Releases come from the default branch only."
+            echo "Use a pre-release tag (e.g. v2.8.0-dev.1) for a feature-branch build."
             exit 1
           fi
 
@@ -350,12 +354,17 @@ jobs:
         run: |
           set -euo pipefail
           assets=()
+          # A pre-release (v2.8.0-dev.1) is marked so, and never becomes latest.
+          prerelease=()
+          case "$GITHUB_REF_NAME" in
+            *-dev.*|*-alpha.*|*-beta.*|*-rc.*) prerelease=(--prerelease) ;;
+          esac
           # Latest follows the newest release carrying an EXE, so that
           # /releases/latest/download/CertGenerator.exe resolves to the current build.
           latest=false
           if [ "$HAS_EXE" = "true" ]; then
             assets=(assets/CertGenerator.exe assets/CertGenerator.exe.sha256)
-            if [ "$IS_NEWEST" = "true" ]; then latest=true; fi
+            if [ "$IS_NEWEST" = "true" ] && [ "${#prerelease[@]}" -eq 0 ]; then latest=true; fi
           fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release edit "$GITHUB_REF_NAME" --notes-file release-notes.md --latest="$latest"
@@ -364,7 +373,7 @@ jobs:
             fi
           else
             gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
-              --notes-file release-notes.md --latest="$latest" "${assets[@]}"
+              --notes-file release-notes.md --latest="$latest" "${prerelease[@]}" "${assets[@]}"
           fi
 
       - name: Verify release assets

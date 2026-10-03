@@ -435,3 +435,14 @@ def test_schema_migration_from_older_database(tmp_path, monkeypatch):
         cert_cols = {r[1] for r in conn.execute("PRAGMA table_info(certificates)")}
     assert {"totp_secret", "totp_last_step", "session_version"} <= user_cols
     assert "revoked_at" in cert_cols
+
+
+def test_desktop_export_path_stays_in_downloads(tmp_path):
+    from app import web
+    from app.errors import UserError
+
+    base = str(tmp_path)
+    assert web._inside(base, "cert.pem") == str(tmp_path / "cert.pem")
+    for name in ("../escape.pem", "..", "/etc/passwd", "sub/../../x"):
+        with pytest.raises(UserError):
+            web._inside(base, name)

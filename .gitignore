@@ -16,3 +16,9 @@ data/
 .claude/dev-skills-gates.md
 .dev-skills-gates.md
 .dev-skills-handoff.md
+
+# Cert Generator Pal (.NET)
+pal/**/bin/
+pal/**/obj/
+pal/dist/
+pal/dist-fd/

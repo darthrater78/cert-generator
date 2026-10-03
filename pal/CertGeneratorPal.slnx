@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CertGeneratorPal.Core/CertGeneratorPal.Core.csproj" />
+    <Project Path="src/CertGeneratorPal/CertGeneratorPal.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CertGeneratorPal.Tests/CertGeneratorPal.Tests.csproj" />
+  </Folder>
+</Solution>

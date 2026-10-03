@@ -1,0 +1,12 @@
+# Only app/, requirements.txt and pal/ sources go into the image.
+.git
+.venv
+.pytest_cache
+**/__pycache__
+.dev-skills-*
+docs
+tests
+pal/**/bin
+pal/**/obj
+pal/dist
+pal/dist-fd
