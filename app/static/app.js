@@ -1567,6 +1567,7 @@ async function selectSSHKey(keyId) {
     infoItem('Comment', escapeHtml(key.comment || '(none)'));
 
   document.getElementById('sshPubKey').textContent = key.public_key || '';
+  renderSSHInstall();
   document.getElementById('sshOriginalPassphrase').value = '';
   document.getElementById('sshOriginalPassphrase').style.display = key.has_passphrase ? '' : 'none';
   document.getElementById('sshExportPassphrase').value = '';
@@ -1679,6 +1680,64 @@ async function copyPublicKey() {
     toast('Public key copied to clipboard');
   } catch (e) {
     toast('Failed to copy: ' + e.message, 'error');
+  }
+}
+
+// One line to paste on the server, as the user who will sign in with this key.
+// Linux/macOS: ~/.ssh 700, authorized_keys 600, the key added once (safe to paste
+// again), and the SELinux label restored where restorecon exists (Fedora, RHEL,
+// Rocky, Alma), which is the only distro difference. Runs in a subshell so the
+// umask doesn't stick to the user's shell. Windows OpenSSH reads an administrator's
+// keys from ProgramData, which must be readable only by Administrators and SYSTEM.
+let sshInstallOS = 'unix';
+
+function sshInstallCommand(publicKey, os) {
+  const key = publicKey.trim();
+  if (os === 'windows') {
+    const k = "'" + key.replace(/'/g, "''") + "'";
+    return '$k=' + k + '; if ((whoami /groups) -match \'S-1-5-32-544\') { $f="$env:ProgramData\\ssh\\administrators_authorized_keys" } ' +
+      'else { New-Item -ItemType Directory -Force "$HOME\\.ssh" | Out-Null; $f="$HOME\\.ssh\\authorized_keys" }; ' +
+      '$t=[string](Get-Content -Raw -ErrorAction SilentlyContinue $f); ' +
+      'if (-not $t.Contains($k)) { if ($t -and -not $t.EndsWith("`n")) { $k="`r`n$k" }; Add-Content -Encoding ascii -Path $f -Value $k }; ' +
+      'if ($f -like "$env:ProgramData*") { icacls $f /inheritance:r /grant \'*S-1-5-32-544:F\' /grant \'*S-1-5-18:F\' | Out-Null }; ' +
+      '"SSH key authorized in $f"';
+  }
+  const k = "'" + key.replace(/'/g, "'\\''") + "'";
+  return '(umask 077; K=' + k + '; F="$HOME/.ssh/authorized_keys"; mkdir -p "$HOME/.ssh" && touch "$F" && ' +
+    'chmod 700 "$HOME/.ssh" && chmod 600 "$F" && ' +
+    '{ grep -qxF "$K" "$F" || { [ -z "$(tail -c1 "$F")" ] || echo >> "$F"; echo "$K" >> "$F"; }; } && ' +
+    '{ command -v restorecon >/dev/null 2>&1 && restorecon -R "$HOME/.ssh"; true; } && ' +
+    'echo "SSH key authorized for $(id -un) in $F")';
+}
+
+function renderSSHInstall() {
+  const key = document.getElementById('sshPubKey').textContent;
+  document.querySelectorAll('.ssh-install .os-tabs button').forEach((b) => {
+    b.setAttribute('aria-selected', String(b.dataset.arg === sshInstallOS));
+  });
+  const windows = sshInstallOS === 'windows';
+  document.getElementById('sshInstallWhere').textContent = windows
+    ? 'Paste into PowerShell on the Windows server, signed in as the account that will use this key.'
+    : 'Paste into a terminal on the server, signed in as the user who will log in with this key.';
+  document.getElementById('sshInstallHint').textContent = windows
+    ? 'Needs OpenSSH Server. If the account is an administrator, run PowerShell as Administrator: Windows only reads an administrator\'s keys from administrators_authorized_keys.'
+    : 'Any distro, in bash, zsh or sh. Safe to paste twice; it won\'t add the key again. On Fedora, RHEL, Rocky and Alma it also restores the SELinux label so sshd can read the file.';
+  document.getElementById('sshInstallCmd').textContent = key ? sshInstallCommand(key, sshInstallOS) : '';
+}
+
+function setSSHInstallOS(os) {
+  sshInstallOS = os === 'windows' ? 'windows' : 'unix';
+  renderSSHInstall();
+}
+
+async function copySSHInstall() {
+  const text = document.getElementById('sshInstallCmd').textContent;
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('Command copied, paste it on the server');
+  } catch (e) {
+    toast('Copy failed, select the command and copy it by hand', 'error');
   }
 }
 
@@ -3208,6 +3267,8 @@ const UI_ACTIONS = new Set([
   'copyCertPem',
   'copyCrlPem',
   'copyPublicKey',
+  'copySSHInstall',
+  'setSSHInstallOS',
   'createBackup',
   'createCA',
   'createIntermediate',

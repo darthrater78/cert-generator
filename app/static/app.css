@@ -591,6 +591,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   overflow-y: auto;
 }
 .copy-row { display: flex; gap: 8px; margin-top: 10px; }
+.ssh-install { margin-top: 18px; padding-bottom: 4px; }
+.ssh-install-head { font: 600 10px var(--font-mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px; }
 
 /* ================= modals ================= */
 .modal-backdrop {
@@ -936,22 +938,22 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   box-shadow: var(--shadow);
 }
 .import-pop h5 { font: 400 18px var(--font-display); margin: 0 0 6px; }
-.import-pop .os-tabs { display: flex; gap: 18px; border-bottom: 1px solid var(--border); margin-bottom: 10px; }
-.import-pop .os-tabs button {
+.import-pop .os-tabs, .ssh-install .os-tabs { display: flex; gap: 18px; border-bottom: 1px solid var(--border); margin-bottom: 10px; }
+.import-pop .os-tabs button, .ssh-install .os-tabs button {
   background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
   padding: 4px 0; cursor: pointer;
   font: 500 11px var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-dim);
 }
-.import-pop .os-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
-.import-pop .where { font: italic 13px var(--font-serif); color: var(--text-dim); margin-bottom: 8px; }
+.import-pop .os-tabs button[aria-selected="true"], .ssh-install .os-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.import-pop .where, .ssh-install .where { font: italic 13px var(--font-serif); color: var(--text-dim); margin-bottom: 8px; }
 .import-pop .step { font: 600 10px var(--font-mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-dim); margin: 8px 0 4px; }
-.import-pop pre {
+.import-pop pre, .ssh-install pre {
   background: var(--bg); border: 1px solid var(--border);
   padding: 9px 12px; margin: 0 0 6px;
   font: 12px/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text);
 }
 .import-pop .pop-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 6px; }
-.import-pop .hint { font: 12px var(--font-ui); color: var(--text-dim); }
+.import-pop .hint, .ssh-install .hint { font: 12px var(--font-ui); color: var(--text-dim); }
 .import-pop .import-ask {
   border-left: 3px solid var(--accent); background: var(--bg);
   padding: 8px 12px; margin: 0 0 10px;
@@ -979,9 +981,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .import-pop .import-bundle p code { font: 12px var(--font-mono); background: var(--bg); padding: 1px 4px; }
 .import-pop .import-bundle-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .import-pop .import-bundle-row input { width: 170px; }
-.import-pop .code-box { position: relative; }
-.import-pop .code-box pre { padding-top: 36px; }
-.import-pop .code-copy { position: absolute; top: 6px; right: 6px; }
+.import-pop .code-box, .ssh-install .code-box { position: relative; }
+.import-pop .code-box pre, .ssh-install .code-box pre { padding-top: 36px; }
+.import-pop .code-copy, .ssh-install .code-copy { position: absolute; top: 6px; right: 6px; }
 
 /* ================= standalone guide window ================= */
 .guide-page { min-height: 100vh; background: var(--bg); color: var(--text); }

@@ -309,6 +309,19 @@
           <div class="copy-row">
             <button class="btn btn-ghost btn-sm" data-action="copyPublicKey">Copy Public Key</button>
           </div>
+          <div class="ssh-install">
+            <div class="ssh-install-head">Authorize on a server</div>
+            <div class="os-tabs" role="tablist" aria-label="Server type">
+              <button type="button" role="tab" data-action="setSSHInstallOS" data-arg="unix" aria-selected="true">Linux / macOS</button>
+              <button type="button" role="tab" data-action="setSSHInstallOS" data-arg="windows" aria-selected="false">Windows</button>
+            </div>
+            <p class="where" id="sshInstallWhere"></p>
+            <div class="code-box">
+              <pre id="sshInstallCmd"></pre>
+              <button type="button" class="btn btn-ghost btn-sm code-copy" data-action="copySSHInstall">Copy</button>
+            </div>
+            <p class="hint" id="sshInstallHint"></p>
+          </div>
         </div>
         <div class="card">
           <h3>Export</h3>
