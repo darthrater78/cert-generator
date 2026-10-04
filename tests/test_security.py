@@ -446,3 +446,15 @@ def test_desktop_export_path_stays_in_downloads(tmp_path):
     for name in ("../escape.pem", "..", "/etc/passwd", "sub/../../x"):
         with pytest.raises(UserError):
             web._inside(base, name)
+
+
+def test_ssh_key_comment_must_be_one_line(admin_client):
+    """The comment ends the public key line pasted into authorized_keys; a line break in it
+    would authorize whatever follows as a second key."""
+    for comment in ("me@pc\nssh-ed25519 AAAA other", "tab\there", "x" * 201):
+        resp = admin_client.post("/api/ssh-keys", json={"name": "k", "algorithm": "ed25519", "comment": comment})
+        assert resp.status_code == 400, comment
+        resp = admin_client.post("/api/ssh-keys/import", json={"name": "k", "private_key": "x", "comment": comment})
+        assert resp.status_code == 400 and "Comment" in resp.get_json()["error"], comment
+    resp = admin_client.post("/api/ssh-keys", json={"name": "k", "algorithm": "ed25519", "comment": "anna’s laptop"})
+    assert resp.status_code == 201

@@ -1692,9 +1692,11 @@ async function copyPublicKey() {
 let sshInstallOS = 'unix';
 
 function sshInstallCommand(publicKey, os) {
-  const key = publicKey.trim();
+  // One line always; the server refuses a comment with a line break, older keys may hold one.
+  const key = publicKey.trim().replace(/\s*[\r\n]+\s*/g, ' ');
   if (os === 'windows') {
-    const k = "'" + key.replace(/'/g, "''") + "'";
+    // PowerShell also closes a '…' string at a typographic quote, so those are doubled too.
+    const k = "'" + key.replace(/['\u2018\u2019\u201A\u201B]/g, '$&$&') + "'";
     return '$k=' + k + '; if ((whoami /groups) -match \'S-1-5-32-544\') { $f="$env:ProgramData\\ssh\\administrators_authorized_keys" } ' +
       'else { New-Item -ItemType Directory -Force "$HOME\\.ssh" | Out-Null; $f="$HOME\\.ssh\\authorized_keys" }; ' +
       '$t=[string](Get-Content -Raw -ErrorAction SilentlyContinue $f); ' +
