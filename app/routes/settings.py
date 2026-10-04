@@ -214,8 +214,11 @@ def _decode_backup(password: str, file_data: str) -> tuple[dict | None, str | No
         return None, "Invalid file data"
     try:
         plaintext = crypto_engine.decrypt_backup(raw, password)
+    except UserError as e:
+        return None, e.user_message
     except ValueError as e:
-        return None, str(e)
+        log.warning("Restore failed: %s", type(e).__name__)
+        return None, "That backup couldn't be read"
     try:
         backup = json.loads(plaintext)
     except json.JSONDecodeError:

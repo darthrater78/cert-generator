@@ -458,3 +458,15 @@ def test_ssh_key_comment_must_be_one_line(admin_client):
         assert resp.status_code == 400 and "Comment" in resp.get_json()["error"], comment
     resp = admin_client.post("/api/ssh-keys", json={"name": "k", "algorithm": "ed25519", "comment": "anna’s laptop"})
     assert resp.status_code == 201
+
+
+def test_restore_never_answers_with_library_error_text(admin_client, monkeypatch):
+    from app import crypto_engine
+
+    def boom(data, password):
+        raise ValueError("internal detail from a library")
+
+    monkeypatch.setattr(crypto_engine, "decrypt_backup", boom)
+    resp = admin_client.post("/api/restore", json={"password": "pw", "file_data": base64.b64encode(b"x" * 60).decode()})
+    assert resp.status_code == 400
+    assert resp.get_json()["error"] == "That backup couldn't be read"
