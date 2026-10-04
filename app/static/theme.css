@@ -42,11 +42,12 @@
   --rule: #6b6b6b;
   --text: #f2f2f2;
   --text-dim: #999999;
-  --success: #22c55e;
-  --danger: #ef4444;
-  --danger-hover: #f87171;
-  --warning: #f59e0b;
-  --shadow: 0 8px 30px rgba(0,0,0,0.85), 0 0 0 1px rgba(255,255,255,0.06);
+  --success: #8fc29a;
+  --danger: #e8877c;
+  --danger-hover: #f2a59c;
+  --on-danger: var(--bg);
+  --warning: #e39a6b;
+  --shadow: 4px 4px 0 rgba(0,0,0,0.55);
   --glow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent);
   --accent-text: #d4a017;
 }
@@ -59,11 +60,12 @@
   --rule: #7a7b83;
   --text: #ececee;
   --text-dim: #a2a3ab;
-  --success: #34d399;
-  --danger: #f87171;
-  --danger-hover: #fca5a5;
-  --warning: #fbbf24;
-  --shadow: 0 8px 30px rgba(0,0,0,0.45);
+  --success: #8fc29a;
+  --danger: #e8877c;
+  --danger-hover: #f2a59c;
+  --on-danger: var(--bg);
+  --warning: #e39a6b;
+  --shadow: 4px 4px 0 rgba(0,0,0,0.55);
   --glow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
   --accent-text: #d4a017;
 }
@@ -76,11 +78,12 @@
   --rule: #857a69;
   --text: #efe9df;
   --text-dim: #aca395;
-  --success: #6ee7a0;
-  --danger: #f87171;
-  --danger-hover: #fca5a5;
-  --warning: #fbbf24;
-  --shadow: 0 8px 30px rgba(0,0,0,0.45);
+  --success: #8fc29a;
+  --danger: #e8877c;
+  --danger-hover: #f2a59c;
+  --on-danger: var(--bg);
+  --warning: #e39a6b;
+  --shadow: 4px 4px 0 rgba(0,0,0,0.55);
   --glow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
   --accent-text: #d4a017;
 }
@@ -93,11 +96,12 @@
   --rule: #6f7d91;
   --text: #e8edf3;
   --text-dim: #9aa6b6;
-  --success: #4ade80;
-  --danger: #f87171;
-  --danger-hover: #fca5a5;
-  --warning: #fbbf24;
-  --shadow: 0 8px 30px rgba(0,0,0,0.5);
+  --success: #8fc29a;
+  --danger: #e8877c;
+  --danger-hover: #f2a59c;
+  --on-danger: var(--bg);
+  --warning: #e39a6b;
+  --shadow: 4px 4px 0 rgba(0,0,0,0.55);
   --glow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
   --accent-text: #d4a017;
 }
@@ -112,11 +116,12 @@
   --rule: #6b7280;
   --text: #14171c;
   --text-dim: #535a66;
-  --success: #15803d;
-  --danger: #b91c1c;
-  --danger-hover: #dc2626;
-  --warning: #b45309;
-  --shadow: 0 6px 24px rgba(20,23,28,0.12);
+  --success: #2d6a45;
+  --danger: #9e2a2b;
+  --danger-hover: #b83a3a;
+  --on-danger: #ffffff;
+  --warning: #9a4a1a;
+  --shadow: 4px 4px 0 rgba(20,23,28,0.10);
   --glow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
   /* brass is far too light for text on a light ground (≈2:1); this is the
      darkened shade that clears AA on its 15% tint */
@@ -131,11 +136,12 @@
   --rule: #6b6b76;
   --text: #0b0b0f;
   --text-dim: #5b5b66;
-  --success: #15803d;
-  --danger: #dc2626;
-  --danger-hover: #ef4444;
-  --warning: #b45309;
-  --shadow: 0 4px 24px rgba(15,15,25,0.1);
+  --success: #2d6a45;
+  --danger: #9e2a2b;
+  --danger-hover: #b83a3a;
+  --on-danger: #ffffff;
+  --warning: #9a4a1a;
+  --shadow: 4px 4px 0 rgba(20,23,28,0.10);
   --glow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
   --accent-text: #81610e;
 }

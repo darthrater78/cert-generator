@@ -21,9 +21,9 @@ internal static partial class Theme
     public static readonly Color Accent = Hex("#d4a017");
     public static readonly Color AccentText = Dark ? Hex("#d4a017") : Hex("#785b0d");
     public static readonly Color OnAccent = Hex("#0b0b0f");
-    public static readonly Color Success = Dark ? Hex("#4ade80") : Hex("#15803d");
-    public static readonly Color Danger = Dark ? Hex("#f87171") : Hex("#b91c1c");
-    public static readonly Color Warning = Dark ? Hex("#fbbf24") : Hex("#b45309");
+    public static readonly Color Success = Dark ? Hex("#8fc29a") : Hex("#2d6a45");
+    public static readonly Color Danger = Dark ? Hex("#e8877c") : Hex("#9e2a2b");
+    public static readonly Color Warning = Dark ? Hex("#e39a6b") : Hex("#9a4a1a");
     public static readonly Color Selection = Blend(Accent, Surface, Dark ? 0.28 : 0.22);
 
     public static readonly Font Ui = new("Segoe UI", 9.75f);

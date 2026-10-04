@@ -21,12 +21,15 @@
   /* Text/icons on solid accent fills: near-black on brass; theme-init.js
      picks white or near-black for a custom accent, whichever reads better. */
   --on-accent: #0b0b0f;
-  --success: #15803d;
-  --danger: #b91c1c;
-  --danger-hover: #dc2626;
-  --warning: #b45309;
+  /* Status inks: bottle green, oxblood, sienna. Chosen to sit beside brass,
+     not Tailwind's defaults; see DESIGN.md. */
+  --success: #2d6a45;
+  --danger: #9e2a2b;
+  --danger-hover: #b83a3a;
+  --on-danger: #ffffff;
+  --warning: #9a4a1a;
   --radius: 2px;
-  --shadow: 0 6px 24px rgba(20,23,28,0.12);
+  --shadow: 4px 4px 0 rgba(20,23,28,0.10);
   --glow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -435,7 +438,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
 .btn-danger { border-color: var(--danger); color: var(--danger); }
-.btn-danger:hover:not(:disabled) { background: var(--danger); color: #ffffff; }
+.btn-danger:hover:not(:disabled) { background: var(--danger); color: var(--on-danger); }
 .btn-ghost { border-color: var(--rule); }
 .btn-ghost:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--text); }
 .btn-sm { padding: 6px 10px; font-size: 10px; }
@@ -930,7 +933,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   background: var(--surface);
   border: 1px solid var(--rule); outline: 1px solid var(--border); outline-offset: -5px;
   padding: 16px 18px 14px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+  box-shadow: var(--shadow);
 }
 .import-pop h5 { font: 400 18px var(--font-display); margin: 0 0 6px; }
 .import-pop .os-tabs { display: flex; gap: 18px; border-bottom: 1px solid var(--border); margin-bottom: 10px; }
