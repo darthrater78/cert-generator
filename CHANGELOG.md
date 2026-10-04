@@ -6,6 +6,19 @@ What changed in each release of Cert Generator and Cert Generator Pal. The [READ
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
 
+### v2.8.0-dev.8 — 2026-10-04
+
+Eighth pre-release: **authorize an SSH key on a server with one pasted line**, and the app's own colours in place of generic defaults. Not for production.
+
+#### Docker
+- **SSH keys — Authorize on a server:** the Public key card has a one-line command to paste on the server, for **Linux / macOS** (any distro, in bash, zsh or sh) or **Windows** (PowerShell, OpenSSH Server). On Linux and macOS it makes `~/.ssh` 700 and `authorized_keys` 600, adds the key once (safe to paste again) and restores the SELinux label on Fedora, RHEL, Rocky and Alma. On Windows an administrator's key goes to `administrators_authorized_keys` with the permissions sshd requires
+- **Look:** status colours are bottle green, oxblood and sienna (sage, madder and terracotta on the dark themes) instead of stock green, red and amber; dialogs, menus and popovers drop their soft blurred shadow for a hard offset one; the accent presets are named pigments (Vermilion, Oxblood, Madder, Tyrian, Indigo dye, Prussian, Verdigris, Viridian, Olive, Sepia, Pewter). A custom accent you already chose is kept
+- **Fix:** on the dark themes, a Delete button's hover text is now readable (it was white on light red)
+- **Pal (served by this image):** status colours match the web app
+
+#### Internal
+- `DESIGN.md` describes the app's visual identity and the patterns to avoid; read it before UI changes
+
 ### v2.8.0-dev.7 — 2026-10-03
 
 Seventh pre-release: **Remote Desktop without a web server certificate**. A PC that only needs RDP uses its This computer certificate. Not for production.

@@ -43,7 +43,7 @@
 | **Certificates** | Templates matching a Windows CA (Web Server, Computer, Client Authentication, User, Code Signing, S/MIME), SANs with wildcards and IP addresses, and a viewer that reads like `openssl x509 -text` |
 | **Getting them installed** | **Export / install** gives per-OS commands and a .zip with install scripts; PEM, DER, CRT and PKCS#12 files; **Cert Generator Pal** for Windows PCs |
 | **Revocation** | A CRL served by this server, by a Cloudflare Worker per CA, or by each endpoint itself, and a CRL viewer |
-| **SSH keys** | Generate or import, then export as OpenSSH or PEM |
+| **SSH keys** | Generate or import, export as OpenSSH or PEM, and authorize on a server with one pasted line |
 | **Security** | Encryption at rest with a recovery key, TOTP sign-in, trusted devices, a fresh sign-in before any private key leaves, encrypted backups |
 | **Looks** | Six themes and an accent colour |
 
@@ -93,6 +93,7 @@
 - **SSH key generation** — generate Ed25519, ECDSA P-256/P-384, and RSA-2048/4096 SSH key pairs with optional passphrase protection
 - **SSH key import** — import existing SSH private keys from Bitwarden or other sources; supports OpenSSH, PEM PKCS#8, PEM traditional, and DER formats with automatic algorithm detection and optional passphrase; imported keys are visually marked and fully functional (export, copy, backup/restore)
 - **SSH key export** — download private keys in OpenSSH or PEM (PKCS#8) format, copy public keys, or copy private keys for Bitwarden SSH import
+- **Authorize on a server** — one line to paste on a Linux, macOS or Windows server that adds the public key to `authorized_keys` with the right permissions (Linux/macOS: `~/.ssh` 700, file 600, SELinux label restored; Windows: `administrators_authorized_keys` for administrators). Safe to paste twice
 - **Database encryption** — encrypt all private keys at rest with AES-256-GCM using a master password derived via Scrypt; unlock screen on startup when enabled
 - **Encryption recovery key** — enabling encryption shows a one-time recovery key; if you forget the master password, it unlocks the database and sets a new one (see [Forgotten encryption password](#forgotten-encryption-password))
 - **Backup and restore** — export all data (CAs, certificates, SSH keys) to an AES-256 encrypted `.certbak` file; restore replaces all data from a backup. Backup files are portable between Docker and desktop — create on one, restore on the other
@@ -154,7 +155,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.8.0-dev.7
+    image: ghcr.io/darthrater78/cert-generator:2.8.0-dev.8
     container_name: cert-generator
     restart: unless-stopped
     security_opt:
