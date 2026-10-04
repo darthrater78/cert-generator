@@ -55,7 +55,9 @@ def test_any_changed_field_breaks_the_signature(field):
     envelope, _ = relay.seal_request(device_key, "d" * 32, relay.public_raw(relay_key.public_key()), {"x": 1},
                                      timestamp=int(time.time()), nonce=_nonce())
     env = json.loads(envelope)
-    env[field] = env[field] + 1 if field == "t" else ("e" * 32 if field == "d" else env[field][:-2] + "AA")
+    # A value that already ends in "AA" (about 1 in 1000 for the point) must still change.
+    tail = "BB" if str(env[field]).endswith("AA") else "AA"
+    env[field] = env[field] + 1 if field == "t" else ("e" * 32 if field == "d" else env[field][:-2] + tail)
     assert not relay.verify_request(relay.parse_request(json.dumps(env).encode()), _spki(device_key))
 
 
