@@ -13,7 +13,8 @@ from flask import Blueprint, Response, jsonify, request
 from .. import crl_publisher, crl_worker, crypto_engine, db, install_bundle, state
 from ..errors import UserError
 from ..security import RateLimiter
-from ..web import deliver_export, error, export_password_error, json_body, parse_int, reauth_rejection, str_field
+from ..web import (deliver_export, error, export_password_error, json_body, parse_int, reauth_rejection, str_field,
+                   value_error)
 
 log = logging.getLogger("cert-generator")
 
@@ -32,6 +33,8 @@ CRL_RATE_LIMIT_PER_MINUTE = 300
 _crl_limiter = RateLimiter(CRL_RATE_LIMIT_PER_MINUTE)
 _CRL_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
 MAX_BASE_URL_LEN = 200
+KEY_ON_DEVICE = ("This certificate's private key never left the PC that requested it (Cert Generator Pal). "
+                 "Only its public parts can be exported here")
 
 
 def _safe_name(value: str) -> str:
@@ -273,14 +276,29 @@ def _crl_served(ca: dict[str, Any]) -> bool:
     return bool(ca.get("crl_public")) and ca.get("crl_der") is not None
 
 
-def _crl_dp_url(ca: dict[str, Any], req: IssueRequest) -> str | None:
-    if req.crl_dp_mode == "cloudflare":
+def crl_dp_url_for(ca: dict[str, Any], mode: str, base_url: str | None) -> str | None:
+    """The distribution point a new certificate gets for ``mode`` (one of CRL_DP_MODES)."""
+    if mode == "cloudflare":
         return ca.get("cf_dp_url") or None
-    if req.crl_dp_mode == "server":
-        return f"{req.crl_base_url}/crl/{ca['id']}.crl"
-    if req.crl_dp_mode == "placeholder":
+    if mode == "server":
+        return f"{base_url}/crl/{ca['id']}.crl"
+    if mode == "placeholder":
         return _placeholder_crl_url(ca)
     return None
+
+
+def _crl_dp_url(ca: dict[str, Any], req: IssueRequest) -> str | None:
+    return crl_dp_url_for(ca, req.crl_dp_mode, req.crl_base_url)
+
+
+def publish_after_issue(ca: dict[str, Any], mode: str) -> None:
+    """A certificate pointing at this server's CRL makes the CRL public; the first one for a
+    restored Worker makes sure the Worker has a CRL."""
+    if mode == "server":
+        db.set_crl_public(ca["id"])
+        crl_publisher.publish(ca["id"])
+    elif mode == "cloudflare" and not ca.get("cf_pushed_sha256"):
+        crl_publisher.publish(ca["id"])
 
 
 def crl_dp_kind(url: str | None, ca: dict[str, Any]) -> str:
@@ -333,11 +351,7 @@ def issue_cert(ca_id: int):
         algorithm=req.algorithm, template=req.template, not_before=not_before, not_after=not_after,
         serial=serial, cert_pem=cert_pem, key_pem=key_pem, crl_dp_url=crl_dp_url,
     )
-    if req.crl_dp_mode == "server":
-        db.set_crl_public(ca_id)
-        crl_publisher.publish(ca_id)
-    elif req.crl_dp_mode == "cloudflare" and not ca.get("cf_pushed_sha256"):
-        crl_publisher.publish(ca_id)  # first certificate for a restored Worker: make sure it has a CRL
+    publish_after_issue(ca, req.crl_dp_mode)
     log.info("Certificate issued: %s (ca=%d, template=%s, algo=%s)", req.common_name, ca_id, req.template, req.algorithm)
     return jsonify({"id": cert_id, "common_name": req.common_name, "serial": serial}), 201
 
@@ -543,7 +557,7 @@ def export_ca(ca_id: int):
         else:
             export_data, filename = crypto_engine.export_certificate(ca["cert_pem"], ca["key_pem"], fmt, password=password)
     except ValueError as e:
-        return error(str(e))
+        return value_error(e)
     return deliver_export(export_data, f"ca-{_safe_name(ca['name'])}-{filename}")
 
 
@@ -566,6 +580,8 @@ def export_cert(cert_id: int):
     if part not in VALID_CERT_PARTS:
         return error(f"Invalid part. Choose from: {VALID_CERT_PARTS}")
     if part not in ("public", "chain"):  # the others carry the private key
+        if not cert["key_pem"]:
+            return error(KEY_ON_DEVICE)
         rejection = reauth_rejection()
         if rejection is not None:
             return rejection
@@ -586,7 +602,7 @@ def export_cert(cert_id: int):
                 password=password,
             )
     except ValueError as e:
-        return error(str(e))
+        return value_error(e)
     return deliver_export(export_data, f"{cert['common_name']}-{filename}")
 
 
@@ -600,6 +616,8 @@ def export_install_bundle(cert_id: int):
     os_name = str_field(data, "os")
     if os_name not in install_bundle.OSES:
         return error(f"Invalid OS. Choose from: {install_bundle.OSES}")
+    if not cert["key_pem"]:
+        return error(KEY_ON_DEVICE)
     rejection = reauth_rejection()  # the bundle carries the private key
     if rejection is not None:
         return rejection

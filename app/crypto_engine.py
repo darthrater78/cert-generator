@@ -17,7 +17,11 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.primitives.serialization import pkcs12
+
+from .errors import UserError
 from cryptography.x509.oid import NameOID
+
+from .errors import UserError
 
 MS_UPN_OID = x509.ObjectIdentifier("1.3.6.1.4.1.311.20.2.3")
 SMARTCARD_LOGON_OID = x509.ObjectIdentifier("1.3.6.1.4.1.311.20.2.2")
@@ -105,7 +109,7 @@ def _generate_key(algorithm: Algorithm):
         return rsa.generate_private_key(public_exponent=65537, key_size=2048)
     if algorithm == "rsa-4096":
         return rsa.generate_private_key(public_exponent=65537, key_size=4096)
-    raise ValueError(f"Unknown algorithm: {algorithm}")
+    raise UserError(f"Unknown algorithm: {algorithm}")
 
 
 def _signing_hash(algorithm: Algorithm) -> hashes.HashAlgorithm | None:
@@ -276,13 +280,17 @@ def issue_certificate(
     email: str | None = None,
     upn: str | None = None,
     crl_dp_url: str | None = None,
+    public_key: CertificatePublicKey | None = None,
 ) -> tuple[bytes, bytes, str, str, str]:
+    """Sign a leaf certificate. With ``public_key`` (from a CSR, see ``load_csr``) no key is
+    generated here and the returned key PEM is empty: the private key stays with the requester."""
     tmpl = CERT_TEMPLATES.get(template, CERT_TEMPLATES["web-server"])
 
     ca_cert = x509.load_pem_x509_certificate(ca_cert_pem)
     ca_key = serialization.load_pem_private_key(ca_key_pem, password=None)
 
-    leaf_key = _generate_key(algorithm)
+    leaf_key = _generate_key(algorithm) if public_key is None else None
+    leaf_public = public_key if public_key is not None else leaf_key.public_key()
     now = datetime.now(timezone.utc)
     not_after = now + timedelta(days=lifetime_days)
     serial = _serial_number()
@@ -305,7 +313,7 @@ def issue_certificate(
         x509.CertificateBuilder()
         .subject_name(subject)
         .issuer_name(ca_cert.subject)
-        .public_key(leaf_key.public_key())
+        .public_key(leaf_public)
         .serial_number(serial)
         .not_valid_before(now)
         .not_valid_after(not_after)
@@ -322,7 +330,7 @@ def issue_certificate(
             critical=False,
         )
         .add_extension(
-            x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()),
+            x509.SubjectKeyIdentifier.from_public_key(leaf_public),
             critical=False,
         )
         .add_extension(
@@ -355,7 +363,7 @@ def issue_certificate(
     cert = builder.sign(ca_key, hash_alg)
 
     cert_pem = cert.public_bytes(serialization.Encoding.PEM)
-    key_pem = leaf_key.private_bytes(
+    key_pem = b"" if leaf_key is None else leaf_key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
@@ -368,6 +376,48 @@ def issue_certificate(
         now.isoformat(),
         not_after.isoformat(),
     )
+
+
+CertificatePublicKey = ec.EllipticCurvePublicKey | rsa.RSAPublicKey
+
+# Keys a certificate signing request may carry: what Windows CNG creates and Schannel uses.
+CSR_KEY_TYPES = ("ecdsa-p256", "ecdsa-p384", "rsa-2048", "rsa-3072", "rsa-4096")
+MAX_CSR_BYTES = 16 * 1024
+
+
+def public_key_algorithm(key) -> str | None:
+    """'ecdsa-p256', 'rsa-3072', … for a key a CSR may carry; None for anything else."""
+    if isinstance(key, ec.EllipticCurvePublicKey):
+        return {"secp256r1": "ecdsa-p256", "secp384r1": "ecdsa-p384"}.get(key.curve.name)
+    if isinstance(key, rsa.RSAPublicKey) and key.key_size in (2048, 3072, 4096):
+        return f"rsa-{key.key_size}"
+    return None
+
+
+def load_csr(csr_pem: bytes) -> tuple[CertificatePublicKey, str]:
+    """The public key of a PEM CSR whose self-signature verifies (proof that the requester
+    holds the private key), with its algorithm label. Raises ValueError otherwise. Only the
+    key is used: the subject and extensions in the CSR are ignored by the caller."""
+    if len(csr_pem) > MAX_CSR_BYTES:
+        raise UserError("The certificate request is too large")
+    try:
+        csr = x509.load_pem_x509_csr(csr_pem)
+        valid = csr.is_signature_valid
+        key = csr.public_key()
+    except (ValueError, UnsupportedAlgorithm) as e:
+        raise UserError("The certificate request could not be read") from e
+    if not valid:
+        raise UserError("The certificate request's signature does not verify")
+    algorithm = public_key_algorithm(key)
+    if algorithm is None:
+        raise UserError(f"Unsupported key type. Use one of: {', '.join(CSR_KEY_TYPES)}")
+    return key, algorithm
+
+
+def cert_der_sha256(cert_pem: bytes) -> str:
+    """SHA-256 of the certificate's DER encoding, lowercase hex (what Windows calls the SHA-256 thumbprint)."""
+    cert = x509.load_pem_x509_certificate(cert_pem)
+    return hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
 
 
 def _san_name(value: str) -> x509.GeneralName:
@@ -634,7 +684,7 @@ def _detect_algorithm(key) -> Algorithm:
         if key.key_size <= 2048:
             return "rsa-2048"
         return "rsa-4096"
-    raise ValueError("Unknown key type")
+    raise UserError("Unknown key type")
 
 
 ExportFormat = Literal["pem", "der", "crt", "pkcs12"]
@@ -672,7 +722,7 @@ def export_certificate(
             ca_certs = [x509.load_pem_x509_certificate(ca_cert_pem)]
 
         if not password:
-            raise ValueError("A password is required for PKCS#12 export")
+            raise UserError("A password is required for PKCS#12 export")
         pfx_password = password.encode("utf-8")
         pfx_data = pkcs12.serialize_key_and_certificates(
             name=None,
@@ -683,7 +733,7 @@ def export_certificate(
         )
         return pfx_data, "certificate.pfx"
 
-    raise ValueError(f"Unknown format: {fmt}")
+    raise UserError(f"Unknown format: {fmt}")
 
 
 def export_public_only(cert_pem: bytes, fmt: ExportFormat) -> tuple[bytes, str]:
@@ -696,7 +746,7 @@ def export_public_only(cert_pem: bytes, fmt: ExportFormat) -> tuple[bytes, str]:
     if fmt == "crt":
         return cert.public_bytes(serialization.Encoding.DER), "certificate.crt"
 
-    raise ValueError(f"Cannot export public-only as {fmt}")
+    raise UserError(f"Cannot export public-only as {fmt}")
 
 
 def export_private_only(key_pem: bytes, fmt: str) -> tuple[bytes, str]:
@@ -712,7 +762,7 @@ def export_private_only(key_pem: bytes, fmt: str) -> tuple[bytes, str]:
         )
         return der, "private_key.der"
 
-    raise ValueError(f"Cannot export private key as {fmt}")
+    raise UserError(f"Cannot export private key as {fmt}")
 
 
 SSHAlgorithm = Literal["rsa-4096", "rsa-2048", "ed25519", "ecdsa-p256", "ecdsa-p384"]
@@ -797,8 +847,8 @@ def parse_ssh_key(
 
     if key is None:
         if passphrase:
-            raise ValueError("Cannot parse private key — wrong passphrase or unsupported format")
-        raise ValueError("Cannot parse private key — unsupported format or passphrase required")
+            raise UserError("Cannot parse private key — wrong passphrase or unsupported format")
+        raise UserError("Cannot parse private key — unsupported format or passphrase required")
 
     algorithm = _detect_algorithm(key)
 
@@ -842,7 +892,7 @@ def export_ssh_private_key(
         except (TypeError, ValueError):
             continue
     else:
-        raise ValueError("Cannot load private key — wrong or missing original passphrase")
+        raise UserError("Cannot load private key — wrong or missing original passphrase")
 
     enc: serialization.KeySerializationEncryption
     if passphrase:
@@ -865,7 +915,7 @@ def export_ssh_private_key(
         )
         return data, "id_key.pem"
 
-    raise ValueError(f"Unknown SSH key format: {fmt}")
+    raise UserError(f"Unknown SSH key format: {fmt}")
 
 
 def _ssh_fingerprint(public_key) -> str:
@@ -995,9 +1045,9 @@ def encrypt_backup(plaintext: bytes, password: str) -> bytes:
 
 def decrypt_backup(data: bytes, password: str) -> bytes:
     if len(data) < 52 or data[:7] != _BACKUP_MAGIC:
-        raise ValueError("Not a valid backup file")
+        raise UserError("Not a valid backup file")
     if data[7] != _BACKUP_VERSION:
-        raise ValueError("Unsupported backup version")
+        raise UserError("Unsupported backup version")
     salt = data[8:40]
     nonce = data[40:52]
     ciphertext = data[52:]
@@ -1005,4 +1055,4 @@ def decrypt_backup(data: bytes, password: str) -> bytes:
     try:
         return AESGCM(key).decrypt(nonce, ciphertext, None)
     except InvalidTag:
-        raise ValueError("Wrong password or corrupted backup")
+        raise UserError("Wrong password or corrupted backup")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import secrets
 import sqlite3
@@ -14,6 +15,7 @@ from typing import Any
 import bcrypt as _bcrypt
 
 from . import crypto_engine
+from .errors import UserError
 
 
 DB_DIR = Path(os.environ.get("DB_DIR", str(Path.home() / ".cert-generator")))
@@ -96,6 +98,59 @@ CREATE TABLE IF NOT EXISTS deleted_revocations (
     not_after  TEXT    NOT NULL,
     PRIMARY KEY (ca_id, serial)
 );
+
+-- Cert Generator Pal (docs/cert-generator-pal.md). A pairing code connects one PC once;
+-- the PC then signs its requests with its own device key.
+CREATE TABLE IF NOT EXISTS pal_codes (
+    id          TEXT    PRIMARY KEY,
+    label       TEXT    NOT NULL,
+    ca_id       INTEGER NOT NULL REFERENCES certificate_authorities(id) ON DELETE CASCADE,
+    policy      TEXT    NOT NULL,
+    key         BLOB    NOT NULL,
+    server_url  TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    expires_at  TEXT    NOT NULL,
+    used_at     TEXT,
+    device_id   TEXT,
+    revoked_at  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pal_devices (
+    id          TEXT    PRIMARY KEY,
+    label       TEXT    NOT NULL,
+    hostname    TEXT    NOT NULL DEFAULT '',
+    fqdn        TEXT    NOT NULL DEFAULT '',  -- recorded at pairing; "This computer" certs are issued to it
+    os          TEXT    NOT NULL DEFAULT '',
+    public_key  BLOB    NOT NULL,
+    ca_id       INTEGER NOT NULL REFERENCES certificate_authorities(id) ON DELETE CASCADE,
+    policy      TEXT    NOT NULL,
+    code_id     TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    last_seen   TEXT,
+    revoked_at  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pal_requests (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id     TEXT    NOT NULL REFERENCES pal_devices(id) ON DELETE CASCADE,
+    use_case      TEXT    NOT NULL,
+    names         TEXT    NOT NULL,
+    csr_pem       BLOB    NOT NULL,
+    lifetime_days INTEGER NOT NULL,
+    status        TEXT    NOT NULL,
+    cert_id       INTEGER,
+    renew_of      INTEGER,
+    reason        TEXT    NOT NULL DEFAULT '',
+    created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    decided_at    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pal_nonces (
+    device_id   TEXT    NOT NULL,
+    nonce       TEXT    NOT NULL,
+    expires_at  REAL    NOT NULL,
+    PRIMARY KEY (device_id, nonce)
+);
 """
 
 # (table, column, definition) added after the original schema shipped.
@@ -123,6 +178,13 @@ _MIGRATIONS = (
     ("certificate_authorities", "cf_pushed_sha256", "TEXT"), # the CRL the Worker serves
     ("certificate_authorities", "cf_pushed_at", "TEXT"),
     ("certificate_authorities", "cf_push_error", "TEXT"),    # last failed push; NULL = up to date
+    ("certificates", "pal_device_id", "TEXT"),  # issued to a Cert Generator Pal device; key_pem is empty
+    ("certificates", "pal_present", "INTEGER"),  # 1/0: still installed on that PC at its last check; NULL = not checked
+    ("certificates", "pal_checked_at", "TEXT"),
+    ("pal_requests", "crl_dp", "TEXT"),
+    ("pal_devices", "pal_version", "TEXT"),
+    ("pal_devices", "remote_allowed", "INTEGER NOT NULL DEFAULT 0"),  # may use the remote relay (docs/cert-generator-pal.md §8)
+    ("pal_devices", "last_via", "TEXT"),  # 'lan' or 'relay': how its last request arrived  # the Pal's version at its last request (it ships with the server's)  # the revocation type (profile) the PC asked with; NULL = the policy's default
 )
 
 CF_COLUMNS = ("cf_worker", "cf_account_id", "cf_crl_path", "cf_hostname", "cf_domain_id", "cf_dp_url",
@@ -132,6 +194,9 @@ _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_trusted_devices_token ON trusted_devices(token_hash)",
     "CREATE INDEX IF NOT EXISTS idx_certificates_ca ON certificates(ca_id)",
     "CREATE INDEX IF NOT EXISTS idx_ca_parent ON certificate_authorities(parent_ca_id)",
+    "CREATE INDEX IF NOT EXISTS idx_pal_requests_device ON pal_requests(device_id)",
+    "CREATE INDEX IF NOT EXISTS idx_pal_requests_status ON pal_requests(status)",
+    "CREATE INDEX IF NOT EXISTS idx_certificates_serial ON certificates(serial)",
 )
 
 # Columns holding private key material, encrypted when encryption is enabled.
@@ -139,6 +204,7 @@ _SENSITIVE_BLOBS = (
     ("certificate_authorities", "key_pem"),
     ("certificates", "key_pem"),
     ("ssh_keys", "private_key"),
+    ("pal_codes", "key"),
 )
 
 
@@ -382,11 +448,11 @@ def enable_encryption(password: str, username: str | None = None) -> str:
     asked for with the master password. It is not secret and is stored as is.
     """
     if is_encryption_enabled():
-        raise ValueError("Encryption is already enabled")
+        raise UserError("Encryption is already enabled")
     data_key = crypto_engine.new_data_key()
     with _key_change() as conn:
         if _get_setting(conn, "encryption_salt") is not None:
-            raise ValueError("Encryption is already enabled")
+            raise UserError("Encryption is already enabled")
         _reencrypt_all(conn, None, data_key)
         _store_password_wrap(conn, password, data_key)
         recovery_key = _store_recovery_wrap(conn, data_key)
@@ -398,13 +464,15 @@ def enable_encryption(password: str, username: str | None = None) -> str:
 
 def disable_encryption(password: str) -> None:
     if not is_encryption_enabled():
-        raise ValueError("Encryption is not enabled")
+        raise UserError("Encryption is not enabled")
     if has_cloudflare_token():
-        raise ValueError("Disconnect Cloudflare first: its API token is only ever stored encrypted")
+        raise UserError("Disconnect Cloudflare first: its API token is only ever stored encrypted")
+    if get_setting("pal_relay_key") is not None or get_setting("pal_relay_token") is not None:
+        raise UserError("Remove the remote relay first: its keys are only ever stored encrypted")
     with _key_change() as conn:
         key = _key_for_password(conn, password)[0]
         if key is None:
-            raise ValueError("Wrong password")
+            raise UserError("Wrong password")
         _reencrypt_all(conn, key, None)
         for name in _KEY_SETTINGS:
             _set_setting(conn, name, None)
@@ -432,7 +500,7 @@ def change_password(old_password: str, new_password: str) -> None:
     with _key_change() as conn:
         key = _open_with_password(conn, old_password)
         if key is None:
-            raise ValueError("Wrong current password")
+            raise UserError("Wrong current password")
         _store_password_wrap(conn, new_password, key)
     set_master_key(key)
 
@@ -446,17 +514,17 @@ def create_recovery_key(password: str | None) -> str:
     """
     with _key_change() as conn:
         if _get_setting(conn, "encryption_wrapped_key") is None:
-            raise ValueError("Encryption is not enabled")
+            raise UserError("Encryption is not enabled")
         if _get_setting(conn, "recovery_wrapped_key") is None:
             key = _master_key
             if key is None:
                 raise DatabaseLocked("Database is locked. Unlock it with your encryption password.")
         else:
             if not password:
-                raise ValueError("Password is required to replace the recovery key")
+                raise UserError("Password is required to replace the recovery key")
             key = _key_for_password(conn, password)[0]
             if key is None:
-                raise ValueError("Wrong password")
+                raise UserError("Wrong password")
         return _store_recovery_wrap(conn, key)
 
 
@@ -482,10 +550,10 @@ def recover_with_key(recovery_key: str, new_password: str) -> str:
     """
     with _key_change() as conn:
         if _get_setting(conn, "recovery_wrapped_key") is None:
-            raise ValueError("This database has no recovery key")
+            raise UserError("This database has no recovery key")
         key = _key_for_recovery_key(conn, recovery_key)
         if key is None:
-            raise ValueError("Wrong recovery key")
+            raise UserError("Wrong recovery key")
         _store_password_wrap(conn, new_password, key)
         new_recovery_key = _store_recovery_wrap(conn, key)
     set_master_key(key)
@@ -539,8 +607,8 @@ def get_ca_summary(ca_id: int) -> dict[str, Any] | None:
     """id, name, domain and CRL state, without the key: readable while locked."""
     with _connect() as conn:
         row = conn.execute(
-            "SELECT id, name, domain, crl_public, crl_next_update, cf_worker, cf_dp_url, cf_hostname, cf_crl_path "
-            "FROM certificate_authorities WHERE id = ?", (ca_id,),
+            "SELECT id, parent_ca_id, name, domain, crl_public, crl_next_update, cf_worker, cf_dp_url, cf_hostname, "
+            "cf_crl_path FROM certificate_authorities WHERE id = ?", (ca_id,),
         ).fetchone()
         return dict(row) if row else None
 
@@ -668,7 +736,7 @@ def set_cloudflare_credentials(account_id: str, token: str) -> None:
     """Store the API token encrypted with the database key. Needs encryption on and unlocked:
     the token can rewrite every CRL Worker, so it is never kept in plaintext."""
     if not is_encryption_enabled():
-        raise ValueError("Turn on database encryption first: the Cloudflare token is stored encrypted")
+        raise UserError("Turn on database encryption first: the Cloudflare token is stored encrypted")
     require_unlocked()
     sealed = crypto_engine.encrypt_column(token.encode("utf-8"), _master_key)  # type: ignore[arg-type]
     with _connect() as conn:
@@ -771,23 +839,25 @@ def save_cert(
     cert_pem: bytes,
     key_pem: bytes,
     crl_dp_url: str | None = None,
+    pal_device_id: str | None = None,
 ) -> int:
-    encrypted_key = _maybe_encrypt(key_pem)
+    """``key_pem`` is empty for a certificate whose key stays with the requester (a Pal CSR)."""
+    encrypted_key = _maybe_encrypt(key_pem) if key_pem else b""
     with _connect() as conn:
         cursor = conn.execute(
             """INSERT INTO certificates
                (ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, cert_pem, key_pem,
-                crl_dp_url)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                crl_dp_url, pal_device_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, cert_pem, encrypted_key,
-             crl_dp_url or ""),
+             crl_dp_url or "", pal_device_id),
         )
         return cursor.lastrowid
 
 
 _CERT_LIST_COLUMNS = (
     "id, ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, revoked, created_at, "
-    "crl_dp_url"
+    "crl_dp_url, pal_device_id, pal_present, length(key_pem) > 0 AS has_key"
 )
 
 
@@ -869,6 +939,345 @@ def delete_cert(cert_id: int) -> bool:
             (cert_id,),
         )
         cursor = conn.execute("DELETE FROM certificates WHERE id = ?", (cert_id,))
+        return cursor.rowcount > 0
+
+
+# ── Cert Generator Pal ────────────────────────────────────────────────
+
+def root_ca_id(ca_id: int, max_depth: int = 16) -> int | None:
+    """The root above ``ca_id`` (itself when it is a root); None if ``ca_id`` doesn't exist."""
+    current, seen = ca_id, set()
+    with _connect() as conn:
+        while len(seen) < max_depth:
+            row = conn.execute("SELECT parent_ca_id FROM certificate_authorities WHERE id = ?", (current,)).fetchone()
+            if row is None:
+                return None
+            if row["parent_ca_id"] is None or row["parent_ca_id"] in seen:
+                return current
+            seen.add(current)
+            current = row["parent_ca_id"]
+    return current
+
+
+def ca_tree_ids(root_id: int) -> list[int]:
+    """``root_id`` and every CA below it."""
+    with _connect() as conn:
+        return [r[0] for r in conn.execute(
+            """WITH RECURSIVE tree(id) AS (
+                   SELECT id FROM certificate_authorities WHERE id = ?
+                   UNION
+                   SELECT c.id FROM certificate_authorities c JOIN tree t ON c.parent_ca_id = t.id
+               )
+               SELECT id FROM tree""",
+            (root_id,),
+        ).fetchall()]
+
+
+def find_serials(ca_ids: list[int], serials: list[str]) -> dict[str, dict[str, Any]]:
+    """Certificates and CA certificates issued in ``ca_ids`` with one of ``serials``
+    (normalized hex, as stored), plus deleted revoked ones, keyed by serial."""
+    if not ca_ids or not serials:
+        return {}
+    ca_marks = ",".join("?" * len(ca_ids))
+    serial_marks = ",".join("?" * len(serials))
+    found: dict[str, dict[str, Any]] = {}
+    with _connect() as conn:
+        # Placeholders only: the f-string adds "?" marks, never values.
+        for r in conn.execute(
+            f"SELECT serial, not_after, revoked FROM certificates "  # nosec B608
+            f"WHERE ca_id IN ({ca_marks}) AND serial IN ({serial_marks})", (*ca_ids, *serials)
+        ).fetchall():
+            found[r["serial"]] = {"not_after": r["not_after"], "revoked": bool(r["revoked"])}
+        for r in conn.execute(
+            f"SELECT serial, not_after FROM deleted_revocations "  # nosec B608
+            f"WHERE ca_id IN ({ca_marks}) AND serial IN ({serial_marks})", (*ca_ids, *serials)
+        ).fetchall():
+            found[r["serial"]] = {"not_after": r["not_after"], "revoked": True}
+        for r in conn.execute(
+            f"SELECT serial, not_after FROM certificate_authorities "  # nosec B608
+            f"WHERE id IN ({ca_marks}) AND serial IN ({serial_marks})", (*ca_ids, *serials)
+        ).fetchall():
+            found[r["serial"]] = {"not_after": r["not_after"], "revoked": False}
+    return found
+
+
+def create_pal_code(code_id: str, label: str, ca_id: int, policy: str, key: bytes, server_url: str,
+                    expires_at: str) -> None:
+    encrypted = _maybe_encrypt(key)
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO pal_codes (id, label, ca_id, policy, key, server_url, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (code_id, label, ca_id, policy, encrypted, server_url, expires_at),
+        )
+
+
+_PAL_CODE_COLUMNS = "id, label, ca_id, policy, server_url, created_at, expires_at, used_at, device_id, revoked_at"
+
+
+def list_pal_codes() -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT c.id, c.label, c.ca_id, c.policy, c.server_url, c.created_at, c.expires_at, c.used_at, c.device_id, "
+            "c.revoked_at, d.hostname AS device_name, d.fqdn AS device_fqdn "
+            "FROM pal_codes c LEFT JOIN pal_devices d ON d.id = c.device_id ORDER BY c.created_at DESC LIMIT 500"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_pal_code(code_id: str) -> dict[str, Any] | None:
+    """The code with its key decrypted (raises DatabaseLocked while locked)."""
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM pal_codes WHERE id = ?", (code_id,)).fetchone()
+    if row is None:
+        return None
+    code = dict(row)
+    code["key"] = _maybe_decrypt(code["key"])
+    return code
+
+
+def revoke_pal_code(code_id: str) -> bool:
+    with _connect() as conn:
+        cursor = conn.execute(
+            "UPDATE pal_codes SET revoked_at = ? WHERE id = ? AND used_at IS NULL AND revoked_at IS NULL",
+            (_utc_now(), code_id),
+        )
+        return cursor.rowcount > 0
+
+
+def enroll_pal_device(code_id: str, device: dict[str, Any]) -> bool:
+    """Use the code and create its device in one transaction. False if the code was used,
+    revoked or expired in the meantime, so a code can never connect two devices. The device
+    is named after itself (the host name it reports), not after the code's note."""
+    now = _utc_now()
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        cursor = conn.execute(
+            "UPDATE pal_codes SET used_at = ?, device_id = ? "
+            "WHERE id = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?",
+            (now, device["id"], code_id, now),
+        )
+        if cursor.rowcount != 1:
+            return False
+        conn.execute(
+            "INSERT INTO pal_devices (id, label, hostname, fqdn, os, public_key, ca_id, policy, code_id, last_seen, "
+            "remote_allowed) SELECT ?, ?, ?, ?, ?, ?, ca_id, policy, id, ?, ? FROM pal_codes WHERE id = ?",
+            (device["id"], device["hostname"] or device["fqdn"].split(".")[0], device["hostname"], device["fqdn"],
+             device["os"], device["public_key"], now, int(bool(device.get("remote_allowed"))), code_id),
+        )
+        return True
+
+
+_PAL_DEVICE_COLUMNS = ("id, label, hostname, fqdn, os, public_key, ca_id, policy, code_id, created_at, last_seen, "
+                       "revoked_at, pal_version, remote_allowed, last_via")
+
+
+def get_pal_device(device_id: str) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(f"SELECT {_PAL_DEVICE_COLUMNS} FROM pal_devices WHERE id = ?", (device_id,)).fetchone()  # nosec B608 - constant column list
+        return dict(row) if row else None
+
+
+def list_pal_devices() -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT d.id, d.label, d.hostname, d.fqdn, d.os, d.ca_id, d.policy, d.created_at, d.last_seen, d.revoked_at, d.pal_version, "
+            "d.remote_allowed, d.last_via, "
+            "(SELECT COUNT(*) FROM certificates c WHERE c.pal_device_id = d.id) AS cert_count, "
+            "(SELECT COUNT(*) FROM pal_requests r WHERE r.device_id = d.id AND r.status = 'pending') AS pending "
+            "FROM pal_devices d ORDER BY d.revoked_at IS NOT NULL, d.created_at DESC"  # disconnected PCs last
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def touch_pal_device(device_id: str, pal_version: str | None = None, via: str = "lan") -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE pal_devices SET last_seen = ?, pal_version = COALESCE(?, pal_version), last_via = ? WHERE id = ?",
+                     (_utc_now(), pal_version, via, device_id))
+
+
+def set_pal_remote_allowed(device_id: str, allowed: bool) -> bool:
+    with _connect() as conn:
+        return conn.execute("UPDATE pal_devices SET remote_allowed = ? WHERE id = ? AND revoked_at IS NULL",
+                            (int(allowed), device_id)).rowcount == 1
+
+
+def list_pal_remote_keys() -> list[tuple[str, bytes]]:
+    """(device id, public key DER) of every connected PC allowed to use the relay: what the Worker accepts."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT id, public_key FROM pal_devices WHERE remote_allowed = 1 AND revoked_at IS NULL "
+                            "ORDER BY id").fetchall()
+        return [(r["id"], bytes(r["public_key"])) for r in rows]
+
+
+def get_pal_relay_key() -> bytes | None:
+    """The relay key (PKCS#8 DER), or None before one is made. Raises DatabaseLocked while locked."""
+    sealed = get_setting("pal_relay_key")
+    if sealed is None:
+        return None
+    require_unlocked()
+    return _maybe_decrypt(sealed)
+
+
+def get_pal_relay_config() -> dict[str, Any] | None:
+    """The deployed relay Worker: {"script", "url", "domain_id"?}, or None. Readable while locked."""
+    raw = get_setting("pal_relay_worker")
+    return json.loads(raw) if raw else None
+
+
+def get_pal_relay_token() -> str | None:
+    """The server's token for the relay Worker's server endpoints. Raises DatabaseLocked while locked."""
+    sealed = get_setting("pal_relay_token")
+    if sealed is None:
+        return None
+    require_unlocked()
+    return _maybe_decrypt(sealed).decode()
+
+
+def set_pal_relay_config(config: dict[str, Any], token: str) -> None:
+    if not is_encryption_enabled():
+        raise UserError("Turn on database encryption first: the relay's token is stored encrypted")
+    require_unlocked()
+    with _connect() as conn:
+        _set_setting(conn, "pal_relay_worker", json.dumps(config).encode())
+        _set_setting(conn, "pal_relay_token", crypto_engine.encrypt_column(token.encode(), _master_key))  # type: ignore[arg-type]
+
+
+def clear_pal_relay_config() -> None:
+    """Forget the Worker (the relay key stays: PCs keep it pinned for the next relay)."""
+    with _connect() as conn:
+        _set_setting(conn, "pal_relay_worker", None)
+        _set_setting(conn, "pal_relay_token", None)
+
+
+def create_pal_relay_key(private_der: bytes) -> None:
+    """Store the relay key encrypted with the database key: like the Cloudflare token it needs
+    encryption on (the relay is set up through Cloudflare, which already requires it)."""
+    if not is_encryption_enabled():
+        raise UserError("Turn on database encryption first: the relay key is stored encrypted")
+    require_unlocked()
+    with _connect() as conn:
+        if _get_setting(conn, "pal_relay_key") is not None:
+            raise UserError("This server already has a relay key")
+        _set_setting(conn, "pal_relay_key", crypto_engine.encrypt_column(private_der, _master_key))  # type: ignore[arg-type]
+
+
+def revoke_pal_device(device_id: str) -> bool:
+    """Stop the device's requests: its pending ones are denied. Its certificates are untouched."""
+    now = _utc_now()
+    with _connect() as conn:
+        cursor = conn.execute(
+            "UPDATE pal_devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", (now, device_id))
+        if cursor.rowcount != 1:
+            return False
+        conn.execute(
+            "UPDATE pal_requests SET status = 'denied', reason = 'Device revoked', decided_at = ? "
+            "WHERE device_id = ? AND status = 'pending'", (now, device_id))
+        return True
+
+
+def delete_pal_device(device_id: str) -> bool:
+    """Forget a disconnected device: its requests, nonces and pairing code go with it. The
+    certificates it was issued stay (revoked, and listed under the CA)."""
+    with _connect() as conn:
+        row = conn.execute("SELECT code_id FROM pal_devices WHERE id = ? AND revoked_at IS NOT NULL",
+                           (device_id,)).fetchone()
+        if row is None:
+            return False
+        conn.execute("DELETE FROM pal_requests WHERE device_id = ?", (device_id,))
+        conn.execute("DELETE FROM pal_nonces WHERE device_id = ?", (device_id,))
+        conn.execute("DELETE FROM pal_devices WHERE id = ?", (device_id,))
+        conn.execute("DELETE FROM pal_codes WHERE id = ?", (row["code_id"],))
+        return True
+
+
+def list_pal_device_certs(device_id: str) -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT {_CERT_LIST_COLUMNS} FROM certificates WHERE pal_device_id = ? ORDER BY created_at DESC",  # nosec B608 - constant column list
+            (device_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def mark_pal_presence(device_id: str, present_serials: set[str]) -> None:
+    """Record which of the device's own certificates its last store audit found."""
+    now = _utc_now()
+    with _connect() as conn:
+        for row in conn.execute("SELECT id, serial FROM certificates WHERE pal_device_id = ?", (device_id,)).fetchall():
+            conn.execute("UPDATE certificates SET pal_present = ?, pal_checked_at = ? WHERE id = ?",
+                         (int(row["serial"] in present_serials), now, row["id"]))
+
+
+def list_pal_issued_certs() -> list[dict[str, Any]]:
+    """Every certificate issued to a Pal device, for the Devices page (one query, not one per device)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT pal_device_id, template, common_name, not_after, revoked, pal_present FROM certificates "
+            "WHERE pal_device_id IS NOT NULL ORDER BY not_after DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def use_pal_nonce(device_id: str, nonce: str, now: float, ttl: float) -> bool:
+    """Record a request nonce; False if this device already used it within ``ttl`` seconds."""
+    with _connect() as conn:
+        conn.execute("DELETE FROM pal_nonces WHERE expires_at < ?", (now,))
+        try:
+            conn.execute("INSERT INTO pal_nonces (device_id, nonce, expires_at) VALUES (?, ?, ?)",
+                         (device_id, nonce, now + ttl))
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+
+def create_pal_request(device_id: str, use_case: str, names: str, csr_pem: bytes, lifetime_days: int,
+                       renew_of: int | None, crl_dp: str | None = None) -> int:
+    with _connect() as conn:
+        cursor = conn.execute(
+            "INSERT INTO pal_requests (device_id, use_case, names, csr_pem, lifetime_days, status, renew_of, crl_dp) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+            (device_id, use_case, names, csr_pem, lifetime_days, renew_of, crl_dp),
+        )
+        return cursor.lastrowid
+
+
+def get_pal_request(request_id: int) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM pal_requests WHERE id = ?", (request_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def list_pal_requests(status: str | None = None, device_id: str | None = None) -> list[dict[str, Any]]:
+    clauses, params = [], []
+    if status is not None:
+        clauses.append("r.status = ?")
+        params.append(status)
+    if device_id is not None:
+        clauses.append("r.device_id = ?")
+        params.append(device_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT r.id, r.device_id, d.label AS device_label, d.hostname, r.use_case, r.names, r.lifetime_days, "
+            "r.status, r.cert_id, r.renew_of, r.reason, r.created_at, r.decided_at, r.crl_dp "
+            f"FROM pal_requests r JOIN pal_devices d ON d.id = r.device_id {where} "  # nosec B608 - constant clauses
+            "ORDER BY r.created_at DESC, r.id DESC LIMIT 500",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def transition_pal_request(request_id: int, from_status: str, to_status: str, cert_id: int | None = None,
+                           reason: str = "") -> bool:
+    """Move a request from ``from_status`` to ``to_status``; False if it was no longer in
+    ``from_status``. Issuing goes pending → issuing → issued, so two approvals of the same
+    request can't both sign a certificate."""
+    with _connect() as conn:
+        cursor = conn.execute(
+            "UPDATE pal_requests SET status = ?, cert_id = COALESCE(?, cert_id), reason = ?, decided_at = ? "
+            "WHERE id = ? AND status = ?",
+            (to_status, cert_id, reason, _utc_now(), request_id, from_status),
+        )
         return cursor.rowcount > 0
 
 
@@ -969,7 +1378,7 @@ def export_all_data() -> dict[str, Any]:
 def _import_rows(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
     rows = data.get(key, [])
     if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
-        raise ValueError(f"Invalid backup data: '{key}' must be a list of objects")
+        raise UserError(f"Invalid backup data: '{key}' must be a list of objects")
     return rows
 
 
@@ -1044,7 +1453,7 @@ def _restore_users(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None
 
 def import_all_data(data: dict[str, Any]) -> dict[str, int]:
     if data.get("version") != 1:
-        raise ValueError("Unsupported backup data version")
+        raise UserError("Unsupported backup data version")
     require_unlocked()
     cas = _import_rows(data, "certificate_authorities")
     certs = _import_rows(data, "certificates")
@@ -1053,6 +1462,9 @@ def import_all_data(data: dict[str, Any]) -> dict[str, int]:
     deleted_revocations = _import_rows(data, "deleted_revocations")  # absent in older backups
     try:
         with _connect() as conn:
+            # Pairings refer to the CAs being replaced: connected PCs pair again after a restore.
+            for table in ("pal_nonces", "pal_requests", "pal_devices", "pal_codes"):
+                conn.execute(f"DELETE FROM {table}")  # nosec B608 - constant table names
             conn.execute("DELETE FROM certificates")
             conn.execute("DELETE FROM deleted_revocations")
             conn.execute("DELETE FROM certificate_authorities")
@@ -1068,7 +1480,7 @@ def import_all_data(data: dict[str, Any]) -> dict[str, int]:
             _restore_ssh_keys(conn, ssh_keys)
             _restore_users(conn, users)
     except (KeyError, TypeError, AttributeError, sqlite3.IntegrityError, ValueError) as e:
-        raise ValueError(f"Invalid backup data: {e}") from e
+        raise UserError("Invalid backup data: it does not match what this version expects") from e
     return {"cas": len(cas), "certs": len(certs), "ssh_keys": len(ssh_keys), "users": len(users)}
 
 

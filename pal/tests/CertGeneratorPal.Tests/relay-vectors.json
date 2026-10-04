@@ -1,0 +1,29 @@
+{
+  "comment": "Test-only keys. Regenerate with scripts/make_relay_vectors.py; both test suites check this file.",
+  "device_private_pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARERERERGhRANCAARbsf72duL4YdIcnrpXSiN3hzmpLwUnl54NVM6+7f2QofslcvmR44l9yi9f+7kHluKryTUkuKjGJzAajd6zaCME",
+  "relay_private_pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAiIiIiIiKhRANCAASGwt937KHQSGYKygKpbsecpLkgZ/Aste4JO+4mBEk5wi32EAdRSecCyzNLi4HWzYoEt2q050gEnJZsLSl0BUkc",
+  "one_time_private_pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAzMzMzMzOhRANCAAR1UeHD4PazgubeuzisBwbr7ayzDoXILTsVv96tW+DEwWkMZfED7ab1aeQorOArIv9C7tCNKk+4Mc7T8NXxk6rg",
+  "device_id": "0123456789abcdef0123456789abcdef",
+  "nonce": "bm9uY2Utb2YtdGhlLXRlc3Q",
+  "timestamp": 1790000000,
+  "iv_request": "AAECAwQFBgcICQoL",
+  "iv_reply": "DA0ODxAREhMUFRYX",
+  "inner_request": "eyJtZXRob2QiOiJHRVQiLCJwYXRoIjoiL2FwaS9wYWwvdjEvZGV2aWNlIiwiaGVhZGVycyI6eyJYLVBhbC1EZXZpY2UiOiIwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZiJ9LCJib2R5IjoiIn0=",
+  "envelope": {
+    "v": 1,
+    "d": "0123456789abcdef0123456789abcdef",
+    "t": 1790000000,
+    "n": "bm9uY2Utb2YtdGhlLXRlc3Q",
+    "e": "BHVR4cPg9rOC5t67OKwHBuvtrLMOhcgtOxW_3q1b4MTBaQxl8QPtpvVp5Cis4Csi_0Lu0I0qT7gxztPw1fGTquA",
+    "i": "AAECAwQFBgcICQoL",
+    "c": "UQ2bVxuyAGjlzPuEjUx_rI87M1UdEicxo6Zw02lNLUTyx0ibiTZqaobCEv8iJpOl1SYXNYyq5jLAjGDhpUZbdyD1vFt50N1bR8EpWdayaiaY7lZJgCZqAQlpJs0euknWb20k0cMAVmORhXsVGEpxC3SEfx8Ztk_52OGoQ60yw0X8R178",
+    "s": "XTW-TrvrUkanlLDft_3wycvqr3W1TS9bbFATVnxC_2nH0JuUBBKq5ejXHwOxebzuYCjW7MkJypdW1RPRUC-OFw"
+  },
+  "inner_reply": "eyJzdGF0dXMiOjIwMCwiaGVhZGVycyI6eyJDb250ZW50LVR5cGUiOiJhcHBsaWNhdGlvbi9qc29uIn0sImJvZHkiOiJleUp2YXlJNmRISjFaWDAifQ==",
+  "reply": {
+    "v": 1,
+    "n": "bm9uY2Utb2YtdGhlLXRlc3Q",
+    "i": "DA0ODxAREhMUFRYX",
+    "c": "NUYKvQLfuq9f4UzvSKjxF68qhM3qfyYjIim1oJa4WK1pyW8LoEeF9P0CEgQWbc2q5F97oIHJ9n4TxgJ85Ys4n4FX8opP4chjLOBUiIa8AO4t9JezW-WdvioYWPGR36wjHv72UsI"
+  }
+}

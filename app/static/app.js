@@ -309,6 +309,7 @@ async function selectCA(caId) {
 
   document.getElementById('welcomeView').classList.add('hidden');
   document.getElementById('sshKeyView').classList.add('hidden');
+  hidePalView();
   document.getElementById('caView').classList.remove('hidden');
   document.getElementById('caViewTitle').textContent = ca.name;
 
@@ -382,12 +383,28 @@ async function loadCerts(caId) {
       '<td>' + crlDpBadge(c.crl_dp) + '</td>' +
       '<td><div class="row-actions">' +
         '<button class="btn btn-ghost btn-sm" data-action="viewCert" data-arg="' + c.id + '\">View</button> ' +
-        '<button type="button" class="import-chip" data-action="toggleImportHelp" data-arg="' + c.id + '" aria-haspopup="dialog" aria-expanded="false">' +
-          (c.revoked ? 'Export ▾' : 'Export / install ▾') + '</button> ' +
-        (!c.revoked ? '<button class="btn btn-ghost btn-sm" data-action="revokeCert" data-arg="' + c.id + '\">Revoke</button> ' : '') +
+        (c.has_key
+          ? '<button type="button" class="import-chip" data-action="toggleImportHelp" data-arg="' + c.id + '" aria-haspopup="dialog" aria-expanded="false">' +
+            (c.revoked ? 'Export ▾' : 'Export / install ▾') + '</button> '
+          : '<span class="key-chip" title="Requested by Cert Generator Pal: the private key never left that PC">Key on PC</span> ') +
+        (!c.revoked ? '<button class="btn btn-ghost btn-sm" data-action="revokeCert" data-arg="' + c.id + '\">Revoke</button> ' : '<span></span>') +
         '<button class="btn btn-danger btn-sm" data-action="deleteCert" data-arg="' + c.id + '\">Delete</button>' +
       '</div></td></tr>';
   }).join('');
+}
+
+async function refreshCerts() {
+  if (!currentCAId) return;
+  const btn = document.getElementById('certRefreshBtn');
+  btn.disabled = true;
+  try {
+    await loadCerts(currentCAId);
+    if (SERVER_MODE) checkPalPending();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function lifetimeDaysFromInputs(valueId, unitId) {
@@ -547,7 +564,7 @@ const CRL_DP_LABELS = {
   none: ['badge-algo', 'None', 'No distribution point: clients can only learn of a revocation from a CRL you import yourself.'],
   placeholder: ['badge-expired', 'Endpoint-hosted', 'Endpoint-hosted: no server answers this address. Each machine needs the CRL: ' +
     'use the install .zip (Export / install ▾), which on Windows also answers the address locally, or import an exported CRL.'],
-  server_live: ['badge-active', 'This server', 'Served by this server, which keeps the CRL current automatically.'],
+  server_live: ['badge-active', 'Cert Generator (LAN)', 'Served by this Cert Generator server, which keeps the CRL current automatically.'],
   server_pending: ['badge-expired', 'Not published', 'Points at this server, but no CRL is published yet. It publishes once the database is unlocked.'],
   other: ['badge-algo', 'External', 'Points at an address this app does not manage.'],
 };
@@ -1534,6 +1551,7 @@ async function selectSSHKey(keyId) {
 
   document.getElementById('welcomeView').classList.add('hidden');
   document.getElementById('caView').classList.add('hidden');
+  hidePalView();
   document.getElementById('sshKeyView').classList.remove('hidden');
   document.getElementById('sshKeyViewTitle').textContent = key.name;
   document.getElementById('sshKeyViewEyebrow').textContent =
@@ -1549,6 +1567,7 @@ async function selectSSHKey(keyId) {
     infoItem('Comment', escapeHtml(key.comment || '(none)'));
 
   document.getElementById('sshPubKey').textContent = key.public_key || '';
+  renderSSHInstall();
   document.getElementById('sshOriginalPassphrase').value = '';
   document.getElementById('sshOriginalPassphrase').style.display = key.has_passphrase ? '' : 'none';
   document.getElementById('sshExportPassphrase').value = '';
@@ -1664,6 +1683,66 @@ async function copyPublicKey() {
   }
 }
 
+// One line to paste on the server, as the user who will sign in with this key.
+// Linux/macOS: ~/.ssh 700, authorized_keys 600, the key added once (safe to paste
+// again), and the SELinux label restored where restorecon exists (Fedora, RHEL,
+// Rocky, Alma), which is the only distro difference. Runs in a subshell so the
+// umask doesn't stick to the user's shell. Windows OpenSSH reads an administrator's
+// keys from ProgramData, which must be readable only by Administrators and SYSTEM.
+let sshInstallOS = 'unix';
+
+function sshInstallCommand(publicKey, os) {
+  // One line always; the server refuses a comment with a line break, older keys may hold one.
+  const key = publicKey.trim().replace(/\s*[\r\n]+\s*/g, ' ');
+  if (os === 'windows') {
+    // PowerShell also closes a '…' string at a typographic quote, so those are doubled too.
+    const k = "'" + key.replace(/['\u2018\u2019\u201A\u201B]/g, '$&$&') + "'";
+    return '$k=' + k + '; if ((whoami /groups) -match \'S-1-5-32-544\') { $f="$env:ProgramData\\ssh\\administrators_authorized_keys" } ' +
+      'else { New-Item -ItemType Directory -Force "$HOME\\.ssh" | Out-Null; $f="$HOME\\.ssh\\authorized_keys" }; ' +
+      '$t=[string](Get-Content -Raw -ErrorAction SilentlyContinue $f); ' +
+      'if (-not $t.Contains($k)) { if ($t -and -not $t.EndsWith("`n")) { $k="`r`n$k" }; Add-Content -Encoding ascii -Path $f -Value $k }; ' +
+      'if ($f -like "$env:ProgramData*") { icacls $f /inheritance:r /grant \'*S-1-5-32-544:F\' /grant \'*S-1-5-18:F\' | Out-Null }; ' +
+      '"SSH key authorized in $f"';
+  }
+  const k = "'" + key.replace(/'/g, "'\\''") + "'";
+  return '(umask 077; K=' + k + '; F="$HOME/.ssh/authorized_keys"; mkdir -p "$HOME/.ssh" && touch "$F" && ' +
+    'chmod 700 "$HOME/.ssh" && chmod 600 "$F" && ' +
+    '{ grep -qxF "$K" "$F" || { [ -z "$(tail -c1 "$F")" ] || echo >> "$F"; echo "$K" >> "$F"; }; } && ' +
+    '{ command -v restorecon >/dev/null 2>&1 && restorecon -R "$HOME/.ssh"; true; } && ' +
+    'echo "SSH key authorized for $(id -un) in $F")';
+}
+
+function renderSSHInstall() {
+  const key = document.getElementById('sshPubKey').textContent;
+  document.querySelectorAll('.ssh-install .os-tabs button').forEach((b) => {
+    b.setAttribute('aria-selected', String(b.dataset.arg === sshInstallOS));
+  });
+  const windows = sshInstallOS === 'windows';
+  document.getElementById('sshInstallWhere').textContent = windows
+    ? 'Paste into PowerShell on the Windows server, signed in as the account that will use this key.'
+    : 'Paste into a terminal on the server, signed in as the user who will log in with this key.';
+  document.getElementById('sshInstallHint').textContent = windows
+    ? 'Needs OpenSSH Server. If the account is an administrator, run PowerShell as Administrator: Windows only reads an administrator\'s keys from administrators_authorized_keys.'
+    : 'Any distro, in bash, zsh or sh. Safe to paste twice; it won\'t add the key again. On Fedora, RHEL, Rocky and Alma it also restores the SELinux label so sshd can read the file.';
+  document.getElementById('sshInstallCmd').textContent = key ? sshInstallCommand(key, sshInstallOS) : '';
+}
+
+function setSSHInstallOS(os) {
+  sshInstallOS = os === 'windows' ? 'windows' : 'unix';
+  renderSSHInstall();
+}
+
+async function copySSHInstall() {
+  const text = document.getElementById('sshInstallCmd').textContent;
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('Command copied, paste it on the server');
+  } catch (e) {
+    toast('Copy failed, select the command and copy it by hand', 'error');
+  }
+}
+
 async function copyPrivateKey() {
   if (!currentSSHKeyId) return;
   try {
@@ -1740,6 +1819,7 @@ async function restoreBackup() {
     currentSSHKeyId = null;
     document.getElementById('caView').classList.add('hidden');
     document.getElementById('sshKeyView').classList.add('hidden');
+    hidePalView();
     document.getElementById('welcomeView').classList.remove('hidden');
     loadCAs();
     loadSSHKeys();
@@ -2276,6 +2356,10 @@ async function initApp() {
     else showQuickStartIfPending();
   }
   checkLegacyExports();
+  if (SERVER_MODE && ready) {
+    checkPalPending();
+    setInterval(checkPalPending, 60000);
+  }
 }
 
 
@@ -2652,10 +2736,522 @@ async function teardownCloudflareWorker() {
 }
 
 // ── Event delegation ────────────────────────────────────────────────
+// ── Cert Generator Pal: Windows PCs ────────────────────────────────
+
+const PAL_USE_CASES = { 'web-server': 'Web server', computer: 'This computer', user: 'Me', 'code-signing': 'Code signing' };
+const PAL_MODES = { off: 'Off', auto: 'Issue right away', approve: 'Needs approval' };
+const PAL_CODE_STATES = {
+  unused: '<span class="badge badge-active">Not used yet</span>',
+  used: '<span class="badge">Used</span>',
+  expired: '<span class="badge badge-expired">Expired</span>',
+  revoked: '<span class="badge badge-revoked">Revoked</span>',
+};
+
+function palNames(names) {
+  if (!names) return '';
+  if (names.upn) return names.upn;
+  if (names.san && names.san.length) return names.san.join(', ');
+  return names.common_name || names.cn || '';
+}
+
+// What the PC holds now, by kind, from its own store audit. Certificates it no longer
+// holds (removed, revoked, expired) are only counted.
+function palCertSummary(d) {
+  const live = d.certs.filter(c => c.state === 'installed' || c.state === 'unchecked');
+  const rows = live.map(c =>
+    '<li>' + escapeHtml(PAL_USE_CASES[c.use_case] || c.use_case) + ' <span class="dim mono pal-name">' + escapeHtml(c.name) + '</span>' +
+    (c.state === 'unchecked' ? ' <span class="dim">(not checked yet)</span>' : '') + '</li>');
+  const gone = d.certs.filter(c => !live.includes(c));
+  if (gone.length) {
+    const counts = {};
+    gone.forEach(c => { counts[c.state] = (counts[c.state] || 0) + 1; });
+    rows.push('<li class="dim">' + gone.length + ' no longer on the PC (' +
+      Object.entries(counts).map(([k, n]) => n + ' ' + k).join(', ') + ')</li>');
+  }
+  if (d.pending) rows.push('<li><span class="badge badge-expired">' + d.pending + ' waiting for approval</span></li>');
+  return rows.length ? '<ul class="pal-list">' + rows.join('') + '</ul>' : '<span class="dim">Nothing yet</span>';
+}
+
+const PAL_CRL_LABELS = { server: 'Cert Generator (LAN)', cloudflare: 'Cloudflare', placeholder: 'Self-hosted', none: 'No CRL' };
+
+function palUseCaseChips(policy) {
+  const chips = Object.entries(PAL_USE_CASES)
+    .filter(([key]) => policy.use_cases[key] && policy.use_cases[key] !== 'off')
+    .map(([key, label]) => '<span class="pal-chip' + (policy.use_cases[key] === 'approve' ? ' pal-chip-approve" title="Needs your approval' : '') + '">' +
+      escapeHtml(label) + (policy.use_cases[key] === 'approve' ? ' · approval' : '') + '</span>');
+  return chips.join('') || '<span class="dim">Nothing</span>';
+}
+
+function palCrlChips(policy) {
+  return (policy.crl_dps || []).map((m, i) => '<span class="pal-chip"' + (i === 0 ? ' title="Default"' : '') + '>' +
+    escapeHtml(PAL_CRL_LABELS[m] || m) + '</span>').join('') || '<span class="dim">None</span>';
+}
+
+function palRemoteSummary(d, data) {
+  const state = d.remote_allowed
+    ? '<span class="pal-chip pal-chip-on">Allowed</span>'
+    : '<span class="pal-chip">Off</span>';
+  const via = d.last_via ? '<div class="dim">Last request ' + (d.last_via === 'relay' ? 'through the relay' : 'on the LAN') + '</div>' : '';
+  return state + ' <button class="btn btn-ghost btn-sm" data-action="togglePalRemote" data-allowed="' + (d.remote_allowed ? '0' : '1') + '"' + data + '>' +
+    (d.remote_allowed ? 'Turn off' : 'Allow') + '</button>' + via;
+}
+
+// A one-line summary for the pairing codes table.
+function palPolicySummary(policy) {
+  const kinds = Object.entries(PAL_USE_CASES)
+    .filter(([key]) => policy.use_cases[key] && policy.use_cases[key] !== 'off')
+    .map(([key, label]) => label + (policy.use_cases[key] === 'approve' ? ' (approval)' : ''))
+    .join(' · ') || 'nothing';
+  const crls = (policy.crl_dps || []).map(m => PAL_CRL_LABELS[m] || m).join(', ');
+  return kinds + (crls ? ' — CRL profiles: ' + crls : '') + (policy.allow_remote ? ' — remote allowed' : '');
+}
+
+function palAllCrl() {
+  document.querySelectorAll('#palCrlDps input').forEach(i => { i.checked = i.value !== 'none'; });
+  return false;
+}
+
+async function showPalDevices() {
+  closeMobileMenu();
+  hideModal('palAddModal');
+  ['welcomeView', 'caView', 'sshKeyView'].forEach(id => document.getElementById(id).classList.add('hidden'));
+  document.getElementById('palView').classList.remove('hidden');
+  await Promise.all([loadPalDevices(), loadPalDownload()]);
+}
+
+function openPalFromIssue() {
+  hideModal('issueCertModal');
+  showPalDevices();
+}
+
+function hidePalView() {
+  const view = document.getElementById('palView');
+  if (view) view.classList.add('hidden');
+}
+
+let palDownloadPath = '/pal/CertGeneratorPal.exe';
+
+async function loadPalDownload() {
+  const card = document.getElementById('palGet');
+  let info = null;
+  try {
+    info = await (await api('/api/pal/download')).json();
+  } catch (_e) { /* shown as unavailable below */ }
+  const available = !!(info && info.available);
+  if (info) palDownloadPath = info.path;
+  card.classList.toggle('unavailable', !available);
+  ['palGetButton', 'palHeaderDownload'].forEach(id => document.getElementById(id).classList.toggle('hidden', !available));
+  document.querySelector('#palGet .pal-get-url').classList.toggle('hidden', !available);
+  document.getElementById('palGetSha').parentElement.classList.toggle('hidden', !available);
+  if (!available) {
+    document.getElementById('palGetVersion').textContent = '';
+    document.getElementById('palGetAbout').textContent = 'This server can\'t offer the Pal: its image doesn\'t include it, or the file is writable by the server ' +
+      '(see the server log). The Pal ships only inside the Cert Generator Docker image.';
+    return;
+  }
+  document.getElementById('palGetVersion').textContent = 'v' + document.body.dataset.appVersion + ' · ' + (info.size / 1048576).toFixed(0) + ' MB';
+  document.getElementById('palGetUrl').value = palDownloadUrl(window.location.origin) || '';
+  document.getElementById('palGetSha').textContent = info.sha256;
+}
+
+async function copyPalDownloadUrl() {
+  const input = document.getElementById('palGetUrl');
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(input.value);  // only on https or localhost
+    copied = true;
+  } catch (_e) {
+    input.focus();
+    input.select();
+    copied = document.execCommand('copy');  // plain http on the LAN
+  }
+  if (!copied) { toast('Press Ctrl+C to copy the selected link', 'error'); return; }
+  const btn = document.getElementById('palGetCopy');
+  btn.textContent = 'Copied ✓';
+  setTimeout(() => { btn.textContent = 'Copy link'; }, 2000);
+}
+
+async function loadPalDevices() {
+  const boxes = ['palPending', 'palDevices', 'palCodes'].map(id => document.getElementById(id));
+  const btn = document.getElementById('palRefreshBtn');
+  btn.disabled = true;
+  let codes, devices, pending;
+  try {
+    [codes, devices, pending] = await Promise.all([
+      api('/api/pal/codes').then(r => r.json()),
+      api('/api/pal/devices').then(r => r.json()),
+      api('/api/pal/requests?status=pending').then(r => r.json()),
+    ]);
+  } catch (e) {
+    boxes.forEach(b => { b.innerHTML = '<p class="dim">' + escapeHtml(e.message) + '</p>'; });
+    return;
+  } finally {
+    btn.disabled = false;
+  }
+  renderPalPending(pending);
+  renderPalDevices(devices);
+  renderPalCodes(codes);
+  loadPalRelay(false);
+  showPalPendingCount(pending.length);
+}
+
+function renderPalPending(rows) {
+  document.getElementById('palPendingBox').classList.toggle('hidden', rows.length === 0);
+  document.getElementById('palPendingNote').textContent = rows.length + (rows.length === 1 ? ' request' : ' requests');
+  document.getElementById('palPending').innerHTML = rows.map(r =>
+    '<div class="pal-row">' +
+      '<div class="pal-row-main"><strong>' + escapeHtml(PAL_USE_CASES[r.use_case] || r.use_case) + '</strong> for ' +
+        '<span class="pal-names">' + escapeHtml(palNames(r.names)) + '</span>' +
+        '<div class="dim">' + escapeHtml(r.device_label) + (r.hostname ? ' (' + escapeHtml(r.hostname) + ')' : '') +
+        ' · ' + r.lifetime_days + ' days' + (r.crl_dp ? ' · CRL profile: ' + escapeHtml(PAL_CRL_LABELS[r.crl_dp] || r.crl_dp) : '') +
+        ' · asked ' + formatDateTime(r.created_at) + '</div></div>' +
+      '<div class="pal-row-actions"><button class="btn btn-ghost btn-sm" data-action="denyPalRequest" data-id="' + r.id + '">Deny</button>' +
+        '<button class="btn btn-primary btn-sm" data-action="approvePalRequest" data-id="' + r.id + '">Approve</button></div>' +
+    '</div>').join('');
+}
+
+function renderPalDevices(devices) {
+  const box = document.getElementById('palDevices');
+  const connected = devices.filter(d => !d.revoked_at).length;
+  document.getElementById('palDevicesNote').textContent = devices.length
+    ? connected + ' connected' + (devices.length > connected ? ' · ' + (devices.length - connected) + ' disconnected' : '') : '';
+  if (!devices.length) {
+    box.innerHTML = '<p class="dim">No PCs connected yet. Choose <strong>Add a PC</strong> to make a pairing code.</p>';
+    return;
+  }
+  box.innerHTML = devices.map(d => {
+    const live = d.certs.filter(c => c.state !== 'revoked' && c.state !== 'expired').length;
+    const data = ' data-id="' + escapeHtml(d.id) + '" data-label="' + escapeHtml(d.label) + '" data-certs="' + live + '"';
+    return '<div class="pal-device' + (d.revoked_at ? ' revoked' : '') + '">' +
+      '<div class="pal-device-head">' +
+        '<div class="pal-device-title"><strong>' + escapeHtml(d.label) + '</strong> ' +
+          (d.revoked_at ? '<span class="badge badge-revoked">Disconnected</span>' : '<span class="badge badge-active">Connected</span>') +
+          '<div class="dim mono">' + escapeHtml(d.fqdn || d.hostname) + '</div>' +
+          '<div class="dim">' + escapeHtml(d.os) + (d.last_seen ? ' · seen ' + formatDateTime(d.last_seen) : '') +
+            (d.pal_version ? ' · Pal v' + escapeHtml(d.pal_version) : '') + '</div>' +
+          (d.version_matches ? '' : '<div class="pal-drift">Pal v' + escapeHtml(d.pal_version) + ' on this PC, server v' +
+            escapeHtml(document.body.dataset.appVersion) + ': features may not match. Update the Pal on the PC from this server.</div>') +
+          '</div>' +
+        '<div class="pal-row-actions">' +
+          (d.revoked_at ? '' : '<button class="btn btn-ghost btn-sm" data-action="revokePalDevice"' + data + '>Disconnect</button>') +
+          '<button class="btn btn-danger btn-sm" data-action="deletePalDevice"' + data + '>Delete</button></div>' +
+      '</div>' +
+      '<div class="pal-device-grid">' +
+        '<div><label>May request</label><div>' + palUseCaseChips(d.policy) + '</div></div>' +
+        '<div><label>CRL profiles</label><div>' + palCrlChips(d.policy) + '</div></div>' +
+        '<div><label>On this PC</label>' + palCertSummary(d) + '</div>' +
+        (d.revoked_at ? '' : '<div><label>Remote</label>' + palRemoteSummary(d, data) + '</div>') +
+      '</div></div>';
+  }).join('');
+}
+
+function renderPalCodes(codes) {
+  const box = document.getElementById('palCodes');
+  const unused = codes.filter(c => c.state === 'unused').length;
+  document.getElementById('palCodesNote').textContent = codes.length ? unused + ' not used yet' : '';
+  if (!codes.length) { box.innerHTML = '<p class="dim">No pairing codes.</p>'; return; }
+  box.innerHTML = codes.map(c => '<div class="pal-row">' +
+      '<div class="pal-row-main">' + (c.device_name
+        ? 'Used by <strong>' + escapeHtml(c.device_name) + '</strong> <span class="mono dim">' + escapeHtml(c.device_fqdn || '') + '</span>'
+        : escapeHtml(c.label || 'Any one PC')) + ' ' + (PAL_CODE_STATES[c.state] || escapeHtml(c.state)) +
+      (c.device_name && c.label ? '<div class="dim">' + escapeHtml(c.label) + '</div>' : '') +
+      '<div class="dim">' + escapeHtml(palPolicySummary(c.policy)) + ' · expires ' + formatDateTime(c.expires_at) + '</div></div>' +
+      '<div class="pal-row-actions">' + (c.state === 'unused'
+        ? '<button class="btn btn-ghost btn-sm" data-action="revokePalCode" data-id="' + escapeHtml(c.id) + '">Revoke</button>' : '') +
+      '</div></div>').join('');
+}
+
+// Requests waiting for approval: a count on the sidebar link, a banner, and a toast when new ones arrive.
+let palPendingSeen = null;
+
+function showPalPendingCount(count) {
+  const badge = document.getElementById('palPendingCount');
+  if (!badge) return;
+  badge.textContent = count;
+  badge.classList.toggle('hidden', count === 0);
+  document.getElementById('palPendingBanner').classList.toggle('hidden', count === 0);
+  document.getElementById('palPendingBannerText').textContent = count === 1
+    ? 'A Windows PC is waiting for your approval of a certificate request.'
+    : count + ' certificate requests from Windows PCs are waiting for your approval.';
+  if (palPendingSeen !== null && count > palPendingSeen) {
+    toast((count - palPendingSeen === 1 ? 'New certificate request' : (count - palPendingSeen) + ' new certificate requests') +
+      ' waiting for your approval');
+  }
+  palPendingSeen = count;
+}
+
+async function checkPalPending() {
+  if (!document.getElementById('palPendingCount') || document.hidden) return;
+  try {
+    showPalPendingCount((await (await api('/api/pal/requests?status=pending')).json()).length);
+  } catch (_e) { /* signed out or locked: try again next time */ }
+}
+
+async function showPalAdd() {
+  const select = document.getElementById('palCa');
+  const cas = await (await api('/api/ca')).json();
+  select.innerHTML = cas.map(c => '<option value="' + c.id + '"' + (c.algorithm === 'ed25519' ? ' disabled' : '') + '>' +
+    escapeHtml(c.name) + (c.algorithm === 'ed25519' ? ' (Ed25519: Windows can\'t use it)' : '') + '</option>').join('');
+  const usable = cas.find(c => c.algorithm !== 'ed25519' && c.id === currentCAId) || cas.find(c => c.algorithm !== 'ed25519');
+  if (!usable) { toast('Create an ECDSA or RSA certificate authority first', 'error'); return; }
+  select.value = String(usable.id);
+  document.getElementById('palLabel').value = '';
+  document.getElementById('palAllowRemote').checked = false;
+  document.getElementById('palServerUrl').value = window.location.origin;
+  document.getElementById('palAddForm').classList.remove('hidden');
+  document.getElementById('palCodeResult').classList.add('hidden');
+  onPalCaChange(null, select);
+  showModal('palAddModal');
+  document.getElementById('palCaseWeb').focus();
+}
+
+function onPalCaChange(_arg, el) {
+  const ca = caIndex.get(Number(el.value));
+  if (!ca) return;
+  document.getElementById('palDns').value = '*.' + ca.domain;
+  document.getElementById('palUsers').value = '*@' + ca.domain;
+}
+
+const palList = (id) => document.getElementById(id).value.split(',').map(v => v.trim()).filter(Boolean);
+
+async function createPalCode() {
+  const btn = document.getElementById('palCreateBtn');
+  const label = document.getElementById('palLabel').value.trim();
+  const body = {
+    label,
+    ca_id: Number(document.getElementById('palCa').value),
+    use_cases: {
+      'web-server': document.getElementById('palCaseWeb').value,
+      computer: document.getElementById('palCaseComputer').value,
+      user: document.getElementById('palCaseUser').value,
+      'code-signing': document.getElementById('palCaseCode').value,
+    },
+    dns: palList('palDns'),
+    users: palList('palUsers'),
+    max_days: Number(document.getElementById('palMaxDays').value),
+    expires_hours: Number(document.getElementById('palExpires').value),
+    server_url: document.getElementById('palServerUrl').value.trim(),
+    crl_dps: [...document.querySelectorAll('#palCrlDps input:checked')].map(i => i.value),
+    allow_remote: document.getElementById('palAllowRemote').checked,
+  };
+  btn.disabled = true;
+  try {
+    const data = await (await api('/api/pal/codes', { method: 'POST', body: JSON.stringify(body) })).json();
+    document.getElementById('palCodeFor').textContent = label ? ' (' + label + ')' : '';
+    document.getElementById('palCodeExpires').textContent = formatDateTime(data.expires_at);
+    document.getElementById('palCodeText').value = data.pairing_code;
+    // The address the admin typed: only an http(s) URL becomes a link (the server checks it too).
+    const link = document.getElementById('palCodeDownload');
+    const download = palDownloadUrl(body.server_url);
+    link.removeAttribute('href');
+    if (download) link.href = download;
+    link.textContent = download || body.server_url;
+    document.getElementById('palAddForm').classList.add('hidden');
+    document.getElementById('palCodeResult').classList.remove('hidden');
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function palDownloadUrl(serverUrl) {
+  try {
+    const url = new URL(palDownloadPath.replace(/^\/+/, ''), serverUrl.replace(/\/+$/, '') + '/');  // keeps a path prefix
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+async function copyPalCode() {
+  const text = document.getElementById('palCodeText');
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(text.value);  // only on https or localhost
+    copied = true;
+  } catch (_e) {
+    text.focus();
+    text.select();
+    copied = document.execCommand('copy');  // plain http on the LAN
+  }
+  if (!copied) { toast('Press Ctrl+C to copy the selected code', 'error'); return; }
+  const btn = document.getElementById('palCodeCopy');
+  btn.textContent = 'Copied ✓';
+  setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+}
+
+async function revokePalCode(_arg, el) {
+  if (!confirm('Revoke this pairing code? A PC can no longer use it to connect.')) return;
+  try {
+    await api('/api/pal/codes/' + encodeURIComponent(el.dataset.id) + '/revoke', { method: 'POST' });
+    toast('Pairing code revoked');
+  } catch (e) { toast(e.message, 'error'); }
+  loadPalDevices();
+}
+
+// ── Remote relay (docs/cert-generator-pal.md §8) ─────────────────
+
+function palAgo(seconds) {
+  if (!seconds) return 'never';
+  const s = Math.max(0, Math.round(Date.now() / 1000 - seconds));
+  return s < 90 ? s + ' s ago' : s < 5400 ? Math.round(s / 60) + ' min ago' : Math.round(s / 3600) + ' h ago';
+}
+
+async function loadPalRelay(live) {
+  const box = document.getElementById('palRelay');
+  if (!box) return;
+  try {
+    renderPalRelay(await (await api('/api/pal/relay' + (live ? '?live=1' : ''))).json());
+  } catch (e) {
+    box.innerHTML = '<p class="dim">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function renderPalRelay(s) {
+  const box = document.getElementById('palRelay');
+  const note = document.getElementById('palRelayNote');
+  const intro = '<p class="form-hint">PCs away from the LAN reach this server through a Cloudflare Worker that this server collects from: ' +
+    'nothing on your network opens to the internet, and requests stay end-to-end encrypted. Only PCs paired on the LAN, with remote allowed, get in.</p>';
+  if (!s.encryption || !s.cloudflare) {
+    note.textContent = 'not set up';
+    box.innerHTML = intro + '<p>' + (!s.encryption
+      ? 'Turn on <strong>database encryption</strong> first: the relay\'s keys are only ever stored encrypted. <button class="btn btn-ghost btn-sm" data-action="showEncryptionSettings">Encryption</button>'
+      : 'Connect <strong>Cloudflare</strong> first. <button class="btn btn-ghost btn-sm" data-action="showCloudflareSettings">Cloudflare</button>') + '</p>';
+    return;
+  }
+  if (!s.configured) {
+    note.textContent = 'not set up';
+    box.innerHTML = intro + '<p><button class="btn btn-primary" id="palRelaySetupBtn" data-action="palRelaySetup">Set up remote connection</button> ' +
+      '<span class="dim">Deploys a relay Worker on your workers.dev subdomain.</span></p>';
+    return;
+  }
+  const c = s.collector || {};
+  const healthy = c.last_ok && !c.last_error && (Date.now() / 1000 - c.last_ok) < 120;
+  note.textContent = healthy ? 'connected' : c.last_error ? 'not reaching the relay' : 'starting';
+  const w = s.worker;
+  box.innerHTML = intro +
+    '<div class="pal-relay-row"><span class="pal-dot ' + (healthy ? 'ok' : c.last_error ? 'bad' : 'wait') + '"></span>' +
+      '<span class="mono">' + escapeHtml(s.url) + '</span></div>' +
+    '<ul class="pal-list">' +
+      '<li>Server ' + (healthy ? 'collecting' : 'last collected') + ': ' + palAgo(c.last_ok) +
+        (c.last_error ? ' · <span class="pal-bad">' + escapeHtml(c.last_error) + '</span>' : '') + '</li>' +
+      '<li>' + s.remote_pcs + (s.remote_pcs === 1 ? ' PC' : ' PCs') + ' allowed · ' + (c.handled || 0) + ' requests answered' +
+        (c.dropped ? ' · ' + c.dropped + ' refused or unreadable' : '') + '</li>' +
+      (w ? '<li>' + (w.error ? '<span class="pal-bad">Worker: ' + escapeHtml(w.error) + '</span>'
+        : 'Worker: ' + w.queued + ' waiting for the server, ' + w.replies + ' replies waiting for PCs, ' + w.keys + ' PCs listed') + '</li>' : '') +
+    '</ul>' +
+    '<p><button class="btn btn-ghost btn-sm" data-action="palRelayCheck">Check now</button> ' +
+      '<button class="btn btn-ghost btn-sm" data-action="palRelayUpdate">Update Worker</button> ' +
+      '<button class="btn btn-danger btn-sm" data-action="palRelayTeardown">Tear down</button></p>';
+}
+
+async function palRelayCall(path, message) {
+  try {
+    renderPalRelay(await (await api('/api/pal/relay/' + path, { method: 'POST' })).json());
+    if (message) toast(message);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function palRelaySetup(_arg, el) {
+  el.disabled = true;
+  el.textContent = 'Setting up…';
+  await palRelayCall('setup', 'Remote connection set up. PCs allowed remote pick it up the next time they check in on the LAN');
+  loadPalDevices();
+}
+
+function palRelayCheck() { return loadPalRelay(true); }
+
+function palRelayUpdate() { return palRelayCall('update', 'Relay Worker updated'); }
+
+async function palRelayTeardown() {
+  if (!confirm('Tear down the remote connection? PCs away from the LAN can no longer reach this server until you set it up again.\n\n' +
+      'The relay key stays, so PCs keep working with a new relay without pairing again.')) return;
+  await palRelayCall('teardown', 'Remote connection removed');
+}
+
+async function togglePalRemote(_arg, el) {
+  const allowed = el.dataset.allowed === '1';
+  try {
+    await api('/api/pal/devices/' + encodeURIComponent(el.dataset.id) + '/remote', { method: 'POST', body: JSON.stringify({ allowed }) });
+    toast(allowed ? el.dataset.label + ' may use the remote connection' : el.dataset.label + ' can no longer use the remote connection');
+  } catch (e) { toast(e.message, 'error'); }
+  loadPalDevices();
+}
+
+async function deletePalDevice(_arg, el) {
+  const certs = Number(el.dataset.certs);
+  if (!confirm('Delete ' + el.dataset.label + ' from this list?' +
+    (certs ? '\n\nIt is disconnected first and its ' + certs + (certs === 1 ? ' certificate is' : ' certificates are') + ' revoked.' : '') +
+    '\n\nIts certificates stay listed under the CA. To use the PC again, pair it with a new code.')) return;
+  try {
+    const result = await (await api('/api/pal/devices/' + encodeURIComponent(el.dataset.id), { method: 'DELETE' })).json();
+    toast(result.revoked_certs ? 'Deleted; ' + result.revoked_certs + ' certificates revoked' : 'Deleted');
+  } catch (e) { toast(e.message, 'error'); }
+  loadPalDevices();
+  if (currentCAId) loadCerts(currentCAId);
+}
+
+async function revokePalDevice(_arg, el) {
+  const certs = Number(el.dataset.certs);
+  if (!confirm('Disconnect ' + el.dataset.label + '? It can no longer request or renew certificates.' +
+    (certs ? '\n\nIts ' + certs + (certs === 1 ? ' certificate is' : ' certificates are') + ' revoked too.' : ''))) return;
+  try {
+    const result = await (await api('/api/pal/devices/' + encodeURIComponent(el.dataset.id) + '/revoke', {
+      method: 'POST', body: JSON.stringify({ revoke_certs: true }),
+    })).json();
+    toast(result.revoked_certs ? 'Disconnected; ' + result.revoked_certs + ' certificates revoked' : 'Disconnected');
+  } catch (e) { toast(e.message, 'error'); }
+  loadPalDevices();
+  if (currentCAId) loadCerts(currentCAId);
+}
+
+async function approvePalRequest(_arg, el) {
+  try {
+    await api('/api/pal/requests/' + Number(el.dataset.id) + '/approve', { method: 'POST' });
+    toast('Approved. The PC installs it on its next check');
+  } catch (e) { toast(e.message, 'error'); }
+  loadPalDevices();
+  if (currentCAId) loadCerts(currentCAId);
+}
+
+async function denyPalRequest(_arg, el) {
+  const reason = prompt('Deny this request? You can tell the user why (optional):', '');
+  if (reason === null) return;
+  try {
+    await api('/api/pal/requests/' + Number(el.dataset.id) + '/deny', { method: 'POST', body: JSON.stringify({ reason }) });
+    toast('Request denied');
+  } catch (e) { toast(e.message, 'error'); }
+  loadPalDevices();
+}
+
 // Markup declares handlers as data-action / data-change / data-enter instead of
 // inline on* attributes, so the Content-Security-Policy can forbid inline script.
 // Handlers receive (data-arg, element, event); numeric args become numbers.
 const UI_ACTIONS = new Set([
+  'approvePalRequest',
+  'copyPalCode',
+  'createPalCode',
+  'copyPalDownloadUrl',
+  'deletePalDevice',
+  'palRelayCheck',
+  'palRelaySetup',
+  'palRelayTeardown',
+  'palRelayUpdate',
+  'togglePalRemote',
+  'openPalFromIssue',
+  'refreshCerts',
+  'denyPalRequest',
+  'loadPalDevices',
+  'loadPalDownload',
+  'palAllCrl',
+  'onPalCaChange',
+  'revokePalCode',
+  'revokePalDevice',
+  'showPalAdd',
+  'showPalDevices',
   'deleteCloudflareWorker',
   'downloadImportBundle',
   'downloadImportCRL',
@@ -2673,6 +3269,8 @@ const UI_ACTIONS = new Set([
   'copyCertPem',
   'copyCrlPem',
   'copyPublicKey',
+  'copySSHInstall',
+  'setSSHInstallOS',
   'createBackup',
   'createCA',
   'createIntermediate',

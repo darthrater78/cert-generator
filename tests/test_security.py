@@ -435,3 +435,26 @@ def test_schema_migration_from_older_database(tmp_path, monkeypatch):
         cert_cols = {r[1] for r in conn.execute("PRAGMA table_info(certificates)")}
     assert {"totp_secret", "totp_last_step", "session_version"} <= user_cols
     assert "revoked_at" in cert_cols
+
+
+def test_desktop_export_path_stays_in_downloads(tmp_path):
+    from app import web
+    from app.errors import UserError
+
+    base = str(tmp_path)
+    assert web._inside(base, "cert.pem") == str(tmp_path / "cert.pem")
+    for name in ("../escape.pem", "..", "/etc/passwd", "sub/../../x"):
+        with pytest.raises(UserError):
+            web._inside(base, name)
+
+
+def test_ssh_key_comment_must_be_one_line(admin_client):
+    """The comment ends the public key line pasted into authorized_keys; a line break in it
+    would authorize whatever follows as a second key."""
+    for comment in ("me@pc\nssh-ed25519 AAAA other", "tab\there", "x" * 201):
+        resp = admin_client.post("/api/ssh-keys", json={"name": "k", "algorithm": "ed25519", "comment": comment})
+        assert resp.status_code == 400, comment
+        resp = admin_client.post("/api/ssh-keys/import", json={"name": "k", "private_key": "x", "comment": comment})
+        assert resp.status_code == 400 and "Comment" in resp.get_json()["error"], comment
+    resp = admin_client.post("/api/ssh-keys", json={"name": "k", "algorithm": "ed25519", "comment": "anna’s laptop"})
+    assert resp.status_code == 201

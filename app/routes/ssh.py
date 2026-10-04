@@ -7,7 +7,8 @@ import re
 from flask import Blueprint, jsonify
 
 from .. import crypto_engine, db
-from ..web import deliver_export, error, json_body, reauth_rejection, recent_auth_required, str_field
+from ..web import (deliver_export, error, json_body, reauth_rejection, recent_auth_required, str_field,
+                   value_error)
 
 log = logging.getLogger("cert-generator")
 
@@ -35,6 +36,15 @@ def get_ssh_key(key_id: int):
     return jsonify(safe)
 
 
+COMMENT_ERROR = "Comment not allowed. Use up to 200 characters on one line"
+
+
+def _valid_comment(comment: str) -> bool:
+    """The comment ends the public key line, which is pasted into authorized_keys and into
+    the Authorize on a server command: a line break in it would start a second line there."""
+    return len(comment) <= 200 and comment.isprintable()
+
+
 @bp.post("/api/ssh-keys")
 def create_ssh_key():
     data = json_body()
@@ -45,6 +55,8 @@ def create_ssh_key():
 
     if not name or len(name) > 200:
         return error("A name is required (max 200 chars)")
+    if not _valid_comment(comment):
+        return error(COMMENT_ERROR)
     if algorithm not in crypto_engine.SSH_ALGORITHMS:
         return error(f"Invalid algorithm. Choose from: {crypto_engine.SSH_ALGORITHMS}")
     db.require_unlocked()
@@ -70,6 +82,8 @@ def import_ssh_key():
 
     if not name or len(name) > 200:
         return error("A name is required (max 200 chars)")
+    if not _valid_comment(comment):
+        return error(COMMENT_ERROR)
     if not private_key_text:
         return error("Private key is required")
 
@@ -78,7 +92,7 @@ def import_ssh_key():
             crypto_engine.parse_ssh_key(private_key_text, passphrase=passphrase)
         )
     except ValueError as e:
-        return error(str(e))
+        return value_error(e)
 
     if comment:
         public_bytes = public_bytes.rstrip() + b" " + comment.encode("utf-8") + b"\n"
@@ -129,7 +143,7 @@ def export_ssh_key(key_id: int):
             key["private_key"], fmt, passphrase=passphrase, original_passphrase=original_passphrase,
         )
     except ValueError as e:
-        return error(str(e))
+        return value_error(e)
     return deliver_export(export_data, f"{safe_name}-{filename}")
 
 

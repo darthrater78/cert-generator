@@ -84,7 +84,8 @@ def _core_checks(checks: _Checks, workdir: Path, export_dir: Path) -> None:
         _expect(cert.status_code == 201, f"issue cert: {cert.status_code}")
         export = client.post(f"/api/export/cert/{cert.get_json()['id']}", json={"format": "pkcs12", "password": "x"})  # nosec B105 - throwaway self-test database
         path = Path(export.get_json()["path"])
-        _expect(path.parent == export_dir and path.stat().st_size > 0, f"export path {path}")
+        # resolve(): Windows may name the same folder by its short (8.3) or long path
+        _expect(path.parent.resolve() == export_dir.resolve() and path.stat().st_size > 0, f"export path {path}")
         crl = client.get(f"/api/ca/{ca_id}/crl?days=30").get_json()
         _expect(bool(crl.get("next_update")), "CRL next_update missing")
         return "CA, certificate, PKCS#12 export, CRL"

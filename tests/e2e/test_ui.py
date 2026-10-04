@@ -373,6 +373,7 @@ def test_private_key_asks_to_confirm_after_trusted_device_sign_in(signed_in: Pag
     page.fill("#sshKeyName", "reauth-key")
     page.click("[data-action=generateSSHKey]")
     _toast(page, "SSH key generated")
+    page.wait_for_load_state("networkidle")  # the key list reloads after the toast; a request still in flight would get a 401
     # Sign in again as a trusted device, then drop the session: the next visit is
     # signed in by the device cookie alone, which doesn't count as a recent sign-in.
     page.context.clear_cookies()
