@@ -6,6 +6,34 @@ What changed in each release of Cert Generator and Cert Generator Pal. The [READ
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
 
+### v2.8.0 — 2026-10-04
+
+**Cert Generator Pal**: a Windows companion app that pairs a PC with your server once, then requests, installs and renews its own certificates. Also in this release: a one-line command to authorize an SSH key on a server, and the app's own colours. It gathers the eight `2.8.0-dev` pre-releases listed below.
+
+#### Docker
+- **Cert Generator Pal**, a Windows app served by this image at `/pal/CertGeneratorPal.exe` to PCs on your LAN. **Windows PCs** (sidebar) › **Add a PC** makes a one-time pairing code; the PC pastes it once and from then on requests, installs and renews certificates in one click. See [Cert Generator Pal](https://github.com/darthrater78/cert-generator#cert-generator-pal-windows-pcs)
+- **Keys are made on the PC and never leave it**: non-exportable, in the TPM when there is one. The server only sees certificate requests
+- **What a PC may request** is set per PC: **Web server**, **This computer**, **Me** and **Code signing**, each off, issued right away, or after your approval. Requests waiting for approval show a count in the sidebar and a banner
+- **IIS and Remote Desktop:** a Web server request can bind to an IIS site (every name, or one name via SNI) and to Remote Desktop; a PC that only needs RDP uses its This computer certificate. **Bind…** does the same for a certificate already installed. A renewal moves every binding of the old certificate to the new one before removing it
+- **Windows PCs** page: the Pal download card with the LAN link and SHA-256, each PC with what it may request, its CRL profiles and what is installed on it right now, and disconnect or delete (its certificates are revoked)
+- **CRL profiles:** each PC is told which CRL addresses it may use and picks one before requesting; the Pal can make the PC answer a CRL address itself, like the endpoint-hosted .zip
+- **Remote connection:** **Set up** deploys a relay Worker on your Cloudflare account so paired PCs away from the LAN can request and renew, while nothing on your network opens to the internet. Requests are end-to-end encrypted to a key only this server holds, and it is off per PC until you allow it. Pairing stays LAN only. Needs database encryption on and Cloudflare connected
+- **CGNAT addresses count as LAN** (`100.64.0.0/10`), so PCs and servers on overlays such as Tailscale or Zscaler can pair and request
+- The Pal always carries the server's version; the Windows PCs page and the Pal warn when a PC runs one from another release
+- **Issue Certificate** recommends the Pal for Windows PCs, and the **This server** CRL option is now **Cert Generator (LAN)**
+- **SSH keys — Authorize on a server:** the Public key card has a one-line command to paste on the server, for **Linux / macOS** or **Windows** (PowerShell, OpenSSH Server). It sets the permissions sshd requires, adds the key once (safe to paste again), and on Windows puts an administrator's key in `administrators_authorized_keys`
+- **Look:** status colours are bottle green, oxblood and sienna (sage, madder and terracotta on the dark themes); dialogs, menus and popovers have a hard offset shadow; the accent presets are named pigments. A custom accent you already chose is kept
+- Issued certificates: a **Refresh** button
+- Fixed: on the dark themes, a Delete button's hover text is readable; a library's error text could reach the browser on a failed export, SSH key import, encryption change or restore
+- An SSH key's comment must fit on one line (up to 200 characters), since it ends the line that goes into `authorized_keys`
+
+#### Windows EXE
+- The same **Authorize on a server** command for SSH keys, new look, **Refresh** button and fixes as Docker. Cert Generator Pal needs the Docker version
+
+#### Internal
+- CI builds and tests the Pal on Windows; the README shows a banner for the newest dev build while one is ahead of the latest release
+- `DESIGN.md` describes the app's visual identity; the version history moved from the README to `CHANGELOG.md`
+
 ### v2.8.0-dev.8 — 2026-10-04
 
 Eighth pre-release: **authorize an SSH key on a server with one pasted line**, and the app's own colours in place of generic defaults. Not for production.

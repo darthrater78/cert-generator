@@ -363,9 +363,9 @@ the admin set.
 3. **Pal core + UI** — connect, four use cases, trust, renew, store audit. ✅
    (v2.8.0-dev.1 – dev.3, then real-PC feedback rounds)
 4. **Bindings** — IIS and RDP. ✅ built (v2.8.0-dev.6); ⏳ real-PC test
-5. **CI / release, README, screenshots, real-PC test.** ⏳ (pre-releases
-   `2.8.0-dev.N` from the branch; README and screenshots done; real-PC test
-   ongoing)
+5. **CI / release, README, screenshots, real-PC test.** ✅ released as v2.8.0
+   after pre-releases `2.8.0-dev.1` – `dev.8`; ⏳ real-PC test of the bindings,
+   relay and This computer for RDP continues after the release
 6. **Remote relay** (§8, R1–R4). ✅ in v2.8.0-dev.5
 
 ## 8. Remote relay (built in v2.8.0-dev.4 – dev.5)
