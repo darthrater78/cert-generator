@@ -9,7 +9,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from flask import Blueprint, g, jsonify, session
+from flask import Blueprint, g, jsonify, request, session
 
 from .. import crypto_engine, db, legacy_exports, state
 from ..errors import UserError
@@ -20,6 +20,7 @@ from ..web import (
     error,
     json_body,
     new_password_error,
+    parse_int,
     recent_auth_required,
     str_field,
     value_error,
@@ -275,3 +276,12 @@ def delete_legacy_exports():
     log.warning("Deleted %d legacy export files from %s (%d failed)",
                 deleted, legacy_exports.legacy_export_dir(), len(failed))
     return jsonify({"ok": not failed, "deleted": deleted, "failed": failed})
+
+
+# ── Activity log ────────────────────────────────────────────────────
+
+@bp.get("/api/activity")
+def list_activity():
+    """What was done, when and by whom (app/activity.py), newest first."""
+    limit = parse_int(request.args.get("limit"), 500)
+    return jsonify(db.list_activity(max(1, min(limit or 500, 2000))))

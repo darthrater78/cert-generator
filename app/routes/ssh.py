@@ -108,8 +108,9 @@ def import_ssh_key():
 
 @bp.delete("/api/ssh-keys/<int:key_id>")
 def delete_ssh_key(key_id: int):
+    key = next((k for k in db.list_ssh_keys() if k["id"] == key_id), None)
     if db.delete_ssh_key(key_id):
-        log.info("SSH key deleted: id=%d", key_id)
+        log.info("SSH key deleted: %s", key["name"] if key else key_id)
         return jsonify({"ok": True})
     return error("SSH key not found", 404)
 
@@ -144,6 +145,7 @@ def export_ssh_key(key_id: int):
         )
     except ValueError as e:
         return value_error(e)
+    log.info("SSH private key exported: %s (%s)", key["name"], fmt)
     return deliver_export(export_data, f"{safe_name}-{filename}")
 
 
@@ -156,4 +158,5 @@ def get_ssh_private_key(key_id: int):
     priv = key["private_key"]
     if isinstance(priv, bytes):
         priv = priv.decode("utf-8")
+    log.info("SSH private key copied: %s", key["name"])
     return jsonify({"private_key": priv})

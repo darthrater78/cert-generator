@@ -82,6 +82,9 @@ internal static class LocalIdentity
         return pattern.StartsWith("*@", StringComparison.Ordinal) ? user + pattern[1..] : pattern;
     }
 
+    /// <summary>The Windows account this process runs as (PC01\alice), as the server records who asked.</summary>
+    public static string AccountName => Environment.UserDomainName + "\\" + Environment.UserName;
+
     public static string DisplayName => UserNameEx(NativeMethods.NameDisplay) is { Length: > 0 } name ? name : Environment.UserName;
 
     private static string? UserNameEx(int format)

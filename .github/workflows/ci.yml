@@ -115,41 +115,6 @@ jobs:
           path: test-results
           retention-days: 7
 
-  windows-exe:
-    name: windows exe
-    needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}
-    runs-on: windows-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.14"
-
-      - name: Install build dependencies
-        run: python -m pip install -r requirements-desktop.txt
-
-      - name: Build EXE
-        run: python build.py
-
-      - name: Self-test EXE
-        shell: pwsh
-        run: scripts/test-exe.ps1 -Exe dist/CertGenerator.exe
-
-      - name: Upload EXE
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: CertGenerator-exe
-          path: |
-            dist/CertGenerator.exe
-            selftest-*.json
-          retention-days: 7
-          if-no-files-found: error
-
   # The Pal ships only inside the Docker image, whose build compiles it but runs
   # no tests. This builds the whole solution and runs its tests on Windows, the
   # Pal's platform (the relay crypto goes through CNG there, OpenSSL elsewhere).

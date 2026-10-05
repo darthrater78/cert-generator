@@ -11,14 +11,14 @@ internal sealed class RequestDialog : Form
     private readonly string _useCase;
     private readonly TextBox? _names;
     private readonly NumericUpDown _lifetime;
-    private readonly BindPanel? _bind;
+    private readonly TextBox _note = new() { Width = 460, MaxLength = 200 };
 
     public Dictionary<string, object> Names { get; private set; } = [];
 
     public int LifetimeDays => (int)_lifetime.Value;
 
-    /// <summary>Where to use a web server or This computer certificate once installed; null for other kinds or nothing chosen.</summary>
-    public BindRequest? Bind => _bind?.Request is { IsEmpty: false } bind ? bind : null;
+    /// <summary>What the person typed for the admin (who is asking, what it is for); null when left empty.</summary>
+    public string? Note => _note.Text.Trim() is { Length: > 0 } note ? note : null;
 
     public RequestDialog(string useCase, DeviceState state, Policy policy, bool rootTrusted)
     {
@@ -47,16 +47,12 @@ internal sealed class RequestDialog : Form
                     MaximumSize = new Size(460, 0),
                     Font = new Font(Font, FontStyle.Bold),
                 });
-                _bind = new BindPanel(() => [state.Fqdn], [], iis: false);
-                layout.Controls.Add(_bind);
                 break;
             case UseCases.WebServer:
                 layout.Controls.Add(new Label { Text = "Names (one per line). The first is the main one:", AutoSize = true });
                 _names = new TextBox { Multiline = true, Width = 460, Height = 90, ScrollBars = ScrollBars.Vertical, Text = state.Fqdn };
                 layout.Controls.Add(_names);
                 layout.Controls.Add(Hint("Allowed by your admin: " + string.Join(", ", policy.Dns)));
-                _bind = new BindPanel(() => SplitNames(_names.Text), []);
-                layout.Controls.Add(_bind);
                 break;
             case UseCases.User:
                 layout.Controls.Add(new Label { Text = "Your sign-in name (UPN):", AutoSize = true });
@@ -78,6 +74,12 @@ internal sealed class RequestDialog : Form
         lifetimeRow.Controls.Add(_lifetime);
         lifetimeRow.Controls.Add(new Label { Text = $"days (your admin allows up to {max})", AutoSize = true, Margin = new Padding(6, 6, 0, 0) });
         layout.Controls.Add(lifetimeRow);
+
+        layout.Controls.Add(new Label { Text = "Note for your admin (optional):", AutoSize = true, Margin = new Padding(0, 10, 0, 0) });
+        layout.Controls.Add(_note);
+        layout.Controls.Add(Hint(policy.Mode(useCase) == "approve"
+            ? "Shown with your request, so your admin knows who is asking and why."
+            : "Kept with the request on the server."));
 
         if (!rootTrusted)
         {
@@ -119,9 +121,11 @@ internal sealed class RequestDialog : Form
 
     private static string Describe(string useCase) => useCase switch
     {
-        UseCases.Computer => "A machine certificate for Wi-Fi, VPN, 802.1X and Remote Desktop. Installed in the computer's Personal store.",
-        UseCases.WebServer => "A TLS certificate for IIS sites, with the extra names they need. It can serve Remote Desktop too. Installed in the computer's Personal store.",
-        UseCases.User => "A certificate for you: client authentication and smart card logon. Installed in your Personal store.",
+        UseCases.Computer => "This PC's own certificate. It works at once for Wi-Fi, VPN and 802.1X sign-in and for identifying this computer (device posture checks). "
+                             + "Remote Desktop, WinRM or a website use it after you bind it. Installed in the computer's Personal store.",
+        UseCases.WebServer => "A TLS certificate for names beyond this PC's own: a website, an alias, a gateway's public name. "
+                              + "It does nothing until you bind it to what serves those names. Installed in the computer's Personal store.",
+        UseCases.User => "A certificate for you: client authentication for Wi-Fi, VPN and websites that ask for one. Installed in your Personal store.",
         _ => "A code-signing certificate for scripts and programs. Installed in your Personal store.",
     };
 
@@ -141,10 +145,6 @@ internal sealed class RequestDialog : Form
                 if (dns.Count == 0)
                 {
                     MessageBox.Show(this, "Enter at least one name.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-                if (_bind is not null && !_bind.ValidateFor(this, Text))
-                {
                     return;
                 }
                 Names = new Dictionary<string, object> { ["dns"] = dns };

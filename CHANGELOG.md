@@ -6,6 +6,109 @@ What changed in each release of Cert Generator and Cert Generator Pal. The [READ
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
 
+### v2.9.0 — 2026-10-05
+
+**Binding is its own step, with your approval per role**: a certificate is requested first and put to work second, for Remote Desktop, WinRM, IIS, RD Gateway and the RD Connection Broker. Also in this release: **edit what a connected PC may request**, an **activity log**, user certificates that behave on **shared PCs**, and a **standards pass** over every certificate and CRL the app signs. It gathers the three `2.9.0-dev` pre-releases listed below.
+
+#### Docker
+- **Binding is separate from requesting.** In the Pal, a request only gets the certificate; **Bind…** on a certificate in the computer's store opens one dialog with a row per role: **Remote Desktop**, **WinRM over HTTPS**, an **IIS site**, **RD Gateway** and the **RD Connection Broker**. A role is offered when the certificate's names fit it and the PC runs it. After a new machine certificate is installed the Pal says what it already does (Wi-Fi, VPN, 802.1X, device identity such as posture checks) and offers the dialog. See [Binding a certificate](https://github.com/darthrater78/cert-generator#binding-a-certificate)
+- **You decide what a PC may bind.** **Add a PC** and **Edit** have a switch per role: **Off**, **Allow** or **Needs my approval**. A bind that needs approval waits on the **Windows PCs** page beside certificate requests. PCs paired earlier allow every role, as before
+- **A bind can be removed** for Remote Desktop, WinRM and an IIS site. A renewal moves every bind to the new certificate
+- **Changed:** a **Web server** request for nothing but the PC's own name, on a PC that already holds a **This computer** certificate, is refused and points to Bind… on that certificate
+- **Certificates issued on this page are bound the same way:** **Issue Certificate** and **Export / install** for Windows say that issuing only creates the certificate, and where to bind it
+- **Edit a connected PC:** **Windows PCs › Edit** changes the certificate kinds, approvals, allowed names, longest lifetime and bind switches without a new pairing code
+- **Activity log:** **Tools › Activity log** lists sign-ins, certificates issued, revoked, deleted and exported (and whether a private key left with them), PCs connecting, approvals and settings changes. Keys, passwords and pairing codes are never recorded
+- **Who asked, and on which account:** each request and bind carries the Windows account the Pal ran as (reported, not attested) and an optional one-line **note for the admin**
+- **Shared PCs:** a **Me** or code-signing certificate lives in one person's own store, so only the account that asked for it can report it missing
+- **Remove and Revoke in the Pal:** **Remove** takes a certificate off the PC and has the server revoke it; **Revoke** revokes and leaves it installed. Offline, the revocation is kept and sent at the next check-in
+- **Where a PC's keys live** shows on the server and in the Pal: **TPM**, **Software key** or **Not reported** (reported by the Pal, not TPM attestation)
+- **Timestamps** on certificates: when each was issued and when it was revoked
+- **Pal window:** a seal with your CA's name and the PC's domain, a certificate list that sorts by any column and always fits its width, a **Key** column, and **Help** and **Troubleshooting** links
+- **Clearer wording throughout:** **Endpoint-hosted** CRL everywhere, **Publish now** and **Delete Worker** on a CA's Cloudflare Worker, **Export / install** asks **Install the root CA as well?**, and the guide is the **Certificate Guide**
+- **Standards — CRLs:** every CRL now carries its **CRL Number** and **Authority Key Identifier**, as RFC 5280 requires
+- **Standards — lifetimes:** a certificate or intermediate CA never outlives the CA that signs it (its expiry is capped there), an expired CA signs nothing, and new certificates are dated 5 minutes back so a PC whose clock runs behind doesn't refuse them as not yet valid
+- **Standards — key usage** follows the key: an ECDSA or Ed25519 certificate no longer carries Key Encipherment, and an **Email (S/MIME)** certificate on an ECDSA key gets Key Agreement so mail can be encrypted to it
+- **Names are checked before signing:** SANs must be real DNS names or IP addresses with at most one leading wildcard; an international name is issued in its `xn--` form; an e-mail address and a UPN must look like one; a CA's name and domain are at most 64 characters; an intermediate CA can't take its issuer's name. A host name over 64 characters is issued with its first label as the common name and the full name in the SAN (this includes a Pal PC with a long name)
+- **Issue Certificate** says when a choice will be refused somewhere: **Ed25519** (browsers and Windows can't use it for a server) and a server lifetime over **825 days** (Apple devices refuse it)
+- **Changed:** the **Me** tile no longer mentions smart card sign-in; signing in to Windows with the certificate is not supported
+- **Fix:** a Me certificate's sign-in name (UPN) is no longer also written as an e-mail address
+- **Fix:** a certificate that checks revocation at its CA's Cloudflare Worker was labelled **External**
+- **Fix:** issuing with a name the certificate can't carry answered with a server error instead of saying what was wrong
+
+#### Internal
+- `binds` in a PC's policy; `POST /api/pal/v1/binds`, `GET /api/pal/v1/binds/<id>`, `POST /api/pal/v1/revoke`; `GET /api/pal/binds` with `…/approve` and `…/deny`; `PUT /api/pal/devices/<id>/policy`; `GET /api/activity`
+- New table `pal_binds`; new columns `pal_requests.windows_user`, `pal_requests.note`, `certificates.pal_user`, `certificates.pal_binds`
+- The standalone Windows EXE is maintenance only and is not built for this release: v2.8.0 stays its current build. CI no longer builds it on every change
+- A release's notes name the last *released* build of a deliverable it doesn't ship, never a pre-release
+
+### v2.9.0-dev.3 — 2026-10-05
+
+Third pre-release of 2.9: **binding is its own step, with your approval per role**, user certificates behave on **shared PCs**, requests say **who asked**, and the Pal's window is tidied. Not for production: none of the Pal's new screens have run on a real Windows PC yet.
+
+#### Docker
+- **Binding is separate from requesting.** A request only gets the certificate. **Bind…** on a certificate in the computer's store opens one dialog with a row per role: Remote Desktop, WinRM over HTTPS, an IIS site, RD Gateway and the RD Connection Broker. After a new machine certificate is installed the Pal says what it already does (a This computer certificate works at once for Wi-Fi, VPN, 802.1X and device identity such as posture checks), lists what needs a bind, and offers the dialog
+- **You decide what a PC may bind.** **Add a PC** and **Edit** have a switch per role: **Off**, **Allow** or **Needs my approval**. The Pal asks the server before every bind. One that needs approval waits on the **Windows PCs** page beside certificate requests and is applied by the Pal's **Check again**. PCs paired earlier allow every role, as before
+- **Changed:** a role is offered when the certificate's names fit it, whichever kind it is. Remote Desktop and WinRM need a certificate that carries the PC's own name; this replaces 2.9.0-dev.1's rule that Remote Desktop is only for This computer certificates
+- **Changed:** a **Web server** request for nothing but the PC's own name, on a PC that already holds a **This computer** certificate, is refused and offers Bind… on that certificate. Ask for a Web server certificate when you need other names
+- **A bind can be removed** for Remote Desktop (Windows goes back to its self-signed certificate), WinRM (the HTTPS listener is removed) and an IIS site (its https binding is removed). RD Gateway and the broker roles can only be given another certificate
+- **Certificates issued on this page are bound the same way.** **Issue Certificate** now says, for Web Server and Computer certificates, that issuing only creates the certificate, and **Export / install** for Windows ends with a step pointing to the Pal's **Bind…** on that PC (or the service's own settings). A certificate installed in the computer's store with its key can be bound in the Pal like one the Pal requested
+- **What uses each certificate** shows in the Pal's Notes column, now including RD Gateway and the broker roles and binds still waiting for approval, and on the server on the PC's card and the certificate's row
+- **Shared PCs:** a **Me** or code-signing certificate lives in one person's own store, so only the Windows account that asked for it can report it missing. Someone else signing in and checking no longer frees its name or gets it revoked when a new one is issued
+- **Who asked:** each request and bind carries the Windows account the Pal ran as (reported by the Pal, not attested) and an optional one-line **note for the admin**. Both show in the waiting list; the account stays on the issued certificate and in the activity log
+- **Remove and Revoke in the Pal:** **Remove** takes a certificate off the PC and has the server revoke it in the same step when this PC was issued it; **Revoke** revokes and leaves it installed. With the server unreachable the revocation is kept on the PC and sent at the next check-in. When the server revokes a certificate, the Pal shows a notice; when one disappears from a PC another way, the server marks it **no longer on the PC, not revoked** and never revokes on absence alone
+- **Pal (served by this image) — window:** a seal in the upper right carries your CA's name and the PC's domain; the certificate list sorts by any column, always fits its width instead of scrolling sideways, and is given room at the default window size (it could shrink to a sliver); **Help** and **Troubleshooting** links in the footer
+- **Changed:** the **Me** tile no longer mentions smart card sign-in. The certificate is for client authentication (Wi-Fi, VPN, websites); signing in to Windows with it is not supported
+- **Fix:** key usage follows the key. An ECDSA or Ed25519 certificate no longer carries Key Encipherment, which only an RSA key can do. This applies to certificates issued in the web UI as well as to the Pal's
+- **Fix:** a Me certificate's sign-in name (UPN) is no longer also written as an e-mail address; an e-mail address goes in only when the request sends one
+- **Fix:** the Pal flagged a Web server and a This computer certificate with the same name as an **Older copy**; it now takes the same name and the same purposes
+- **Fix:** when the administrator step is answered with a different account's password, the Pal says so instead of "ended without a result"
+
+#### Internal
+- `binds` in a PC's policy; `POST /api/pal/v1/binds`, `GET /api/pal/v1/binds/<id>`, `POST /api/pal/v1/revoke`; `GET /api/pal/binds` with `…/approve` and `…/deny`; `windows_user` and `note` on `requests`; `windows_user` and `binds` on `status`
+- New table `pal_binds`; new columns `pal_requests.windows_user`, `pal_requests.note`, `certificates.pal_user`, `certificates.pal_binds`
+- The Pal keeps waiting binds in `pending-binds.json` and the RD Gateway and broker binds it made in `binds.json`, both in its machine folder
+
+### v2.9.0-dev.2 — 2026-10-05
+
+Second pre-release of 2.9, from the first run on a real Windows PC: **edit what a connected PC may request**, an **activity log**, **timestamps** on certificates, and the Pal shows **where its keys live**. Not for production.
+
+#### Docker
+- **Edit a connected PC:** **Windows PCs › Edit** changes what a PC may request (certificate kinds and their approval, allowed names, longest lifetime) without a new pairing code. The PC picks it up at its next check-in; certificates it already holds are not touched, and remote access keeps its own switch. CRL profiles are still fixed when a PC pairs
+- **Activity log:** **Tools › Activity log** lists what was done, when and by whom: sign-ins and failed ones, certificates issued, revoked, deleted and exported (and whether a private key left with them), PCs connecting and what they asked for, approvals and settings changes. The newest 5,000 entries are kept; keys, passwords and pairing codes are never recorded. Entries start with this version
+- **Timestamps:** each certificate row shows when it was issued and when it was revoked; the Windows PCs page shows when each of a PC's certificates was issued
+- **Where a PC's key lives** moved next to the certificate's name (**key on the PC · TPM**), instead of inside the Key on PC chip
+- **Pal (served by this image):** a **Key storage** line under Connectivity says whether this PC's keys live in its **TPM** or in Windows' software key store, and the certificate list has a **Key** column. Tile subtitles are shorter so they no longer cut off
+- **Fix:** a certificate that checks revocation at its CA's Cloudflare Worker was labelled **External** in the CRL column; it now reads **Cloudflare Worker**, or **Not published** when the last publish failed
+- Private-key exports (CA, certificate, install bundle, SSH key) are now written to the server log, with what was exported
+
+#### Internal
+- CI no longer builds the standalone Windows EXE on every change; the release workflow still builds and self-tests it for a release whose entry has a Windows EXE section. The README marks the EXE as maintenance only: no new features after v2.8.0, security patches when needed
+- `PUT /api/pal/devices/<id>/policy`, `GET /api/activity`, and `key_storage` on the certificates in the Pal's `device` reply
+- The container smoke test no longer fails when `grep` exits before `curl` has finished
+
+### v2.9.0-dev.1 — 2026-10-05
+
+First pre-release of 2.9: **clearer wording throughout**, the Pal's **TPM state shown in the app**, and **more things a certificate can be bound to** on a PC. Not for production: the Pal's new binds and its key-storage reporting have not run on a real Windows PC yet.
+
+#### Docker
+- **Export / install** asks what you are deciding: **Install the root CA as well?**, with **Root CA + certificate** or **Certificate only**. The steps read **Easiest · one .zip that installs itself**, then **By hand · 1. download the files** and **2. run these commands**
+- **Where a PC's keys live is shown:** the **Windows PCs** page marks each PC's device key and each of its certificates **TPM**, **Software key** or **Not reported**, and a CA's certificate list shows it beside **Key on PC**. The Pal reports this when it makes a key; it is not TPM attestation. Web server and computer certificates issued before this version stay **Not reported** until they are renewed
+- **Pal (served by this image) — Bind…:** a **This computer** certificate serves **Remote Desktop** and, new, **WinRM over HTTPS** (adds or switches the listener on port 5986; Windows Firewall is not changed). A **Web server** certificate serves an **IIS site** and, new, **RD Gateway** (restarts its service) and the **RD Connection Broker**'s publishing and single sign-on certificates. Roles the PC doesn't run aren't offered, and a renewal moves all of them to the new certificate
+- **Changed:** a Web server certificate is no longer offered for Remote Desktop; use the This computer certificate. One already bound that way keeps working and still moves on renewal
+- **One name for each thing:** **Endpoint-hosted** CRL everywhere (was also "self-hosted" and "On each PC"); a CA's Cloudflare Worker has **Publish now** and **Delete Worker** (were Push now and Tear down); the remote connection has **Remove**; the guide is the **Certificate Guide**, and its Quick Start names the buttons as they are
+- **CA export note:** **Trust on a machine** (certificate only, which is also what PCs behind TLS inspection need) and **Signing device / CA move** (certificate and key, for the one device that signs as this CA)
+- **Add a PC:** **Issuing CA**, **Pairing code works for**, **Signed-in user** (the Pal calls it "Me"), and a line saying what a CRL profile is
+- Plainer text on the lock screen, the empty state, the CRL address checkbox and the restore confirmation, which now names the backup file
+
+#### Windows EXE
+- The same wording changes in the desktop app: Export / install, the CA export note, the Certificate Guide, the lock screen, the empty state and the restore confirmation
+- The Cert Generator server CRL option reads **Cert Generator server (not in the desktop app)**
+
+#### Internal
+- The Pal sends `key_storage` with `enroll` and `requests`, and `device_key_storage` and `keys` with `status`; the server keeps it on the device, the request and the certificate
+- The Pal's WinRM, RD Gateway and RD Connection Broker binds run a fixed Windows PowerShell script from the elevated helper, with modules loaded from Windows' own folder only
+- README screenshots retaken where the screens changed
+
 ### v2.8.0 — 2026-10-04
 
 **Cert Generator Pal**: a Windows companion app that pairs a PC with your server once, then requests, installs and renews its own certificates. Also in this release: a one-line command to authorize an SSH key on a server, and the app's own colours. It gathers the eight `2.8.0-dev` pre-releases listed below.

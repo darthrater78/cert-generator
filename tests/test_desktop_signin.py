@@ -84,7 +84,7 @@ def test_server_mode_ignores_a_username(admin_client):
 
 
 def test_guide_pages(admin_client):
-    for kind, title in (("cert", "Certificate Import Guide"), ("ssh", "SSH Key Guide")):
+    for kind, title in (("cert", "Certificate Guide"), ("ssh", "SSH Key Guide")):
         resp = admin_client.get(f"/guide/{kind}")
         assert resp.status_code == 200
         assert title in resp.get_data(as_text=True)

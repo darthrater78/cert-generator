@@ -54,13 +54,13 @@ def test_certificate_exports_download(signed_in: Page):
     _create_ca(page, "e2e.test")
 
     # The default is the public certificate only, which is all an endpoint needs to trust the CA.
-    expect(page.locator("#caExportNote")).to_contain_text("Trusted Endpoint")
+    expect(page.locator("#caExportNote")).to_contain_text("Trust on a machine")
     name, data = _download(page, "[data-action=exportCA]")
     assert name == "ca-e2e.test_Root_CA-certificate.der" and 300 < len(data) < 2000
 
     page.select_option("#caExportFormat", "pkcs12")
     page.select_option("#caExportPart", "both")
-    expect(page.locator("#caExportNote")).to_contain_text("TLS Inspection / CA Move")
+    expect(page.locator("#caExportNote")).to_contain_text("Signing device / CA move")
     expect(page.locator("#caExportNote")).to_contain_text("Never install it on endpoints")
     # No default password: the field starts empty, and the old default is refused.
     expect(page.locator("#caExportPassword")).to_have_value("")
@@ -411,6 +411,28 @@ def test_import_help_lists_commands_per_os(signed_in: Page):
     page = signed_in
     _create_ca(page, "import.test")
     page.click("[data-action=showIssueCert]")
+    # A server certificate still has to be bound where it is used; the dialog says so for those kinds only.
+    bind_note = page.locator("#templateBindNote")
+    expect(bind_note).to_contain_text("Issuing only creates the certificate")
+    page.select_option("#certTemplate", "user")
+    expect(bind_note).to_be_hidden()
+    page.select_option("#certTemplate", "web-server")
+    expect(bind_note).to_be_visible()
+    # What would refuse the certificate is said before it is issued: Ed25519, and a server lifetime Apple won't take.
+    compat = page.locator("#certCompatNote")
+    expect(compat).to_be_hidden()
+    page.select_option("#certAlgorithm", "ed25519")
+    expect(compat).to_contain_text("Ed25519")
+    page.select_option("#certAlgorithm", "ecdsa-p256")
+    page.fill("#certLifetime", "3")
+    page.dispatch_event("#certLifetime", "change")
+    expect(compat).to_contain_text("825 days")
+    page.select_option("#certTemplate", "code-signing")
+    expect(compat).to_be_hidden()
+    page.select_option("#certTemplate", "web-server")
+    page.fill("#certLifetime", "1")
+    page.dispatch_event("#certLifetime", "change")
+    expect(compat).to_be_hidden()
     page.fill("#certCN", "host.import.test")
     page.click("[data-action=issueCert]")
     _toast(page, "issued")
@@ -424,7 +446,8 @@ def test_import_help_lists_commands_per_os(signed_in: Page):
     steps = page.locator("#importPopSteps")
     # Nothing to run until the trust question is answered.
     expect(page.locator("#importPopQuestion")).to_have_text(
-        "Has import.test Root CA already been imported on this machine?")
+        "Install the root CA import.test Root CA as well? A machine needs it once: "
+        "skip it where import.test Root CA is already trusted.")
     expect(steps).to_be_empty()
     expect(page.locator("#importPopCopy")).to_have_count(0)
     expect(page.locator("#importPopAdmin")).to_be_hidden()
@@ -432,6 +455,10 @@ def test_import_help_lists_commands_per_os(signed_in: Page):
     expect(steps).to_contain_text("Cert:\\LocalMachine\\My")
     expect(steps).not_to_contain_text("Cert:\\LocalMachine\\Root")
     expect(page.locator("#importPopCopy")).to_be_enabled()
+    # Installed is not in use: the last step points to Bind… and the README's explanation.
+    expect(steps).to_contain_text("choose Bind… on this certificate")
+    expect(steps.locator("a", has_text="What binding does")).to_have_attribute(
+        "href", "https://github.com/darthrater78/cert-generator#binding-a-certificate")
     # A web server certificate goes to the Local Machine store: PowerShell must run elevated.
     expect(page.locator("#importPopAdmin")).to_contain_text("Run PowerShell as Administrator")
     page.click("#importPop [data-action=setImportTrusted][data-arg=no]")

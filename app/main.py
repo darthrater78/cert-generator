@@ -16,7 +16,7 @@ WINDOW_OPTIONS = {"width": 1100, "height": 720, "min_size": (800, 500), "maximiz
 
 
 GUIDE_WINDOW_OPTIONS = {"width": 960, "height": 760, "min_size": (480, 400)}
-GUIDE_TITLES = {"cert": "Certificate Import Guide", "ssh": "SSH Key Guide"}
+GUIDE_TITLES = {"cert": "Certificate Guide", "ssh": "SSH Key Guide"}
 
 
 class Api:

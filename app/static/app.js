@@ -374,7 +374,15 @@ async function loadCerts(caId) {
   tbody.innerHTML = certs.map(c => {
     const tmplLabel = TEMPLATE_LABELS[c.template] || c.template || 'Web Server';
     return '<tr' + (c.revoked ? ' class="revoked"' : '') + '>' +
-      '<td><button type="button" class="cert-link" data-action="viewCert" data-arg="' + c.id + '">' + escapeHtml(c.common_name) + '</button></td>' +
+      '<td><button type="button" class="cert-link" data-action="viewCert" data-arg="' + c.id + '">' + escapeHtml(c.common_name) + '</button>' +
+        '<div class="cert-when">Issued ' + formatDateTime(c.created_at) +
+          (c.revoked && c.revoked_at ? ' · revoked ' + formatDateTime(c.revoked_at) : '') +
+          (c.has_key ? '' : ' · key on the PC ' + palKeyChip(c.pal_key_storage)) +
+          (c.pal_user ? ' · asked by <span class="pal-names">' + escapeHtml(c.pal_user) + '</span>' : '') +
+          (palUsedBy(c.pal_binds) ? ' · used by ' + escapeHtml(palUsedBy(c.pal_binds)) : '') +
+          (!c.has_key && c.pal_present === 0 && !c.revoked
+            ? ' <span class="cert-gone" title="The PC\'s last check-in no longer found this certificate in its stores. It is not revoked: revoke it if it should no longer be trusted.">no longer on the PC, not revoked</span>' : '') +
+          '</div></td>' +
       '<td>' + escapeHtml(tmplLabel) + '</td>' +
       '<td class="sans" title="' + escapeHtml(c.san_domains) + '">' + escapeHtml(c.san_domains) + '</td>' +
       '<td>' + escapeHtml(algoShort(c.algorithm)) + '</td>' +
@@ -386,7 +394,7 @@ async function loadCerts(caId) {
         (c.has_key
           ? '<button type="button" class="import-chip" data-action="toggleImportHelp" data-arg="' + c.id + '" aria-haspopup="dialog" aria-expanded="false">' +
             (c.revoked ? 'Export ▾' : 'Export / install ▾') + '</button> '
-          : '<span class="key-chip" title="Requested by Cert Generator Pal: the private key never left that PC">Key on PC</span> ') +
+          : '<span class="key-chip" title="Requested by Cert Generator Pal: the private key was made on that PC and never left it, so there is nothing to export here.">Key on PC</span> ') +
         (!c.revoked ? '<button class="btn btn-ghost btn-sm" data-action="revokeCert" data-arg="' + c.id + '\">Revoke</button> ' : '<span></span>') +
         '<button class="btn btn-danger btn-sm" data-action="deleteCert" data-arg="' + c.id + '\">Delete</button>' +
       '</div></td></tr>';
@@ -484,9 +492,30 @@ async function createIntermediate() {
   }
 }
 
+// What will refuse the certificate as it is set up now. Nothing is blocked: a private CA may have reasons.
+const APPLE_MAX_SERVER_DAYS = 825;
+
+function updateCertCompatNote() {
+  const tmpl = document.getElementById('certTemplate').value;
+  const notes = [];
+  if (document.getElementById('certAlgorithm').value === 'ed25519') {
+    notes.push(MACHINE_TEMPLATES.has(tmpl)
+      ? 'Ed25519: browsers and Windows can\'t use an Ed25519 server certificate. Choose ECDSA or RSA unless the client is known to support it.'
+      : 'Ed25519: Windows and many applications can\'t use an Ed25519 certificate. Choose ECDSA or RSA unless the client is known to support it.');
+  }
+  if (MACHINE_TEMPLATES.has(tmpl) && lifetimeDaysFromInputs('certLifetime', 'certLifetimeUnit') > APPLE_MAX_SERVER_DAYS) {
+    notes.push('Lifetime: iPhone, iPad and Mac refuse a server certificate valid for more than ' + APPLE_MAX_SERVER_DAYS + ' days (2 years is fine).');
+  }
+  document.getElementById('certCompatNote').textContent = notes.join(' ');
+  document.getElementById('certCompatRow').classList.toggle('hidden', !notes.length);
+}
+
 function onTemplateChange() {
   const tmpl = document.getElementById('certTemplate').value;
   document.getElementById('templateDesc').textContent = TEMPLATE_DESCS[tmpl] || '';
+  // A server certificate still has to be bound on the machine that uses it; the others are picked up from the store.
+  document.getElementById('templateBindNote').classList.toggle('hidden', !MACHINE_TEMPLATES.has(tmpl));
+  updateCertCompatNote();
   const showEmail = tmpl === 'email' || tmpl === 'user';
   document.getElementById('emailRow').style.display = showEmail ? '' : 'none';
   if (!showEmail) document.getElementById('certEmail').value = '';
@@ -565,6 +594,8 @@ const CRL_DP_LABELS = {
   placeholder: ['badge-expired', 'Endpoint-hosted', 'Endpoint-hosted: no server answers this address. Each machine needs the CRL: ' +
     'use the install .zip (Export / install ▾), which on Windows also answers the address locally, or import an exported CRL.'],
   server_live: ['badge-active', 'Cert Generator (LAN)', 'Served by this Cert Generator server, which keeps the CRL current automatically.'],
+  cloudflare_live: ['badge-active', 'Cloudflare Worker', 'Served by this CA\'s Cloudflare Worker, which the app keeps current on every revocation.'],
+  cloudflare_pending: ['badge-expired', 'Not published', 'Points at this CA\'s Cloudflare Worker, but the last publish failed or hasn\'t happened yet. Use Publish now on the CA page.'],
   server_pending: ['badge-expired', 'Not published', 'Points at this server, but no CRL is published yet. It publishes once the database is unlocked.'],
   other: ['badge-algo', 'External', 'Points at an address this app does not manage.'],
 };
@@ -572,6 +603,7 @@ const CRL_DP_LABELS = {
 function crlDpKey(dp) {
   if (!dp) return 'none';
   if (dp.kind === 'server') return dp.published ? 'server_live' : 'server_pending';
+  if (dp.kind === 'cloudflare') return dp.published ? 'cloudflare_live' : 'cloudflare_pending';
   return CRL_DP_LABELS[dp.kind] ? dp.kind : 'other';
 }
 
@@ -847,7 +879,7 @@ async function revokeCert(certId) {
   selectCA(currentCAId);
   // Served and Worker CRLs are republished by the app; anything else needs a CRL imported by hand.
   if (result.cloudflare && !result.cloudflare.pushed) {
-    toast('Certificate revoked, but the Cloudflare push failed: ' + (result.cloudflare.error || 'unknown error'), 'error');
+    toast('Certificate revoked, but publishing the CRL to Cloudflare failed: ' + (result.cloudflare.error || 'unknown error'), 'error');
     if (result.download_crl && confirm(result.note + '\n\nDownload the updated CRL now?')) await exportCRL();
   } else if (!result.download_crl) {
     toast('Certificate revoked. ' + result.note);
@@ -906,7 +938,7 @@ function renderCrlView(c) {
   ];
   if (c.out_of_date) {
     general.push(['Status', '<span class="badge badge-expired">Out of date</span> ' + (live
-      ? '<span class="dim">The Worker doesn\'t list every revocation yet. Push now on the CA page, or wait a minute if you just pushed.</span>'
+      ? '<span class="dim">The Worker doesn\'t list every revocation yet. Use Publish now on the CA page, or wait a minute if you just published.</span>'
       : '<span class="dim">Revocations since this CRL was signed publish once the database is unlocked.</span>')]);
   }
   const entries = c.entries.length
@@ -1091,6 +1123,10 @@ function importWindows(cert, root, intermediates, files, withTrust) {
     steps,
     hint: 'Export ' + (withTrust ? 'each CA as DER (Certificate Only) and ' : '') + 'this certificate as PKCS12 (.pfx)' +
       (cert.template === 'code-signing' ? ' and DER (Certificate Only)' : '') + ' first.',
+    // Installing puts it in the store; a service only uses it once it is bound.
+    after: machine ? 'Installed is not yet in use. To serve Remote Desktop, WinRM, an IIS site or a Remote Desktop Services role with it, ' +
+      'open Cert Generator Pal on that PC and choose Bind… on this certificate (the PC must be paired with this CA), ' +
+      'or set it in the service\'s own settings. Wi-Fi, VPN and 802.1X pick it up from the store with no further step.' : '',
   };
 }
 
@@ -1179,8 +1215,10 @@ function importHelp(cert, os, withTrust) {
     cert: { file: linuxServer ? files.fullchain + ' + ' + files.key : files.pfx,
       how: linuxServer ? 'Export twice: Full Chain (cert + CA), then Private Key Only, both PEM.'
         : 'Export as PKCS12 (.pfx), Certificate + Key' + (cert.template === 'code-signing' && os === 'windows' ? '; and once more as DER, Certificate Only.' : '.') } };
-  help.question = 'Has ' + root.name + (intermediates.length ? ' and its intermediate' + (intermediates.length > 1 ? 's' : '') : '') +
-    ' already been imported on this machine?';
+  help.question = 'Install the root CA ' + root.name + (intermediates.length ? ' and its intermediate' + (intermediates.length > 1 ? 's' : '') : '') +
+    ' as well? A machine needs ' + (intermediates.length ? 'them' : 'it') + ' once: skip ' + (intermediates.length ? 'them' : 'it') +
+    ' where ' + root.name + ' is already trusted.';
+  help.withCaLabel = (intermediates.length ? 'CAs' : 'Root CA') + ' + certificate';
   return help;
 }
 
@@ -1209,12 +1247,13 @@ function renderImportHelp() {
   if (!help) { closeImportHelp(); return; }
   document.getElementById('importPopTitle').textContent = help.title;
   document.getElementById('importPopQuestion').textContent = help.question;
+  document.getElementById('importPopWithCa').textContent = help.withCaLabel;
   document.querySelectorAll('#importPopAsk button').forEach((b) => {
     b.setAttribute('aria-pressed', String(answered && (b.dataset.arg === 'yes') === importState.trusted));
   });
   // Nothing to copy until the trust question is answered: the steps depend on it.
   document.getElementById('importPopWhere').textContent = answered ? help.where : '';
-  document.getElementById('importPopHint').textContent = !answered ? 'Answer the question to see the steps.'
+  document.getElementById('importPopHint').textContent = !answered ? 'Choose one to see the steps.'
     : help.steps.length ? '' : help.hint;
   const adminEl = document.getElementById('importPopAdmin');
   adminEl.textContent = answered ? help.admin || '' : '';
@@ -1224,6 +1263,7 @@ function renderImportHelp() {
   const stepsEl = document.getElementById('importPopSteps');
   const blocks = answered ? [importBundleBlock(cert, help), importFilesBlock(help.files, cert)] : [];
   if (help.steps.length) blocks.push(importCommandsBlock(help.steps));
+  if (answered && help.after) blocks.push(importAfterBlock(help.after));
   stepsEl.replaceChildren(...blocks);
   importState.steps = help.steps;
   positionImportHelp();
@@ -1234,11 +1274,29 @@ function importCommandsText(steps) {
   return steps.map((s, i) => '# ' + (i + 1) + '. ' + s.label + '\n' + s.code).join('\n\n') + '\n';
 }
 
+// What still has to happen after the install, with where the README explains it.
+function importAfterBlock(text) {
+  const wrap = document.createElement('div');
+  const label = document.createElement('div');
+  label.className = 'step';
+  label.textContent = 'Then · put it to work';
+  const note = document.createElement('p');
+  note.className = 'import-admin';
+  note.textContent = text + ' ';
+  const link = document.createElement('a');
+  link.href = 'https://github.com/darthrater78/cert-generator#binding-a-certificate';
+  link.dataset.action = 'openExternalLink';
+  link.textContent = 'What binding does ↗';
+  note.append(link);
+  wrap.append(label, note);
+  return wrap;
+}
+
 function importCommandsBlock(steps) {
   const wrap = document.createElement('div');
   const label = document.createElement('div');
   label.className = 'step';
-  label.textContent = 'Then · run these commands, in order';
+  label.textContent = 'By hand · 2. run these commands, in order';
   const box = document.createElement('div');
   box.className = 'code-box';
   const pre = document.createElement('pre');
@@ -1263,7 +1321,7 @@ function importBundleBlock(cert, help) {
   const linuxServer = os === 'linux' && MACHINE_TEMPLATES.has(cert.template);
   const label = document.createElement('div');
   label.className = 'step';
-  label.textContent = 'Option · everything in one .zip';
+  label.textContent = 'Easiest · one .zip that installs itself';
   const what = document.createElement('p');
   const run = document.createElement('code');
   run.textContent = os === 'windows' ? 'install.cmd' : 'sh install.sh';
@@ -1337,7 +1395,7 @@ function importFilesBlock(files, cert) {
   block.className = 'import-files';
   const label = document.createElement('div');
   label.className = 'step';
-  label.textContent = 'Or · get the files one by one (into Downloads)';
+  label.textContent = 'By hand · 1. download the files (into Downloads)';
   block.append(label);
   for (const ca of files.cas) {
     const btn = document.createElement('button');
@@ -1444,7 +1502,7 @@ async function copyImportCommands() {
   const text = importCommandsText(importState.steps);
   try {
     await navigator.clipboard.writeText(text);
-    toast('Import commands copied');
+    toast('Install commands copied');
   } catch (e) {
     toast('Copy failed, select the commands and copy them by hand', 'error');
   }
@@ -1799,7 +1857,8 @@ async function restoreBackup() {
   const pw = document.getElementById('restorePassword').value;
   if (!fileInput.files.length) { toast('Select a backup file', 'error'); return; }
   if (!pw) { toast('Password is required', 'error'); return; }
-  if (!confirm('This will REPLACE ALL existing data. Are you sure?')) return;
+  if (!confirm('Restore from ' + fileInput.files[0].name + '?\n\nEvery CA, certificate and SSH key here now is deleted ' +
+    'and replaced with what the backup holds. This cannot be undone.')) return;
 
   const file = fileInput.files[0];
   const arrayBuffer = await file.arrayBuffer();
@@ -1852,8 +1911,8 @@ async function checkEncryptionStatus() {
       const usernameEl = document.getElementById('unlockUsername');
       usernameEl.classList.toggle('hidden', !status.username_required);
       document.getElementById('unlockSubtitle').textContent = status.username_required
-        ? 'Sign in to decrypt your private keys'
-        : 'Enter your master password to decrypt private keys';
+        ? 'Sign in to unlock the database'
+        : 'Enter your master password to unlock the database';
       document.getElementById('unlockOverlay').classList.remove('hidden');
       (status.username_required ? usernameEl : document.getElementById('unlockPassword')).focus();
       return false;
@@ -1902,7 +1961,7 @@ function showUnlockRecovery(useRecovery) {
   document.getElementById('unlockByRecovery').classList.toggle('hidden', !useRecovery);
   document.getElementById('unlockSubtitle').textContent = useRecovery
     ? 'Enter your recovery key and choose a new master password'
-    : needsUsername ? 'Sign in to decrypt your private keys' : 'Enter your master password to decrypt private keys';
+    : needsUsername ? 'Sign in to unlock the database' : 'Enter your master password to unlock the database';
   document.getElementById(useRecovery ? 'recoverKey' : needsUsername ? 'unlockUsername' : 'unlockPassword').focus();
 }
 
@@ -2412,7 +2471,7 @@ async function renderCloudflarePanel(ca) {
   const w = ca.cloudflare || { deployed: false };
   // Shown next to the title, so a folded card still says where things stand.
   document.getElementById('cfCardSummary').textContent = !w.deployed ? 'not deployed'
-    : w.push_error ? 'last push failed' : w.exists === false ? 'missing in Cloudflare' : 'published';
+    : w.push_error ? 'last publish failed' : w.exists === false ? 'missing in Cloudflare' : 'published';
   const conn = await loadCloudflareConnection();
   if (currentCAId !== ca.id) return;  // another CA opened meanwhile
   if (!w.deployed) {
@@ -2428,7 +2487,7 @@ async function renderCloudflarePanel(ca) {
       '<button class="btn btn-ghost btn-sm" data-action="copyCloudflareUrl">Copy</button>'],
     ['Worker', '<span class="mono">' + escapeHtml(w.worker) + '</span>' +
       (w.custom_domain ? ' <span class="dim">on ' + escapeHtml(w.hostname) + '</span>' : '')],
-    ['Last push', w.push_error
+    ['Last published', w.push_error
       ? '<span class="badge badge-expired">Failed</span> <span class="dim">' + escapeHtml(w.push_error) +
         '. Retried every hour.</span>'
       : '<span class="badge badge-active">Published</span> <span class="dim">' + escapeHtml(formatDateTime(w.pushed_at)) + '</span>'],
@@ -2436,7 +2495,7 @@ async function renderCloudflarePanel(ca) {
   ];
   if (w.exists === false) {
     rows.push(['In Cloudflare', '<span class="badge badge-expired">Not found</span> <span class="dim">The Worker was ' +
-      'deleted outside this app. Tear down to clear it here, then deploy a new one.</span>']);
+      'deleted outside this app. Delete it here to clear it, then deploy a new one.</span>']);
   }
   if (!w.account_matches) {
     rows.push(['Account', '<span class="badge badge-expired">Not connected</span> <span class="dim">This Worker is in a ' +
@@ -2445,8 +2504,8 @@ async function renderCloudflarePanel(ca) {
   panel.innerHTML = '<dl class="cert-detail">' + rows.map(([k, v]) => '<dt>' + k + '</dt><dd>' + v + '</dd>').join('') +
     '</dl><div class="cf-actions">' + cfButton('testCloudflareWorker', 'Test', 'primary') +
     cfButton('refreshCloudflarePanel', 'Refresh') +
-    cfButton('viewLiveCloudflareCrl', 'View live CRL') + cfButton('pushCloudflareWorker', 'Push now') +
-    cfButton('teardownCloudflareWorker', 'Tear down', 'danger') + '</div><div id="cfTestResult" class="cf-test"></div>';
+    cfButton('viewLiveCloudflareCrl', 'View live CRL') + cfButton('pushCloudflareWorker', 'Publish now') +
+    cfButton('teardownCloudflareWorker', 'Delete Worker', 'danger') + '</div><div id="cfTestResult" class="cf-test"></div>';
 }
 
 async function copyCloudflareUrl() {
@@ -2709,7 +2768,7 @@ async function deleteUnlinkedCloudflareWorkers() {
 async function pushCloudflareWorker() {
   try {
     const w = await (await api('/api/ca/' + currentCAId + '/cloudflare/push', { method: 'POST' })).json();
-    if (w.push_error) toast('Push failed: ' + w.push_error, 'error');
+    if (w.push_error) toast('Publishing failed: ' + w.push_error, 'error');
     else toast('CRL published to Cloudflare');
     await selectCA(currentCAId);
   } catch (e) {
@@ -2723,11 +2782,11 @@ async function teardownCloudflareWorker() {
     ? w.certificates + (w.certificates === 1 ? ' certificate names' : ' certificates name') + ' this Worker\'s address. ' +
       'Clients will no longer be able to check them for revocation, and a new Worker gets a different address.\n\n'
     : '';
-  if (!confirm('Tear down this CA\'s Cloudflare Worker?\n\n' + warning + 'This deletes the Worker' +
+  if (!confirm('Delete this CA\'s Cloudflare Worker?\n\n' + warning + 'This deletes the Worker' +
     (w.custom_domain ? ' and its custom domain' : '') + ' in Cloudflare.')) return;
   try {
     const r = await (await api('/api/ca/' + currentCAId + '/cloudflare', { method: 'DELETE' })).json();
-    toast('Worker removed' + (r.affected ? '; ' + r.affected + ' certificates lost their CRL address' : ''));
+    toast('Worker deleted' + (r.affected ? '; ' + r.affected + ' certificates lost their CRL address' : ''));
     await loadCloudflareConnection(true);
     await selectCA(currentCAId);
   } catch (e) {
@@ -2738,7 +2797,7 @@ async function teardownCloudflareWorker() {
 // ── Event delegation ────────────────────────────────────────────────
 // ── Cert Generator Pal: Windows PCs ────────────────────────────────
 
-const PAL_USE_CASES = { 'web-server': 'Web server', computer: 'This computer', user: 'Me', 'code-signing': 'Code signing' };
+const PAL_USE_CASES = { 'web-server': 'Web server', computer: 'This computer', user: 'Signed-in user', 'code-signing': 'Code signing' };
 const PAL_MODES = { off: 'Off', auto: 'Issue right away', approve: 'Needs approval' };
 const PAL_CODE_STATES = {
   unused: '<span class="badge badge-active">Not used yet</span>',
@@ -2756,10 +2815,32 @@ function palNames(names) {
 
 // What the PC holds now, by kind, from its own store audit. Certificates it no longer
 // holds (removed, revoked, expired) are only counted.
+// Where the PC says a key lives. The Pal reports it when it makes the key; nothing attests it.
+const PAL_KEY_STORAGE = {
+  tpm: ['TPM', 'pal-chip-on', 'The Pal made this key in the PC\'s TPM chip: it can\'t be exported or copied off the PC. Reported by the Pal, not attested.'],
+  software: ['Software key', 'pal-chip-approve', 'The PC has no usable TPM, so the Pal made this key in Windows\' software key store. ' +
+    'It is marked non-exportable, but an administrator on the PC can still extract it. Reported by the Pal, not attested.'],
+};
+
+// What the PC says uses a certificate now (a JSON list kept on its row); '' when nothing or unreadable.
+function palUsedBy(raw) {
+  if (!raw) return '';
+  try { const uses = JSON.parse(raw); return Array.isArray(uses) ? uses.join(', ') : ''; } catch (_e) { return ''; }
+}
+
+function palKeyChip(storage) {
+  const [label, cls, title] = PAL_KEY_STORAGE[storage] ||
+    ['Not reported', '', 'This Pal hasn\'t said where the key lives. Pals from before this version don\'t report it; update the Pal on the PC.'];
+  return '<span class="pal-chip pal-key-chip ' + cls + '" title="' + escapeHtml(title) + '">' + label + '</span>';
+}
+
 function palCertSummary(d) {
   const live = d.certs.filter(c => c.state === 'installed' || c.state === 'unchecked');
   const rows = live.map(c =>
-    '<li>' + escapeHtml(PAL_USE_CASES[c.use_case] || c.use_case) + ' <span class="dim mono pal-name">' + escapeHtml(c.name) + '</span>' +
+    '<li>' + escapeHtml(PAL_USE_CASES[c.use_case] || c.use_case) + ' <span class="dim mono pal-name">' + escapeHtml(c.name) + '</span> ' + palKeyChip(c.key_storage) +
+    (c.asked_by ? ' <span class="dim">asked by <span class="pal-names">' + escapeHtml(c.asked_by) + '</span></span>' : '') +
+    (c.used_for && c.used_for.length ? ' <span class="dim">used by ' + escapeHtml(c.used_for.join(', ')) + '</span>' : '') +
+    (c.issued_at ? ' <span class="dim">issued ' + formatDate(c.issued_at) + '</span>' : '') +
     (c.state === 'unchecked' ? ' <span class="dim">(not checked yet)</span>' : '') + '</li>');
   const gone = d.certs.filter(c => !live.includes(c));
   if (gone.length) {
@@ -2772,7 +2853,7 @@ function palCertSummary(d) {
   return rows.length ? '<ul class="pal-list">' + rows.join('') + '</ul>' : '<span class="dim">Nothing yet</span>';
 }
 
-const PAL_CRL_LABELS = { server: 'Cert Generator (LAN)', cloudflare: 'Cloudflare', placeholder: 'Self-hosted', none: 'No CRL' };
+const PAL_CRL_LABELS = { server: 'Cert Generator (LAN)', cloudflare: 'Cloudflare', placeholder: 'Endpoint-hosted', none: 'No CRL' };
 
 function palUseCaseChips(policy) {
   const chips = Object.entries(PAL_USE_CASES)
@@ -2875,12 +2956,13 @@ async function loadPalDevices() {
   const boxes = ['palPending', 'palDevices', 'palCodes'].map(id => document.getElementById(id));
   const btn = document.getElementById('palRefreshBtn');
   btn.disabled = true;
-  let codes, devices, pending;
+  let codes, devices, pending, binds;
   try {
-    [codes, devices, pending] = await Promise.all([
+    [codes, devices, pending, binds] = await Promise.all([
       api('/api/pal/codes').then(r => r.json()),
       api('/api/pal/devices').then(r => r.json()),
       api('/api/pal/requests?status=pending').then(r => r.json()),
+      api('/api/pal/binds?status=pending').then(r => r.json()),
     ]);
   } catch (e) {
     boxes.forEach(b => { b.innerHTML = '<p class="dim">' + escapeHtml(e.message) + '</p>'; });
@@ -2888,29 +2970,53 @@ async function loadPalDevices() {
   } finally {
     btn.disabled = false;
   }
-  renderPalPending(pending);
+  renderPalPending(pending, binds);
   renderPalDevices(devices);
   renderPalCodes(codes);
   loadPalRelay(false);
-  showPalPendingCount(pending.length);
+  showPalPendingCount(pending.length + binds.length);
 }
 
-function renderPalPending(rows) {
-  document.getElementById('palPendingBox').classList.toggle('hidden', rows.length === 0);
-  document.getElementById('palPendingNote').textContent = rows.length + (rows.length === 1 ? ' request' : ' requests');
-  document.getElementById('palPending').innerHTML = rows.map(r =>
+// Who asked and what they typed, shared by certificate requests and bind requests.
+function palAskedBy(r) {
+  return ' · Windows account: ' + (r.windows_user ? '<span class="pal-names" title="The account the Pal ran as when it asked. Reported by the Pal, not attested.">' +
+    escapeHtml(r.windows_user) + '</span>' : 'not reported');
+}
+
+function palNoteLine(r) {
+  return r.note ? '<div class="pal-note" title="Typed at the PC by whoever asked.">Note: ' + escapeHtml(r.note) + '</div>' : '';
+}
+
+function renderPalPending(rows, binds) {
+  const total = rows.length + binds.length;
+  document.getElementById('palPendingBox').classList.toggle('hidden', total === 0);
+  document.getElementById('palPendingNote').textContent = total + (total === 1 ? ' request' : ' requests');
+  document.getElementById('palPending').innerHTML = binds.map(b =>
+    '<div class="pal-row">' +
+      '<div class="pal-row-main"><strong>Bind</strong> <span class="pal-names">' + escapeHtml(b.cert_name) + '</span> to <strong>' +
+        escapeHtml(b.target_label) + '</strong>' + (b.detail ? ' <span class="dim">(' + escapeHtml(b.detail) + ')</span>' : '') +
+        '<div class="dim">' + escapeHtml(b.device_label) + (b.hostname ? ' (' + escapeHtml(b.hostname) + ')' : '') + palAskedBy(b) +
+        ' · asked ' + formatDateTime(b.created_at) + '</div>' + palNoteLine(b) + '</div>' +
+      '<div class="pal-row-actions"><button class="btn btn-ghost btn-sm" data-action="denyPalBind" data-id="' + b.id + '">Deny</button>' +
+        '<button class="btn btn-primary btn-sm" data-action="approvePalBind" data-id="' + b.id + '">Approve</button></div>' +
+    '</div>').join('') + rows.map(r =>
     '<div class="pal-row">' +
       '<div class="pal-row-main"><strong>' + escapeHtml(PAL_USE_CASES[r.use_case] || r.use_case) + '</strong> for ' +
         '<span class="pal-names">' + escapeHtml(palNames(r.names)) + '</span>' +
         '<div class="dim">' + escapeHtml(r.device_label) + (r.hostname ? ' (' + escapeHtml(r.hostname) + ')' : '') +
+        palAskedBy(r) +
         ' · ' + r.lifetime_days + ' days' + (r.crl_dp ? ' · CRL profile: ' + escapeHtml(PAL_CRL_LABELS[r.crl_dp] || r.crl_dp) : '') +
-        ' · asked ' + formatDateTime(r.created_at) + '</div></div>' +
+        ' · asked ' + formatDateTime(r.created_at) + '</div>' +
+        palNoteLine(r) + '</div>' +
       '<div class="pal-row-actions"><button class="btn btn-ghost btn-sm" data-action="denyPalRequest" data-id="' + r.id + '">Deny</button>' +
         '<button class="btn btn-primary btn-sm" data-action="approvePalRequest" data-id="' + r.id + '">Approve</button></div>' +
     '</div>').join('');
 }
 
+let palDeviceIndex = new Map();
+
 function renderPalDevices(devices) {
+  palDeviceIndex = new Map(devices.map(d => [d.id, d]));
   const box = document.getElementById('palDevices');
   const connected = devices.filter(d => !d.revoked_at).length;
   document.getElementById('palDevicesNote').textContent = devices.length
@@ -2929,11 +3035,13 @@ function renderPalDevices(devices) {
           '<div class="dim mono">' + escapeHtml(d.fqdn || d.hostname) + '</div>' +
           '<div class="dim">' + escapeHtml(d.os) + (d.last_seen ? ' · seen ' + formatDateTime(d.last_seen) : '') +
             (d.pal_version ? ' · Pal v' + escapeHtml(d.pal_version) : '') + '</div>' +
+          '<div class="dim pal-device-key">Device key ' + palKeyChip(d.key_storage) + '</div>' +
           (d.version_matches ? '' : '<div class="pal-drift">Pal v' + escapeHtml(d.pal_version) + ' on this PC, server v' +
             escapeHtml(document.body.dataset.appVersion) + ': features may not match. Update the Pal on the PC from this server.</div>') +
           '</div>' +
         '<div class="pal-row-actions">' +
-          (d.revoked_at ? '' : '<button class="btn btn-ghost btn-sm" data-action="revokePalDevice"' + data + '>Disconnect</button>') +
+          (d.revoked_at ? '' : '<button class="btn btn-ghost btn-sm" data-action="editPalDevice"' + data + '>Edit</button>' +
+            '<button class="btn btn-ghost btn-sm" data-action="revokePalDevice"' + data + '>Disconnect</button>') +
           '<button class="btn btn-danger btn-sm" data-action="deletePalDevice"' + data + '>Delete</button></div>' +
       '</div>' +
       '<div class="pal-device-grid">' +
@@ -2971,10 +3079,10 @@ function showPalPendingCount(count) {
   badge.classList.toggle('hidden', count === 0);
   document.getElementById('palPendingBanner').classList.toggle('hidden', count === 0);
   document.getElementById('palPendingBannerText').textContent = count === 1
-    ? 'A Windows PC is waiting for your approval of a certificate request.'
-    : count + ' certificate requests from Windows PCs are waiting for your approval.';
+    ? 'A Windows PC is waiting for your approval of a request.'
+    : count + ' requests from Windows PCs are waiting for your approval.';
   if (palPendingSeen !== null && count > palPendingSeen) {
-    toast((count - palPendingSeen === 1 ? 'New certificate request' : (count - palPendingSeen) + ' new certificate requests') +
+    toast((count - palPendingSeen === 1 ? 'New request' : (count - palPendingSeen) + ' new requests') +
       ' waiting for your approval');
   }
   palPendingSeen = count;
@@ -2983,7 +3091,11 @@ function showPalPendingCount(count) {
 async function checkPalPending() {
   if (!document.getElementById('palPendingCount') || document.hidden) return;
   try {
-    showPalPendingCount((await (await api('/api/pal/requests?status=pending')).json()).length);
+    const [requests, binds] = await Promise.all([
+      api('/api/pal/requests?status=pending').then(r => r.json()),
+      api('/api/pal/binds?status=pending').then(r => r.json()),
+    ]);
+    showPalPendingCount(requests.length + binds.length);
   } catch (_e) { /* signed out or locked: try again next time */ }
 }
 
@@ -2995,6 +3107,8 @@ async function showPalAdd() {
   const usable = cas.find(c => c.algorithm !== 'ed25519' && c.id === currentCAId) || cas.find(c => c.algorithm !== 'ed25519');
   if (!usable) { toast('Create an ECDSA or RSA certificate authority first', 'error'); return; }
   select.value = String(usable.id);
+  setPalEditMode(null);
+  setPalBindFields(null);
   document.getElementById('palLabel').value = '';
   document.getElementById('palAllowRemote').checked = false;
   document.getElementById('palServerUrl').value = window.location.origin;
@@ -3012,7 +3126,76 @@ function onPalCaChange(_arg, el) {
   document.getElementById('palUsers').value = '*@' + ca.domain;
 }
 
+// The bind switches in the Add / Edit a PC dialog: policy key -> select id.
+const PAL_BIND_FIELDS = { rdp: 'palBindRdp', winrm: 'palBindWinrm', iis: 'palBindIis', 'rd-gateway': 'palBindGateway', 'rd-broker': 'palBindBroker' };
+
+function setPalBindFields(binds) {
+  Object.entries(PAL_BIND_FIELDS).forEach(([key, id]) => { document.getElementById(id).value = (binds || {})[key] || 'auto'; });
+}
+
 const palList = (id) => document.getElementById(id).value.split(',').map(v => v.trim()).filter(Boolean);
+
+// The Add a PC dialog, turned into the editor for one connected PC (or back, with null).
+function setPalEditMode(device) {
+  const form = document.getElementById('palAddForm');
+  form.dataset.editId = device ? device.id : '';
+  document.getElementById('palAddTitle').textContent = device ? 'Edit ' + device.label : 'Add a Windows PC';
+  document.getElementById('palCreateBtn').textContent = device ? 'Save changes' : 'Create pairing code';
+  document.getElementById('palEditHint').classList.toggle('hidden', !device);
+  form.querySelectorAll('.pal-new-only').forEach(el => el.classList.toggle('hidden', Boolean(device)));
+}
+
+function editPalDevice(_arg, el) {
+  const d = palDeviceIndex.get(el.dataset.id);
+  if (!d) return;
+  setPalEditMode(d);
+  const cases = d.policy.use_cases || {};
+  document.getElementById('palCaseWeb').value = cases['web-server'] || 'off';
+  document.getElementById('palCaseComputer').value = cases.computer || 'off';
+  document.getElementById('palCaseUser').value = cases.user || 'off';
+  document.getElementById('palCaseCode').value = cases['code-signing'] || 'off';
+  setPalBindFields(d.policy.binds);
+  document.getElementById('palDns').value = (d.policy.dns || []).join(', ');
+  document.getElementById('palUsers').value = (d.policy.users || []).join(', ');
+  document.getElementById('palMaxDays').value = d.policy.max_days;
+  document.querySelectorAll('#palCrlDps input').forEach(i => { i.checked = (d.policy.crl_dps || []).includes(i.value); });
+  document.getElementById('palAddForm').classList.remove('hidden');
+  document.getElementById('palCodeResult').classList.add('hidden');
+  showModal('palAddModal');
+  document.getElementById('palCaseWeb').focus();
+}
+
+async function savePalDevice(id, body) {
+  const btn = document.getElementById('palCreateBtn');
+  btn.disabled = true;
+  try {
+    await api('/api/pal/devices/' + encodeURIComponent(id) + '/policy', { method: 'PUT', body: JSON.stringify(body) });
+    hideModal('palAddModal');
+    toast('Saved. The PC picks it up at its next check-in');
+    await loadPalDevices();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function showActivityLog() {
+  const body = document.getElementById('activityBody');
+  showModal('activityModal');
+  try {
+    const entries = await (await api('/api/activity?limit=500')).json();
+    document.getElementById('activityCount').textContent = entries.length;
+    body.innerHTML = entries.length
+      ? '<table class="cert-table activity-table"><thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead><tbody>' +
+        entries.map(e => '<tr' + (e.level === 'warning' ? ' class="activity-warning"' : '') + '><td class="mono">' + formatDateTime(e.at) + '</td>' +
+          '<td>' + escapeHtml(e.actor) + (e.address ? '<div class="dim mono">' + escapeHtml(e.address) + '</div>' : '') + '</td>' +
+          '<td>' + escapeHtml(e.message) + '</td></tr>').join('') + '</tbody></table>'
+      : '<p class="dim">Nothing recorded yet. Entries start with this version.</p>';
+  } catch (e) {
+    body.innerHTML = '<p class="dim">' + escapeHtml(e.message) + '</p>';
+  }
+}
 
 async function createPalCode() {
   const btn = document.getElementById('palCreateBtn');
@@ -3026,6 +3209,7 @@ async function createPalCode() {
       user: document.getElementById('palCaseUser').value,
       'code-signing': document.getElementById('palCaseCode').value,
     },
+    binds: Object.fromEntries(Object.entries(PAL_BIND_FIELDS).map(([key, id]) => [key, document.getElementById(id).value])),
     dns: palList('palDns'),
     users: palList('palUsers'),
     max_days: Number(document.getElementById('palMaxDays').value),
@@ -3034,6 +3218,13 @@ async function createPalCode() {
     crl_dps: [...document.querySelectorAll('#palCrlDps input:checked')].map(i => i.value),
     allow_remote: document.getElementById('palAllowRemote').checked,
   };
+  const editId = document.getElementById('palAddForm').dataset.editId;
+  if (editId) {
+    const device = palDeviceIndex.get(editId);
+    if (device) body.crl_dps = device.policy.crl_dps;  // fixed at pairing: sent back as they are, default first
+    await savePalDevice(editId, body);
+    return;
+  }
   btn.disabled = true;
   try {
     const data = await (await api('/api/pal/codes', { method: 'POST', body: JSON.stringify(body) })).json();
@@ -3143,7 +3334,7 @@ function renderPalRelay(s) {
     '</ul>' +
     '<p><button class="btn btn-ghost btn-sm" data-action="palRelayCheck">Check now</button> ' +
       '<button class="btn btn-ghost btn-sm" data-action="palRelayUpdate">Update Worker</button> ' +
-      '<button class="btn btn-danger btn-sm" data-action="palRelayTeardown">Tear down</button></p>';
+      '<button class="btn btn-danger btn-sm" data-action="palRelayTeardown">Remove</button></p>';
 }
 
 async function palRelayCall(path, message) {
@@ -3167,7 +3358,7 @@ function palRelayCheck() { return loadPalRelay(true); }
 function palRelayUpdate() { return palRelayCall('update', 'Relay Worker updated'); }
 
 async function palRelayTeardown() {
-  if (!confirm('Tear down the remote connection? PCs away from the LAN can no longer reach this server until you set it up again.\n\n' +
+  if (!confirm('Remove the remote connection? PCs away from the LAN can no longer reach this server until you set it up again.\n\n' +
       'The relay key stays, so PCs keep working with a new relay without pairing again.')) return;
   await palRelayCall('teardown', 'Remote connection removed');
 }
@@ -3227,13 +3418,35 @@ async function denyPalRequest(_arg, el) {
   loadPalDevices();
 }
 
+async function approvePalBind(_arg, el) {
+  try {
+    await api('/api/pal/binds/' + Number(el.dataset.id) + '/approve', { method: 'POST' });
+    toast('Approved. The PC binds it on its next check');
+  } catch (e) { toast(e.message, 'error'); }
+  loadPalDevices();
+}
+
+async function denyPalBind(_arg, el) {
+  const reason = prompt('Deny this bind? You can tell the user why (optional):', '');
+  if (reason === null) return;
+  try {
+    await api('/api/pal/binds/' + Number(el.dataset.id) + '/deny', { method: 'POST', body: JSON.stringify({ reason }) });
+    toast('Bind denied');
+  } catch (e) { toast(e.message, 'error'); }
+  loadPalDevices();
+}
+
 // Markup declares handlers as data-action / data-change / data-enter instead of
 // inline on* attributes, so the Content-Security-Policy can forbid inline script.
 // Handlers receive (data-arg, element, event); numeric args become numbers.
 const UI_ACTIONS = new Set([
+  'approvePalBind',
+  'denyPalBind',
   'approvePalRequest',
   'copyPalCode',
   'createPalCode',
+  'editPalDevice',
+  'showActivityLog',
   'copyPalDownloadUrl',
   'deletePalDevice',
   'palRelayCheck',
@@ -3352,6 +3565,7 @@ const UI_ACTIONS = new Set([
   'toggleSection',
   'toggleSerial',
   'updateCaPasswordVisibility',
+  'updateCertCompatNote',
   'updateCrlDpFields',
   'updateRecoveryKeyDone',
   'viewCRL',

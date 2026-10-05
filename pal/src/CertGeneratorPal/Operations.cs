@@ -35,7 +35,7 @@ internal static class Operations
         {
             using var client = new PalClient(code.Server, code.RootSha256);
             var result = await client.EnrollAsync(code, Keys.SubjectPublicKeyInfo(deviceKey), LocalIdentity.Hostname, fqdn,
-                LocalIdentity.OsDescription).ConfigureAwait(false);
+                LocalIdentity.OsDescription, Keys.Storage(deviceKey)).ConfigureAwait(false);
             var device = result.Device;
             state = new DeviceState
             {
@@ -67,7 +67,7 @@ internal static class Operations
 
     /// <summary>
     /// Make (pairing, revocation type) the active profile. The current profile is backed out first:
-    /// its certificates and keys leave this PC, its self-hosted listener goes, its pending requests
+    /// its certificates and keys leave this PC, its endpoint-hosted listener goes, its pending requests
     /// are dropped, and its server is told. The root stays trusted (TLS inspection may rely on it).
     /// </summary>
     public static async Task<OpResult> SwitchAsync(string deviceId, string crlDp)
@@ -94,11 +94,11 @@ internal static class Operations
             try
             {
                 await InstallLocalCrlAsync(target).ConfigureAwait(false);
-                notes.Add("The self-hosted CRL is running.");
+                notes.Add("The endpoint-hosted CRL is running.");
             }
             catch (Exception e) when (e is PalException or IOException or UnauthorizedAccessException)
             {
-                notes.Add("The self-hosted CRL couldn't be set up yet (" + FriendlyMessage(e) + "). Use Repair.");
+                notes.Add("The endpoint-hosted CRL couldn't be set up yet (" + FriendlyMessage(e) + "). Use Repair.");
             }
         }
         AppLog.Info($"Active profile: {target.CaName} ({target.DeviceId[..8]}), revocation {crlDp}");
@@ -145,7 +145,7 @@ internal static class Operations
         {
             using var signer = new DeviceSigner(profile);
             using var client = profile.Client();
-            await client.StatusAsync(signer, []).ConfigureAwait(false);  // tells the server they're gone
+            await client.StatusAsync(signer, [], windowsUser: LocalIdentity.AccountName).ConfigureAwait(false);  // tells the server they're gone
         }
         catch (PalException e)
         {
@@ -207,9 +207,8 @@ internal static class Operations
     // ── Requests ────────────────────────────────────────────────────
 
     public static async Task<OpResult> RequestAsync(DeviceState state, string useCase, Dictionary<string, object> names, int? lifetime,
-        int? renewOf, string? replaceThumbprint, BindRequest? bind = null)
+        int? renewOf, string? replaceThumbprint, string? note = null)
     {
-        bind = BindingRules.ForUseCase(useCase, bind);
         if (state.CrlDp.Length == 0)
         {
             throw new PalException("No CRL profile. Pick one at the top: it decides where these certificates check revocation.");
@@ -222,7 +221,7 @@ internal static class Operations
         {
             using var client = state.Client();
             view = await client.CreateRequestAsync(signer, useCase, names, Keys.CsrPem(key), lifetime, renewOf,
-                state.CrlDp).ConfigureAwait(false);
+                state.CrlDp, Keys.Storage(key), LocalIdentity.AccountName, note).ConfigureAwait(false);
         }
         catch
         {
@@ -231,13 +230,13 @@ internal static class Operations
         }
         if (view.Status == "issued")
         {
-            string notes = Install(state, view, key, machine, replaceThumbprint, bind);
+            string notes = Install(state, view, key, machine, replaceThumbprint);
             return OpResult.Success($"{UseCases.Label(useCase)} certificate for {view.Names.Display} installed. Expires {ExpiryText(view)}.{notes}", "issued", view.Id);
         }
         var pending = PendingStore.Open(machine);
         pending.Items[view.Id] = new PendingStore.Entry
         {
-            KeyName = key.KeyName!, UseCase = useCase, ReplaceThumbprint = replaceThumbprint, DeviceId = state.DeviceId, Bind = bind,
+            KeyName = key.KeyName!, UseCase = useCase, ReplaceThumbprint = replaceThumbprint, DeviceId = state.DeviceId,
         };
         pending.Save();
         return OpResult.Success($"Sent. Your admin approves {UseCases.Label(useCase)} certificates: choose Check again once they have.", "pending", view.Id);
@@ -260,7 +259,12 @@ internal static class Operations
             if (view.Status == "issued")
             {
                 using var key = Keys.Open(entry.KeyName, machine);
-                string notes = Install(state, view, key, machine, entry.ReplaceThumbprint, entry.Bind);
+                string notes = Install(state, view, key, machine, entry.ReplaceThumbprint);
+                if (entry.Bind is not null)
+                {
+                    // Asked for with the request, before binding became its own step with the admin's say.
+                    notes += " Choose Bind… on it to put it to work.";
+                }
                 messages.Add($"{UseCases.Label(entry.UseCase)} for {view.Names.Display}: approved and installed.{notes}");
                 pending.Items.Remove(id);
             }
@@ -284,7 +288,7 @@ internal static class Operations
     /// (IIS, Remote Desktop) to the new one, then removes the old one: the server has revoked it.
     /// Returns notes for the user (leading space), including binding problems, which don't undo the install.
     /// </summary>
-    private static string Install(DeviceState state, RequestView view, CngKey key, bool machine, string? replaceThumbprint, BindRequest? bind)
+    private static string Install(DeviceState state, RequestView view, CngKey key, bool machine, string? replaceThumbprint)
     {
         if (view.Cert is null || view.Chain is null)
         {
@@ -293,33 +297,18 @@ internal static class Operations
         Installer.EnsureChain(view.Chain, state.RootSha256, machine);
         string thumbprint = Installer.InstallLeaf(view.Cert, key, machine);
         var notes = new List<string>();
-        if (machine && (replaceThumbprint is not null || bind is not null))
+        if (machine && replaceThumbprint is not null)
         {
             using var installed = FindMachineCert(thumbprint);
-            if (replaceThumbprint is not null)
+            try
             {
-                try
-                {
-                    notes.AddRange(Binder.Repoint(replaceThumbprint, installed));
-                }
-                catch (Exception e) when (e is PalException or CryptographicException or UnauthorizedAccessException or IOException)
-                {
-                    // Keep the old certificate: removing it would leave IIS or Remote Desktop with nothing to serve.
-                    AppLog.Error("Couldn't move bindings to the renewed certificate", e);
-                    return " Couldn't move IIS / Remote Desktop to it (" + FriendlyMessage(e) + "), so the old certificate stays installed: use Bind… on the new one, then remove the old one.";
-                }
+                notes.AddRange(Binder.Repoint(replaceThumbprint, installed));
             }
-            if (bind is not null)
+            catch (Exception e) when (e is PalException or CryptographicException or UnauthorizedAccessException or IOException)
             {
-                try
-                {
-                    notes.AddRange(Binder.Apply(installed, bind));
-                }
-                catch (Exception e) when (e is PalException or CryptographicException or UnauthorizedAccessException or IOException)
-                {
-                    AppLog.Error("Couldn't bind the new certificate", e);
-                    notes.Add("Not bound: " + FriendlyMessage(e) + " Use Bind… to try again.");
-                }
+                // Keep the old certificate: removing it would leave IIS or Remote Desktop with nothing to serve.
+                AppLog.Error("Couldn't move bindings to the renewed certificate", e);
+                return " Couldn't move what used the old one to it (" + FriendlyMessage(e) + "), so the old certificate stays installed: use Bind… on the new one, then remove the old one.";
             }
         }
         if (replaceThumbprint is not null)
@@ -337,17 +326,131 @@ internal static class Operations
         return found.Count > 0 ? found[0] : throw new PalException("Certificate not found. It isn't in the computer's Personal store.");
     }
 
-    /// <summary>Use a certificate already in the computer's Personal store for IIS and/or Remote Desktop.</summary>
-    public static OpResult Bind(string thumbprint, BindRequest request)
+    /// <summary>Use a certificate already in the computer's Personal store for what <paramref name="request"/> names.</summary>
+    // ── Binds: putting an installed certificate to work ─────────────
+
+    /// <summary>
+    /// Bind a certificate in the computer's Personal store to the roles in <paramref name="request"/>.
+    /// The server is asked first, one role at a time as the admin set them: a role it allows is
+    /// bound now, one that needs approval waits for Check again, and one that is off refuses the lot.
+    /// </summary>
+    public static async Task<OpResult> BindAsync(DeviceState state, string thumbprint, BindRequest request, string? note)
     {
         using var cert = FindMachineCert(thumbprint);
         if (!cert.HasPrivateKey)
         {
-            throw new PalException("No private key. A certificate needs its key on this PC to serve HTTPS or Remote Desktop.");
+            throw new PalException("No private key. A certificate needs its key on this PC before anything can use it.");
         }
-        var notes = Binder.Apply(cert, request);
-        return OpResult.Success(notes.Count > 0 ? string.Join(" ", notes) : "Nothing to change.");
+        var names = Binder.DnsNames(cert);
+        BindingRules.Validate(request, names);
+        var fits = BindingRules.TargetsFor(names, state.Fqdn);
+        var parts = BindingRules.Split(request);
+        if (parts.Count == 0)
+        {
+            return OpResult.Success("Nothing to change.");
+        }
+        if (parts.FirstOrDefault(p => !fits.HasFlag(BindingRules.Flag(p.Target))) is { Target: { } unfit })
+        {
+            throw new PalException($"Name doesn't fit. {BindKeys.Label(unfit)} answers to this PC's own name ({state.Fqdn}), which this certificate doesn't carry.");
+        }
+        List<BindView> answers;
+        using (var signer = new DeviceSigner(state))
+        using (var client = state.Client())
+        {
+            answers = await client.CreateBindsAsync(signer, cert.SerialNumber,
+                parts.Select(p => new BindAsk { Target = p.Target, Detail = p.Detail }).ToList(), LocalIdentity.AccountName, note).ConfigureAwait(false);
+        }
+        var messages = new List<string>();
+        var pending = PendingBinds.Open();
+        bool waiting = false;
+        for (int i = 0; i < parts.Count && i < answers.Count; i++)
+        {
+            var (target, _, part) = parts[i];
+            if (answers[i].Status == "approved")
+            {
+                messages.Add(ApplyPart(cert, part, target));
+            }
+            else
+            {
+                pending.Items[answers[i].Id] = new PendingBinds.Entry { DeviceId = state.DeviceId, Thumbprint = cert.Thumbprint, Target = target, Part = part };
+                messages.Add($"{BindKeys.Label(target)}: your admin approves this one. Choose Check again once they have.");
+                waiting = true;
+            }
+        }
+        if (waiting)
+        {
+            pending.Save();
+        }
+        return OpResult.Success(string.Join(Environment.NewLine, messages), waiting ? "pending" : "bound");
     }
+
+    /// <summary>Apply the binds the admin approved since; forget the ones they denied.</summary>
+    public static async Task<OpResult> CollectBindsAsync(DeviceState state)
+    {
+        var pending = PendingBinds.Open();
+        var mine = pending.Items.Where(kv => kv.Value.DeviceId == state.DeviceId).ToList();
+        if (mine.Count == 0)
+        {
+            return OpResult.Success("No binds waiting.");
+        }
+        using var signer = new DeviceSigner(state);
+        using var client = state.Client();
+        var messages = new List<string>();
+        foreach (var (id, entry) in mine)
+        {
+            string label = BindKeys.Label(entry.Target);
+            var view = await client.GetBindAsync(signer, id).ConfigureAwait(false);
+            if (view.Status == "approved")
+            {
+                try
+                {
+                    using var cert = FindMachineCert(entry.Thumbprint);
+                    messages.Add("Approved. " + ApplyPart(cert, entry.Part, entry.Target));
+                }
+                catch (PalException e)
+                {
+                    messages.Add($"{label}: approved, but not bound: {e.Message}");
+                }
+                pending.Items.Remove(id);
+            }
+            else if (view.Status == "denied")
+            {
+                messages.Add($"{label}: denied" + (view.Reason.Length > 0 ? $" ({view.Reason})." : "."));
+                pending.Items.Remove(id);
+            }
+            else
+            {
+                messages.Add($"{label}: still waiting for your admin.");
+            }
+        }
+        pending.Save();
+        return OpResult.Success(string.Join(Environment.NewLine, messages));
+    }
+
+    /// <summary>One role, bound. A failure is reported for that role and doesn't stop the others.</summary>
+    private static string ApplyPart(X509Certificate2 cert, BindRequest part, string target)
+    {
+        try
+        {
+            return string.Join(" ", Binder.Apply(cert, part));
+        }
+        catch (Exception e) when (e is PalException or CryptographicException or UnauthorizedAccessException or IOException)
+        {
+            AppLog.Error("Couldn't bind " + target, e);
+            return $"{BindKeys.Label(target)}: not bound. {FriendlyMessage(e)}";
+        }
+    }
+
+    /// <summary>Stop a role using a certificate. Nothing to ask the server: taking a certificate out of service needs no approval.</summary>
+    public static OpResult Unbind(string thumbprint, string target)
+    {
+        var notes = Binder.Remove(thumbprint, target);
+        return OpResult.Success(string.Join(" ", notes));
+    }
+
+    /// <summary>The roles with a bind waiting for the admin, by certificate thumbprint.</summary>
+    public static ILookup<string, string> WaitingBinds(string deviceId) =>
+        PendingBinds.Open().Items.Values.Where(e => e.DeviceId == deviceId).ToLookup(e => e.Thumbprint, e => e.Target, StringComparer.OrdinalIgnoreCase);
 
     private static string ExpiryText(RequestView view) =>
         DateTimeOffset.TryParse(view.NotAfter, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var t)
@@ -399,7 +502,7 @@ internal static class Operations
             : $"{state.CaName} is now trusted on this PC, including for TLS inspection:\n" + string.Join("\n", added));
     }
 
-    /// <summary>Install or refresh the self-hosted CRL with freshly signed CRLs from the server.</summary>
+    /// <summary>Install or refresh the endpoint-hosted CRL with freshly signed CRLs from the server.</summary>
     public static async Task<OpResult> InstallLocalCrlAsync(DeviceState state)
     {
         using var signer = new DeviceSigner(state);
@@ -410,6 +513,8 @@ internal static class Operations
 
     public static int PendingCount() =>
         PendingStore.Open(machine: true).Items.Count + PendingStore.Open(machine: false).Items.Count;
+
+    public static int PendingBindCount() => PendingBinds.Open().Items.Count;
 
     /// <summary>Remove several certificates in one go (one elevated pass for the computer's stores).</summary>
     public static OpResult RemoveMany(StoreLocation location, List<RemoveTarget> targets)

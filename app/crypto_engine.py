@@ -18,7 +18,6 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.primitives.serialization import pkcs12
 
-from .errors import UserError
 from cryptography.x509.oid import NameOID
 
 from .errors import UserError
@@ -41,6 +40,16 @@ def _key_usage(**enabled: bool) -> dict[str, bool]:
     flags = dict.fromkeys(_KEY_USAGE_FLAGS, False)
     flags.update(enabled)
     return flags
+
+
+def _key_usage_for(flags: dict[str, bool], public_key, ec_key_agreement: bool = False) -> dict[str, bool]:
+    """A template's key usage, fitted to the key. Only an RSA key can encipher another key:
+    on an ECDSA or Ed25519 key the bit must not be set (RFC 5480, RFC 8410). Mail is encrypted to
+    an elliptic-curve key by key agreement instead (RFC 5753), so S/MIME asks for that bit there."""
+    if isinstance(public_key, rsa.RSAPublicKey):
+        return flags
+    agree = ec_key_agreement and flags["key_encipherment"] and isinstance(public_key, ec.EllipticCurvePublicKey)
+    return {**flags, "key_encipherment": False, "key_agreement": agree}
 
 
 CERT_TEMPLATES: dict[str, dict] = {
@@ -82,6 +91,7 @@ CERT_TEMPLATES: dict[str, dict] = {
         "extended_key_usage": [x509.oid.ExtendedKeyUsageOID.EMAIL_PROTECTION],
         "default_days": 365,
         "include_email": True,
+        "ec_key_agreement": True,
     },
     "user": {
         "label": "User",
@@ -125,21 +135,56 @@ def _serial_number() -> int:
     return raw >> 1
 
 
+# A certificate is dated a little in the past, so a machine whose clock runs behind the server's
+# doesn't refuse it as "not yet valid" in its first minutes.
+BACKDATE = timedelta(minutes=5)
+MAX_NAME_ATTRIBUTE_LEN = 64  # X.520 upper bound for a common name and an organization name
+
+
+def _validity(issuer_cert: x509.Certificate | None, lifetime_days: int) -> tuple[datetime, datetime]:
+    """notBefore and notAfter for a new certificate. It never outlives the CA that signs it:
+    past that date no client could build its chain anyway."""
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    not_after = now + timedelta(days=lifetime_days)
+    if issuer_cert is None:
+        return now - BACKDATE, not_after
+    if issuer_cert.not_valid_after_utc <= now:
+        raise UserError("This CA has expired, so it can't sign anything new")
+    return max(now - BACKDATE, issuer_cert.not_valid_before_utc), min(not_after, issuer_cert.not_valid_after_utc)
+
+
+def _ca_subject(name: str, domain: str) -> x509.Name:
+    if len(name) > MAX_NAME_ATTRIBUTE_LEN or len(domain) > MAX_NAME_ATTRIBUTE_LEN:
+        raise UserError(f"A CA's name and domain are each at most {MAX_NAME_ATTRIBUTE_LEN} characters")
+    return x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, name),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, domain),
+    ])
+
+
+def _leaf_common_name(common_name: str, san_domains: list[str], upn: str | None) -> str:
+    """The subject's common name. A host name or sign-in name longer than the 64 characters a
+    common name may hold is cut to its first part: clients match the full name in the subject
+    alternative names."""
+    if len(common_name) <= MAX_NAME_ATTRIBUTE_LEN:
+        return common_name
+    if common_name in san_domains and "." in common_name:
+        return common_name.split(".", 1)[0]
+    if common_name == upn:
+        return common_name.split("@", 1)[0]
+    raise UserError(f"The common name is at most {MAX_NAME_ATTRIBUTE_LEN} characters")
+
+
 def create_ca(
     domain: str,
     name: str,
     algorithm: Algorithm,
     lifetime_days: int,
 ) -> tuple[bytes, bytes, str, str, str]:
+    subject = issuer = _ca_subject(name, domain)
     key = _generate_key(algorithm)
-    now = datetime.now(timezone.utc)
-    not_after = now + timedelta(days=lifetime_days)
+    not_before, not_after = _validity(None, lifetime_days)
     serial = _serial_number()
-
-    subject = issuer = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, name),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, domain),
-    ])
 
     builder = (
         x509.CertificateBuilder()
@@ -147,7 +192,7 @@ def create_ca(
         .issuer_name(issuer)
         .public_key(key.public_key())
         .serial_number(serial)
-        .not_valid_before(now)
+        .not_valid_before(not_before)
         .not_valid_after(not_after)
         .add_extension(
             x509.BasicConstraints(ca=True, path_length=None),
@@ -187,7 +232,7 @@ def create_ca(
         cert_pem,
         key_pem,
         hex(serial),
-        now.isoformat(),
+        not_before.isoformat(),
         not_after.isoformat(),
     )
 
@@ -203,15 +248,13 @@ def create_intermediate_ca(
     parent_cert = x509.load_pem_x509_certificate(parent_cert_pem)
     parent_key = serialization.load_pem_private_key(parent_key_pem, password=None)
 
+    subject = _ca_subject(name, domain)
+    if subject == parent_cert.subject:
+        # Same name as its issuer reads as self-signed, and clients then fail to build the chain.
+        raise UserError("Give the intermediate CA a different name from the CA that signs it")
     key = _generate_key(algorithm)
-    now = datetime.now(timezone.utc)
-    not_after = now + timedelta(days=lifetime_days)
+    not_before, not_after = _validity(parent_cert, lifetime_days)
     serial = _serial_number()
-
-    subject = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, name),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, domain),
-    ])
 
     builder = (
         x509.CertificateBuilder()
@@ -219,7 +262,7 @@ def create_intermediate_ca(
         .issuer_name(parent_cert.subject)
         .public_key(key.public_key())
         .serial_number(serial)
-        .not_valid_before(now)
+        .not_valid_before(not_before)
         .not_valid_after(not_after)
         .add_extension(
             x509.BasicConstraints(ca=True, path_length=0),
@@ -264,7 +307,7 @@ def create_intermediate_ca(
         cert_pem,
         key_pem,
         hex(serial),
-        now.isoformat(),
+        not_before.isoformat(),
         not_after.isoformat(),
     )
 
@@ -291,11 +334,10 @@ def issue_certificate(
 
     leaf_key = _generate_key(algorithm) if public_key is None else None
     leaf_public = public_key if public_key is not None else leaf_key.public_key()
-    now = datetime.now(timezone.utc)
-    not_after = now + timedelta(days=lifetime_days)
+    not_before, not_after = _validity(ca_cert, lifetime_days)
     serial = _serial_number()
 
-    name_attrs = [x509.NameAttribute(NameOID.COMMON_NAME, common_name)]
+    name_attrs = [x509.NameAttribute(NameOID.COMMON_NAME, _leaf_common_name(common_name, san_domains, upn))]
     if email and tmpl.get("include_email"):
         name_attrs.append(x509.NameAttribute(NameOID.EMAIL_ADDRESS, email))
 
@@ -315,14 +357,14 @@ def issue_certificate(
         .issuer_name(ca_cert.subject)
         .public_key(leaf_public)
         .serial_number(serial)
-        .not_valid_before(now)
+        .not_valid_before(not_before)
         .not_valid_after(not_after)
         .add_extension(
             x509.BasicConstraints(ca=False, path_length=None),
             critical=True,
         )
         .add_extension(
-            x509.KeyUsage(**tmpl["key_usage"]),
+            x509.KeyUsage(**_key_usage_for(tmpl["key_usage"], leaf_public, tmpl.get("ec_key_agreement", False))),
             critical=True,
         )
         .add_extension(
@@ -373,7 +415,7 @@ def issue_certificate(
         cert_pem,
         key_pem,
         hex(serial),
-        now.isoformat(),
+        not_before.isoformat(),
         not_after.isoformat(),
     )
 
@@ -592,6 +634,19 @@ def _encode_utf8_string(value: str) -> bytes:
     return b"\x0c\x82" + length.to_bytes(2, "big") + encoded
 
 
+_crl_number_lock = threading.Lock()
+_last_crl_number = 0
+
+
+def _next_crl_number() -> int:
+    """RFC 5280 wants each CRL of a CA numbered higher than the one before. The clock (in
+    microseconds) gives that without a counter to store; two made in the same instant still differ."""
+    global _last_crl_number
+    with _crl_number_lock:
+        _last_crl_number = max(_last_crl_number + 1, int(datetime.now(timezone.utc).timestamp() * 1_000_000))
+        return _last_crl_number
+
+
 def generate_crl(
     ca_cert_pem: bytes,
     ca_key_pem: bytes,
@@ -602,11 +657,14 @@ def generate_crl(
     ca_key = serialization.load_pem_private_key(ca_key_pem, password=None)
     now = datetime.now(timezone.utc)
 
+    # RFC 5280 requires both extensions.
     builder = (
         x509.CertificateRevocationListBuilder()
         .issuer_name(ca_cert.subject)
         .last_update(now)
         .next_update(now + timedelta(days=crl_lifetime_days))
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_cert.public_key()), critical=False)
+        .add_extension(x509.CRLNumber(_next_crl_number()), critical=False)
     )
 
     for serial_hex, revoked_at in revoked_serials:

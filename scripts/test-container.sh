@@ -22,7 +22,8 @@ done
 curl -fsS -o /dev/null "http://127.0.0.1:${port}/setup"
 echo "serving: ok"
 
-curl -fsS "http://127.0.0.1:${port}/static/app.js" | grep -q "UI_ACTIONS"
+# grep -c reads the whole response: -q exits at the first match and fails curl with a broken pipe (exit 23).
+curl -fsS "http://127.0.0.1:${port}/static/app.js" | grep -c "UI_ACTIONS" >/dev/null
 echo "static assets: ok"
 
 start=$(date +%s)

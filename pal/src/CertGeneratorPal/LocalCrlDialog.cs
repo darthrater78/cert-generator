@@ -2,7 +2,7 @@ using CertGeneratorPal.Core;
 
 namespace CertGeneratorPal;
 
-/// <summary>The self-hosted CRL: what it does, whether this PC answers now, and Install / Update / Remove.</summary>
+/// <summary>The endpoint-hosted CRL: what it does, whether this PC answers now, and Install / Update / Remove.</summary>
 internal sealed class LocalCrlDialog : Form
 {
     public string? Choice { get; private set; }
@@ -12,7 +12,7 @@ internal sealed class LocalCrlDialog : Form
         SuspendLayout();
         AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
-        Text = "Self-hosted CRL";
+        Text = "Endpoint-hosted CRL";
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = MinimizeBox = false;
         StartPosition = FormStartPosition.CenterParent;
@@ -22,7 +22,7 @@ internal sealed class LocalCrlDialog : Form
 
         bool installed = answering.Count > 0 && answering.Values.Any(v => v);
         var layout = new TableLayoutPanel { ColumnCount = 1, AutoSize = true, Dock = DockStyle.Fill };
-        layout.Controls.Add(new Label { Text = "Self-hosted CRL", AutoSize = true, Font = Theme.Heading, Margin = new Padding(0, 0, 0, 8) });
+        layout.Controls.Add(new Label { Text = "Endpoint-hosted CRL", AutoSize = true, Font = Theme.Heading, Margin = new Padding(0, 0, 0, 8) });
         layout.Controls.Add(new Label
         {
             Text = "This PC answers its own revocation checks for your CA, so certificates keep validating even when " +

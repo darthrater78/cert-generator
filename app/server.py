@@ -11,7 +11,7 @@ from flask import Flask, Response, g, jsonify, redirect, render_template, reques
 from flask.sessions import SecureCookieSessionInterface
 from werkzeug.exceptions import HTTPException
 
-from . import __version__, db, state
+from . import __version__, activity, db, state
 from .routes import account, auth, cloudflare, pal, pki, settings, ssh
 from .security import is_cross_site_request
 from .web import auth_limiter
@@ -68,6 +68,7 @@ for blueprint in (auth.bp, account.bp, pki.bp, ssh.bp, settings.bp, cloudflare.b
 
 with app.app_context():
     db.init_db()
+activity.install(log)
 
 
 _PUBLIC_PATHS = {"/login", "/setup", "/logout", "/mfa", "/favicon.ico"}

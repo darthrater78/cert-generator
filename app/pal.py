@@ -13,7 +13,7 @@ import ipaddress
 import json
 import re
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -43,18 +43,37 @@ USE_CASES = {
 USE_CASE_LABELS = {"web-server": "web server", "computer": "computer", "user": "user", "code-signing": "code-signing"}
 TEMPLATE_USE_CASES = {template: case for case, template in USE_CASES.items()}
 MACHINE_USE_CASES = ("web-server", "computer")
+# Installed in the requesting Windows account's own store, which no other account on the PC can see.
+USER_USE_CASES = ("user", "code-signing")
+USER_TEMPLATES = frozenset(USE_CASES[c] for c in USER_USE_CASES)
 APPROVAL_MODES = ("off", "auto", "approve")
 DEFAULT_APPROVALS = {"web-server": "auto", "computer": "auto", "user": "approve", "code-signing": "off"}
+
+# What an installed machine certificate may be put to work for ("bound to") on the PC. The Pal asks
+# before each bind; the modes are the certificate kinds' own (off / auto / approve).
+BIND_TARGETS = {
+    "rdp": "Remote Desktop",
+    "winrm": "WinRM over HTTPS",
+    "iis": "IIS site",
+    "rd-gateway": "RD Gateway",
+    "rd-broker": "RD Connection Broker",
+}
+# A pairing from before binds had switches could bind anything, so that is what a missing entry means.
+DEFAULT_BINDS = dict.fromkeys(BIND_TARGETS, "auto")
+MAX_BINDS_PER_CALL = 8
+MAX_BIND_DETAIL_LEN = 300
 
 MAX_PATTERNS = 32
 MAX_PATTERN_LEN = 253
 MAX_NAMES = 20
 MAX_CN_LEN = 64
 MAX_SERIALS = 500
+MAX_NOTE_LEN = 200
 
 _LABEL_RE = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
 _EMAIL_RE = re.compile(r"^[a-z0-9._%+'-]{1,64}@[a-z0-9.-]{1,253}$")
 _CN_RE = re.compile(r"^[\w .,'()&-]{1,64}$")
+_WINDOWS_USER_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,104}$")
 _B64URL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _HEX_RE = re.compile(r"^[0-9a-f]+$")
 
@@ -83,6 +102,52 @@ def sha256_hex(data: bytes) -> str:
 
 def new_code_id() -> str:
     return secrets.token_hex(16)
+
+
+# Where the PC says a key it made lives: the TPM, or Windows' software key store. Self-reported.
+KEY_STORAGES = ("tpm", "software")
+
+
+def key_storage(value: Any) -> str | None:
+    """A key storage the Pal reported, or None when it is missing or not one we know."""
+    return value if value in KEY_STORAGES else None
+
+
+def windows_user(raw: Any) -> str | None:
+    """The Windows account the Pal says it runs as (PC01\\alice), or None when it is missing or
+    not a plausible account name. Reported by the Pal, not attested."""
+    name = raw.strip() if isinstance(raw, str) else ""
+    return name if _WINDOWS_USER_RE.match(name) else None
+
+
+def _one_line(raw: Any, what: str, limit: int) -> str | None:
+    """Free text from the PC on one line of printable characters; None when empty."""
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise PalError(f"{what} must be text")
+    text = " ".join("".join(ch if ch.isprintable() else " " for ch in raw).split())
+    if len(text) > limit:
+        raise PalError(f"{what.capitalize()} too long. Keep it to {limit} characters")
+    return text or None
+
+
+def request_note(raw: Any) -> str | None:
+    """What the person at the PC typed for the admin who approves, on one line; None when empty."""
+    return _one_line(raw, "note", MAX_NOTE_LEN)
+
+
+def parse_binds(raw: Any) -> list[tuple[str, str]]:
+    """The roles a PC asks to bind a certificate to: (target, detail) pairs. The detail is the
+    Pal's own description for the admin (an IIS site and port, a broker role); it decides nothing."""
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_BINDS_PER_CALL:
+        raise PalError(f"binds must list 1-{MAX_BINDS_PER_CALL} roles")
+    wanted = []
+    for entry in raw:
+        if not isinstance(entry, dict) or entry.get("target") not in BIND_TARGETS:
+            raise PalError(f"Each bind names a target: one of {', '.join(BIND_TARGETS)}")
+        wanted.append((entry["target"], _one_line(entry.get("detail"), "detail", MAX_BIND_DETAIL_LEN) or ""))
+    return wanted
 
 
 def new_device_id() -> str:
@@ -249,6 +314,7 @@ class Policy:
     crl_dps: list[str]          # revocation types the PC may choose from: one profile each in the Pal
     crl_base_url: str | None
     allow_remote: bool = False  # may use the remote relay once paired (docs/cert-generator-pal.md §8)
+    binds: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_BINDS))  # per role: off / auto / approve
 
     @property
     def crl_dp(self) -> str:
@@ -263,12 +329,13 @@ class Policy:
         data = json.loads(text)
         if "crl_dp" in data:  # one revocation type, before a code could allow several
             data["crl_dps"] = [data.pop("crl_dp")]
+        data["binds"] = {**DEFAULT_BINDS, **{k: v for k, v in (data.get("binds") or {}).items() if k in BIND_TARGETS}}
         return cls(**data)
 
     def public(self) -> dict[str, Any]:
         """What the PC is told: which tiles to offer, which names will be accepted, which revocation types."""
         return {"use_cases": self.use_cases, "dns": self.dns, "users": self.users, "max_days": self.max_days,
-                "crl_dps": self.crl_dps, "allow_remote": self.allow_remote}
+                "crl_dps": self.crl_dps, "allow_remote": self.allow_remote, "binds": self.binds}
 
 
 def parse_policy(data: dict[str, Any], max_lifetime: int) -> Policy:
@@ -302,8 +369,17 @@ def parse_policy(data: dict[str, Any], max_lifetime: int) -> Policy:
     allow_remote = data.get("allow_remote", False)
     if not isinstance(allow_remote, bool):
         raise PalError("allow_remote must be true or false")
+    raw_binds = data.get("binds", DEFAULT_BINDS)
+    if not isinstance(raw_binds, dict):
+        raise PalError("binds must be an object")
+    binds = {}
+    for target, label in BIND_TARGETS.items():
+        mode = raw_binds.get(target, DEFAULT_BINDS[target])
+        if mode not in APPROVAL_MODES:
+            raise PalError(f"{label}: choose one of {', '.join(APPROVAL_MODES)}")
+        binds[target] = mode
     return Policy(use_cases=use_cases, dns=dns, users=users, max_days=max_days, crl_dps=["none"], crl_base_url=None,
-                  allow_remote=allow_remote)
+                  allow_remote=allow_remote, binds=binds)
 
 
 @dataclass
@@ -366,7 +442,8 @@ def parse_names(use_case: str, data: Any, policy: Policy, device_fqdn: str) -> N
             email = email.strip().lower()
             if not user_name_allowed(email, policy.users):
                 raise PalError(f"Name not allowed. {email} isn't allowed for this PC (allowed: {', '.join(policy.users)})")
-        return Names(common_name=upn, san=[], upn=upn, email=email or upn)
+        # The UPN is a sign-in name, not a mailbox: an e-mail address goes in only when one was sent.
+        return Names(common_name=upn, san=[], upn=upn, email=email)
     if use_case == "code-signing":
         cn = data.get("cn")
         if not isinstance(cn, str) or not _CN_RE.match(cn.strip()):

@@ -68,10 +68,13 @@ def all_versions(readme: str) -> list[str]:
 
 
 def previous_release_of(readme: str, version: str, component: str) -> str | None:
-    """The newest release older than `version` that shipped `component`."""
+    """The newest release older than `version` that shipped `component`. A release points
+    back to a release, never to a pre-release; a pre-release may point to either."""
     versions = all_versions(readme)
     start = versions.index(version) + 1 if version in versions else len(versions)
     for older in versions[start:]:
+        if "-" in older and "-" not in version:
+            continue
         if component in shipped_components(version_entry(readme, older)):
             return older
     return None

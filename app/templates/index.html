@@ -12,9 +12,9 @@
 <body data-server-mode="{{ 'true' if server_mode else 'false' }}" data-app-version="{{ app_version }}">
 <div id="unlockOverlay" class="unlock-overlay hidden">
   <div class="unlock-box">
-    <div class="lock-icon">Keystore sealed</div>
-    <h2>Database Locked</h2>
-    <p class="subtitle" id="unlockSubtitle">Enter your master password to decrypt private keys</p>
+    <div class="lock-icon">Private keys encrypted</div>
+    <h2>Database locked</h2>
+    <p class="subtitle" id="unlockSubtitle">Enter your master password to unlock the database</p>
     <div id="unlockByPassword">
       <input type="text" id="unlockUsername" class="hidden" placeholder="Username" autocomplete="username" spellcheck="false" autocapitalize="none" data-enter="doUnlock">
       <input type="password" id="unlockPassword" placeholder="Master password" autocomplete="current-password" data-enter="doUnlock">
@@ -109,6 +109,7 @@
       <button type="button" class="tool-link" data-action="showRestoreModal">Restore <em>.certbak</em></button>
       <div class="tool-group">Security</div>
       <button type="button" class="tool-link" id="btnEncryption" data-action="showEncryptionSettings">Encryption <em>at rest</em></button>
+      <button type="button" class="tool-link" data-action="showActivityLog">Activity log <em>who did what</em></button>
       {% if server_mode %}
       <button type="button" class="tool-link" id="btnMFA" data-action="showMFASettings">Two-factor sign-in <em>MFA</em></button>
       <button type="button" class="tool-link" data-action="showAccountSettings">Account <em>password · devices</em></button>
@@ -175,7 +176,7 @@
     <div id="welcomeView" class="main-content">
       <div class="empty-state">
         <h3>No authorities yet</h3>
-        <p>Create a certificate authority to start issuing certificates for your posture demos.</p>
+        <p>Create a certificate authority to start issuing certificates.</p>
         <button class="btn btn-primary" style="margin-top: 8px" data-action="showCreateCA">Create CA</button>
       </div>
     </div>
@@ -240,12 +241,12 @@
               <button class="btn btn-ghost btn-sm" data-action="exportCA">Download</button>
               <div class="ca-export-note" id="caExportNote">
                 <div class="ca-export-case ca-export-trust">
-                  <span class="ca-export-label">Trusted Endpoint</span>
-                  <span>Export <strong>Certificate Only</strong> (DER, or PEM for Linux) and import it as a trusted root. No private key is needed.</span>
+                  <span class="ca-export-label">Trust on a machine</span>
+                  <span>Export <strong>Certificate Only</strong> (DER, or PEM for Linux) and install it as a trusted root. No private key is needed. This is also what PCs behind <strong>TLS inspection</strong> get, so they trust the certificates the inspecting device presents.</span>
                 </div>
                 <div class="ca-export-case ca-export-key">
-                  <span class="ca-export-label">TLS Inspection / CA Move</span>
-                  <span>Export <strong>Certificate + Key</strong> (PKCS12 .pfx) only for a device that issues certificates with this CA, such as a firewall or proxy doing TLS inspection, or to move the CA to another server. <strong>Never install it on endpoints:</strong> anyone holding the key can issue certificates every machine trusts.</span>
+                  <span class="ca-export-label">Signing device / CA move</span>
+                  <span>Export <strong>Certificate + Key</strong> (PKCS12 .pfx) only for the one device that signs certificates as this CA, such as the firewall or proxy that performs TLS inspection, or to move the CA to another server. <strong>Never install it on endpoints:</strong> anyone holding the key can issue certificates every machine trusts.</span>
                 </div>
               </div>
             </div>
@@ -532,6 +533,7 @@
           <option value="email">Email (S/MIME)</option>
         </select>
         <div id="templateDesc" style="font-size:11px;color:var(--text-dim);margin-top:2px">Server Authentication</div>
+        <p class="form-hint" id="templateBindNote">Issuing only creates the certificate. Nothing uses it until the service is told to: on a Windows PC with Cert Generator Pal, install it and choose Bind… there; anywhere else, point the service's own settings at it.</p>
       </div>
     </div>
     <div class="form-row full">
@@ -562,7 +564,7 @@
     <div class="form-row">
       <div class="form-group">
         <label>Algorithm</label>
-        <select id="certAlgorithm">
+        <select id="certAlgorithm" data-change="updateCertCompatNote">
           <option value="ecdsa-p384">ECDSA P-384</option>
           <option value="ecdsa-p256">ECDSA P-256</option>
           <option value="ed25519">Ed25519</option>
@@ -573,25 +575,28 @@
       <div class="form-group">
         <label>Lifetime</label>
         <div class="lifetime-input">
-          <input type="number" id="certLifetime" value="1" min="1">
-          <select id="certLifetimeUnit">
+          <input type="number" id="certLifetime" value="1" min="1" data-change="updateCertCompatNote">
+          <select id="certLifetimeUnit" data-change="updateCertCompatNote">
             <option value="years" selected>Years</option>
             <option value="days">Days</option>
           </select>
         </div>
       </div>
     </div>
+    <div class="form-row full hidden" id="certCompatRow">
+      <p class="form-hint" id="certCompatNote"></p>
+    </div>
     <div class="form-row full">
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
         <input type="checkbox" id="certIncludeCRL" data-change="updateCrlDpFields"> Include CRL Distribution Point
-        <span style="font-size:11px;color:var(--text-dim)">(lets clients check revocation — see Import Guide)</span>
+        <span style="font-size:11px;color:var(--text-dim)">(the address where clients look up revoked certificates; see the Certificate guide, CRL tab)</span>
       </label>
     </div>
     <div class="form-row full" id="crlDpRow" hidden>
       <div class="form-group">
         <label for="certCrlDp">Distribution point</label>
         <select id="certCrlDp" data-change="updateCrlDpFields">
-          <option value="server">Cert Generator (LAN){% if not server_mode %} (Docker version only){% endif %}</option>
+          <option value="server">{% if server_mode %}Cert Generator (LAN){% else %}Cert Generator server (not in the desktop app){% endif %}</option>
           {% if server_mode %}<option value="cloudflare">Cloudflare Worker (this CA)</option>{% endif %}
           <option value="placeholder">Endpoint-hosted (each machine gets a copy)</option>
         </select>
@@ -703,6 +708,19 @@
     <div class="modal-actions">
       <button class="btn btn-ghost guide-popout" data-action="popOutGuide" data-arg="cert" title="Open the guide in its own window, to read alongside the app">Open in new window &#8599;</button>
       <button class="btn btn-ghost" data-action="hideModal" data-arg="guideModal">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="activityModal" class="modal-backdrop hidden">
+  <div class="modal cert-viewer">
+    <div class="eyebrow">Security</div>
+    <h3>Activity log</h3>
+    <p class="form-hint">What was done here, when and by whom: sign-ins, certificates issued, revoked and exported, PCs and their requests, settings. The newest <span id="activityCount">0</span> entries, newest first. Times are in your time zone.</p>
+    <div id="activityBody"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" data-action="showActivityLog">Refresh</button>
+      <button class="btn btn-primary" data-action="hideModal" data-arg="activityModal">Close</button>
     </div>
   </div>
 </div>
@@ -985,29 +1003,46 @@
 {% if server_mode %}
 <div id="palAddModal" class="modal-backdrop hidden">
   <div class="modal cf-modal">
-    <h3>Add a Windows PC</h3>
+    <h3 id="palAddTitle">Add a Windows PC</h3>
     <div id="palAddForm">
-      <div class="form-row">
+      <p class="form-hint hidden" id="palEditHint">The PC picks up the change the next time it checks in (its Refresh button, or the next time the Pal opens). Certificates it already holds are not touched. Its CRL profiles are fixed when it pairs: to change those, disconnect it and pair it again with a new code.</p>
+      <div class="form-row pal-new-only">
         <div class="form-group">
-          <label for="palLabel">Note <span class="dim">(optional)</span></label>
-          <input type="text" id="palLabel" placeholder="e.g. Office desktop. The PC names itself" maxlength="64" spellcheck="false" autocomplete="off">
+          <label for="palLabel">Note <span class="dim">(optional; the PC reports its own name)</span></label>
+          <input type="text" id="palLabel" placeholder="e.g. Office desktop" maxlength="64" spellcheck="false" autocomplete="off">
         </div>
         <div class="form-group">
-          <label for="palCa">Certificates from</label>
+          <label for="palCa">Issuing CA</label>
           <select id="palCa" data-change="onPalCaChange"></select>
         </div>
       </div>
       <h4>What this PC may request</h4>
       <table class="cf-workers pal-cases">
         <tbody>
-          <tr><td><strong>Web server</strong><div class="dim">IIS sites (Remote Desktop too). Named after the PC, plus names you allow below</div></td>
+          <tr><td><strong>Web server</strong><div class="dim">For names beyond the PC's own: websites, aliases, a gateway's public name. Named after the PC, plus names you allow below</div></td>
             <td><select id="palCaseWeb" aria-label="Web server"><option value="off">Off</option><option value="auto" selected>Issue right away</option><option value="approve">Needs my approval</option></select></td></tr>
-          <tr><td><strong>This computer</strong><div class="dim">Wi-Fi, VPN, 802.1X, Remote Desktop. Always issued to the PC's own name, like a Windows CA</div></td>
+          <tr><td><strong>This computer</strong><div class="dim">Wi-Fi, VPN, 802.1X, and TLS for the PC's own name. Always issued to the PC's own name, like a Windows CA</div></td>
             <td><select id="palCaseComputer" aria-label="This computer"><option value="off">Off</option><option value="auto" selected>Issue right away</option><option value="approve">Needs my approval</option></select></td></tr>
-          <tr><td><strong>Me</strong><div class="dim">The signed-in user: client authentication, smart card logon</div></td>
-            <td><select id="palCaseUser" aria-label="Me"><option value="off">Off</option><option value="auto">Issue right away</option><option value="approve" selected>Needs my approval</option></select></td></tr>
+          <tr><td><strong>Signed-in user</strong><div class="dim">Whoever is signed in to the PC (shown there as "Me"): client authentication for Wi-Fi, VPN and websites</div></td>
+            <td><select id="palCaseUser" aria-label="Signed-in user"><option value="off">Off</option><option value="auto">Issue right away</option><option value="approve" selected>Needs my approval</option></select></td></tr>
           <tr><td><strong>Code signing</strong><div class="dim">Signing scripts and programs</div></td>
             <td><select id="palCaseCode" aria-label="Code signing"><option value="off" selected>Off</option><option value="auto">Issue right away</option><option value="approve">Needs my approval</option></select></td></tr>
+        </tbody>
+      </table>
+      <h4>What its certificates may be put to work for</h4>
+      <p class="form-hint">A certificate does nothing until a Windows service is told to use it: that is a bind. The Pal asks the server before each one, and a bind that needs your approval waits in the list like a certificate request.</p>
+      <table class="cf-workers pal-cases">
+        <tbody>
+          <tr><td><strong>Remote Desktop</strong><div class="dim">Connections to this PC show its certificate instead of a self-signed one</div></td>
+            <td><select id="palBindRdp" aria-label="Bind to Remote Desktop"><option value="off">Off</option><option value="auto" selected>Allow</option><option value="approve">Needs my approval</option></select></td></tr>
+          <tr><td><strong>WinRM over HTTPS</strong><div class="dim">PowerShell remoting on port 5986</div></td>
+            <td><select id="palBindWinrm" aria-label="Bind to WinRM over HTTPS"><option value="off">Off</option><option value="auto" selected>Allow</option><option value="approve">Needs my approval</option></select></td></tr>
+          <tr><td><strong>IIS site</strong><div class="dim">A website's https binding</div></td>
+            <td><select id="palBindIis" aria-label="Bind to IIS site"><option value="off">Off</option><option value="auto" selected>Allow</option><option value="approve">Needs my approval</option></select></td></tr>
+          <tr><td><strong>RD Gateway</strong><div class="dim">The gateway role's certificate</div></td>
+            <td><select id="palBindGateway" aria-label="Bind to RD Gateway"><option value="off">Off</option><option value="auto" selected>Allow</option><option value="approve">Needs my approval</option></select></td></tr>
+          <tr><td><strong>RD Connection Broker</strong><div class="dim">Signing RDP files and single sign-on</div></td>
+            <td><select id="palBindBroker" aria-label="Bind to RD Connection Broker"><option value="off">Off</option><option value="auto" selected>Allow</option><option value="approve">Needs my approval</option></select></td></tr>
         </tbody>
       </table>
       <div class="form-row full">
@@ -1019,7 +1054,7 @@
       </div>
       <div class="form-row full">
         <div class="form-group">
-          <label for="palUsers">Allowed user names (for "Me")</label>
+          <label for="palUsers">Allowed user names (for Signed-in user)</label>
           <input type="text" id="palUsers" placeholder="*@lan" spellcheck="false" autocomplete="off">
         </div>
       </div>
@@ -1028,27 +1063,27 @@
           <label for="palMaxDays">Longest lifetime (days)</label>
           <input type="number" id="palMaxDays" value="365" min="1" max="36500">
         </div>
-        <div class="form-group">
-          <label for="palExpires">Code works for</label>
+        <div class="form-group pal-new-only">
+          <label for="palExpires">Pairing code works for</label>
           <select id="palExpires"><option value="1">1 hour</option><option value="24" selected>24 hours</option><option value="168">7 days</option></select>
         </div>
       </div>
-      <div class="form-row">
+      <div class="form-row pal-new-only">
         <div class="form-group">
           <label for="palServerUrl">Address the PC uses for this server</label>
           <input type="text" id="palServerUrl" spellcheck="false" autocomplete="off">
         </div>
       </div>
-      <h4>Revocation (CRL) checks the PC may use <button type="button" class="btn btn-ghost btn-sm pal-all" data-action="palAllCrl">All</button></h4>
-      <p class="form-hint" style="margin:-4px 0 6px">Each one ticked becomes a CRL profile in the Pal; the user picks one, and its certificates check revocation there.</p>
-      <div class="pal-crl-choices" id="palCrlDps">
+      <h4 class="pal-new-only">Revocation (CRL) checks the PC may use <button type="button" class="btn btn-ghost btn-sm pal-all" data-action="palAllCrl">All</button></h4>
+      <p class="form-hint pal-new-only" style="margin:-4px 0 6px">A CRL profile is where a PC's certificates check revocation. Each one ticked is offered in the Pal, and the user picks one.</p>
+      <div class="pal-crl-choices pal-new-only" id="palCrlDps">
         <label class="cf-choice"><input type="checkbox" value="server" checked> <span><strong>Cert Generator (LAN)</strong> <span class="dim">this server answers revocation checks; PCs on your LAN see revocations at once</span></span></label>
         <label class="cf-choice"><input type="checkbox" value="cloudflare"> <span><strong>The CA's Cloudflare Worker</strong> <span class="dim">reachable from anywhere</span></span></label>
-        <label class="cf-choice"><input type="checkbox" value="placeholder"> <span><strong>On each PC (self-hosted)</strong> <span class="dim">works offline; updated when the PC updates its CRL</span></span></label>
+        <label class="cf-choice"><input type="checkbox" value="placeholder"> <span><strong>Endpoint-hosted (on each PC)</strong> <span class="dim">works offline; updated when the PC updates its CRL</span></span></label>
         <label class="cf-choice"><input type="checkbox" value="none"> <span><strong>None</strong> <span class="dim">no revocation checks</span></span></label>
       </div>
-      <h4>Away from the LAN</h4>
-      <label class="cf-choice"><input type="checkbox" id="palAllowRemote"> <span><strong>Allow remote connection</strong> <span class="dim" id="palAllowRemoteHint">through the remote relay, once the PC has paired on the LAN. Requests stay end-to-end encrypted; Cloudflare can't read them</span></span></label>
+      <h4 class="pal-new-only">Away from the LAN</h4>
+      <label class="cf-choice pal-new-only"><input type="checkbox" id="palAllowRemote"> <span><strong>Allow remote connection</strong> <span class="dim" id="palAllowRemoteHint">through the remote relay, once the PC has paired on the LAN. Requests stay end-to-end encrypted; Cloudflare can't read them</span></span></label>
       <div class="modal-actions">
         <button class="btn btn-ghost" data-action="hideModal" data-arg="palAddModal">Cancel</button>
         <button class="btn btn-primary" id="palCreateBtn" data-action="createPalCode">Create pairing code</button>
@@ -1149,8 +1184,8 @@
   <div class="import-ask" id="importPopAsk">
     <p id="importPopQuestion"></p>
     <div class="import-ask-choices">
-      <button type="button" class="btn btn-ghost btn-sm" data-action="setImportTrusted" data-arg="no">No, include it</button>
-      <button type="button" class="btn btn-ghost btn-sm" data-action="setImportTrusted" data-arg="yes">Yes, certificate only</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-action="setImportTrusted" data-arg="no" id="importPopWithCa">Root CA + certificate</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-action="setImportTrusted" data-arg="yes">Certificate only</button>
     </div>
   </div>
   <div class="where" id="importPopWhere"></div>

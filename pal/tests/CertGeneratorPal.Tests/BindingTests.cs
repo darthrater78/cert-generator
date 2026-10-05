@@ -17,18 +17,44 @@ public class BindingTests
     }
 
     [Fact]
-    public void ComputerCertificatesBindOnlyToRemoteDesktop()
+    public void ACertificateServesTheRolesItsNamesFit()
     {
-        var both = new BindRequest { Rdp = true, IisSite = "Default Web Site", Port = 443 };
-        Assert.Same(both, BindingRules.ForUseCase(UseCases.WebServer, both));
-        var computer = BindingRules.ForUseCase(UseCases.Computer, both);
-        Assert.NotNull(computer);
-        Assert.True(computer.Rdp);
-        Assert.Null(computer.IisSite);
-        Assert.Null(BindingRules.ForUseCase(UseCases.Computer, new BindRequest { IisSite = "Default Web Site" }));
-        Assert.Null(BindingRules.ForUseCase(UseCases.User, new BindRequest { Rdp = true }));
-        Assert.Null(BindingRules.ForUseCase(UseCases.WebServer, new BindRequest()));
-        Assert.Null(BindingRules.ForUseCase(UseCases.WebServer, null));
+        // Remote Desktop and WinRM answer to the PC's own name: only a certificate that carries it.
+        var own = BindingRules.TargetsFor(["PC01.home.arpa"], "pc01.home.arpa");
+        Assert.Equal(BindTargets.All, own);
+        var other = BindingRules.TargetsFor(Names, "pc01.home.arpa");
+        Assert.Equal(BindTargets.Iis | BindTargets.RdGateway | BindTargets.RdBroker, other);
+        Assert.False(BindingRules.TargetsFor(Names, "").HasFlag(BindTargets.Rdp));
+        Assert.Equal(BindTargets.RdGateway, BindingRules.Flag(BindKeys.RdGateway));
+        Assert.Equal(BindTargets.None, BindingRules.Flag("telnet"));
+    }
+
+    [Fact]
+    public void ARequestSplitsIntoOnePartPerRole()
+    {
+        var parts = BindingRules.Split(new BindRequest
+        {
+            Rdp = true, WinRm = true, IisSite = "Default Web Site", Port = 8443, Host = "web.home.arpa",
+            RdGateway = true, RdPublishing = true, RdRedirector = true,
+        });
+        Assert.Equal([BindKeys.Rdp, BindKeys.WinRm, BindKeys.Iis, BindKeys.RdGateway, BindKeys.RdBroker], parts.Select(p => p.Target));
+        Assert.All(parts, p => Assert.Single(BindingRules.Split(p.Part)));  // each part is that role and nothing else
+        var iis = parts[2];
+        Assert.Equal("Default Web Site, port 8443, web.home.arpa", iis.Detail);
+        Assert.Equal(("Default Web Site", 8443, "web.home.arpa"), (iis.Part.IisSite, iis.Part.Port, iis.Part.Host));
+        Assert.Equal("signing RDP files and single sign-on", parts[4].Detail);
+        Assert.True(parts[4].Part.RdPublishing && parts[4].Part.RdRedirector && !parts[4].Part.RdGateway);
+        Assert.Equal("Default Web Site, port 443, every name", BindingRules.Split(new BindRequest { IisSite = "Default Web Site" })[0].Detail);
+        Assert.Empty(BindingRules.Split(new BindRequest()));
+    }
+
+    [Fact]
+    public void ARoleTheServerNeverMentionedIsAllowed()
+    {
+        var policy = new Policy { Binds = new() { [BindKeys.Rdp] = "approve", [BindKeys.Iis] = "off" } };
+        Assert.Equal("approve", policy.BindMode(BindKeys.Rdp));
+        Assert.Equal("off", policy.BindMode(BindKeys.Iis));
+        Assert.Equal("auto", policy.BindMode(BindKeys.WinRm));  // a server from before the switches
     }
 
     [Theory]

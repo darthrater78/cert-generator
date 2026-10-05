@@ -23,7 +23,10 @@ bp = Blueprint("pki", __name__)
 VALID_FORMATS = ("pem", "der", "crt", "pkcs12")
 VALID_CA_PARTS = ("both", "public", "private")
 VALID_CERT_PARTS = ("both", "public", "private", "chain")
-DOMAIN_RE = re.compile(r"^[\w.*-]{1,253}$")
+# One DNS label. An underscore is not a host name character, but internal names carry them.
+_LABEL_RE = re.compile(r"^(?!-)[A-Za-z0-9_-]{1,63}(?<!-)$")
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+'-]{1,64}@[A-Za-z0-9.-]{1,253}$")
+MAX_NAME_ATTRIBUTE_LEN = crypto_engine.MAX_NAME_ATTRIBUTE_LEN
 MAX_LIFETIME_DAYS = 36500
 DEFAULT_CRL_DAYS = 3650
 CRL_DP_MODES = ("none", "placeholder", "server", "cloudflare")
@@ -41,12 +44,27 @@ def _safe_name(value: str) -> str:
     return re.sub(r'[^a-zA-Z0-9_.-]', '_', value)
 
 
-def _is_valid_san(value: str) -> bool:
+def _is_dns_name(value: str) -> bool:
+    return 1 <= len(value) <= 253 and all(_LABEL_RE.match(label) for label in value.split("."))
+
+
+def normalize_san(value: str) -> str | None:
+    """A subject alternative name as the certificate carries it: an IP address, or a DNS name
+    in ASCII (an international name becomes its xn-- form) with at most one wildcard, as the
+    whole first label. None when it is neither."""
+    value = value.strip().rstrip(".")
     try:
         ipaddress.ip_address(value)
-        return True
+        return value
     except ValueError:
-        return bool(DOMAIN_RE.match(value))
+        pass
+    wildcard, host = ("*.", value[2:]) if value.startswith("*.") else ("", value)
+    if not host.isascii():
+        try:
+            host = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            return None
+    return wildcard + host if _is_dns_name(host) else None
 
 
 def parse_san_list(raw: str, common_name: str) -> list[str] | None:
@@ -56,11 +74,12 @@ def parse_san_list(raw: str, common_name: str) -> list[str] | None:
     DNS name or IP — "John Smith" on a user certificate gets no DNS SAN.
     """
     if not raw:
-        return [common_name] if _is_valid_san(common_name) else []
-    entries = [s.strip() for s in raw.split(",") if s.strip()]
-    if not all(_is_valid_san(s) for s in entries):
+        name = normalize_san(common_name)
+        return [name] if name else []
+    entries = [normalize_san(s) for s in raw.split(",") if s.strip()]
+    if not all(entries):
         return None
-    return entries
+    return list(dict.fromkeys(entries))
 
 
 def parse_crl_base_url(raw: str) -> str | None:
@@ -95,11 +114,11 @@ def _validate_ca_request(data: dict[str, Any], default_days: int, name_suffix: s
     algorithm = str_field(data, "algorithm", "ecdsa-p384")
     lifetime_days = parse_int(data.get("lifetime_days"), default_days)
 
-    if not domain or not DOMAIN_RE.match(domain):
-        return None, error("A valid domain name is required")
+    if not domain or not _is_dns_name(domain) or len(domain) > MAX_NAME_ATTRIBUTE_LEN:
+        return None, error(f"A valid domain name is required (max {MAX_NAME_ATTRIBUTE_LEN} characters)")
     name = name or f"{domain} {name_suffix}"
-    if len(name) > 200:
-        return None, error("CA name too long")
+    if len(name) > MAX_NAME_ATTRIBUTE_LEN:
+        return None, error(f"CA name too long (max {MAX_NAME_ATTRIBUTE_LEN} characters)")
     if algorithm not in crypto_engine.ALGORITHMS:
         return None, error(f"Invalid algorithm. Choose from: {crypto_engine.ALGORITHMS}")
     lifetime_error = _lifetime_error(lifetime_days)
@@ -130,9 +149,12 @@ def create_ca():
     domain, name, algorithm, lifetime_days = fields
     db.require_unlocked()
 
-    cert_pem, key_pem, serial, not_before, not_after = crypto_engine.create_ca(
-        domain=domain, name=name, algorithm=algorithm, lifetime_days=lifetime_days,
-    )
+    try:
+        cert_pem, key_pem, serial, not_before, not_after = crypto_engine.create_ca(
+            domain=domain, name=name, algorithm=algorithm, lifetime_days=lifetime_days,
+        )
+    except ValueError as e:
+        return value_error(e)
     ca_id = db.save_ca(
         name=name, domain=domain, algorithm=algorithm, not_before=not_before, not_after=not_after,
         serial=serial, cert_pem=cert_pem, key_pem=key_pem,
@@ -174,9 +196,10 @@ def _descendant_ids(ca_id: int) -> list[int]:
 @bp.delete("/api/ca/<int:ca_id>")
 def delete_ca(ca_id: int):
     if db.count_ca_workers(_descendant_ids(ca_id)):
-        return error("Tear down the Cloudflare CRL Worker of this CA (and of any intermediate under it) first", 409)
+        return error("Delete the Cloudflare CRL Worker of this CA (and of any intermediate under it) first", 409)
+    ca = db.get_ca_summary(ca_id)
     if db.delete_ca(ca_id):
-        log.info("CA deleted: id=%d", ca_id)
+        log.info("CA deleted: %s (with its certificates)", ca["name"] if ca else ca_id)
         return jsonify({"ok": True})
     return error("CA not found", 404)
 
@@ -195,10 +218,13 @@ def create_intermediate(ca_id: int):
         return err
     domain, name, algorithm, lifetime_days = fields
 
-    cert_pem, key_pem, serial, not_before, not_after = crypto_engine.create_intermediate_ca(
-        parent_cert_pem=parent["cert_pem"], parent_key_pem=parent["key_pem"],
-        domain=domain, name=name, algorithm=algorithm, lifetime_days=lifetime_days,
-    )
+    try:
+        cert_pem, key_pem, serial, not_before, not_after = crypto_engine.create_intermediate_ca(
+            parent_cert_pem=parent["cert_pem"], parent_key_pem=parent["key_pem"],
+            domain=domain, name=name, algorithm=algorithm, lifetime_days=lifetime_days,
+        )
+    except ValueError as e:
+        return value_error(e)
     new_id = db.save_ca(
         name=name, domain=domain, algorithm=algorithm, not_before=not_before, not_after=not_after,
         serial=serial, cert_pem=cert_pem, key_pem=key_pem, parent_ca_id=ca_id,
@@ -240,6 +266,15 @@ def _parse_issue_request(data: dict[str, Any]) -> tuple[IssueRequest | None, str
     san_list = parse_san_list(str_field(data, "san_domains").strip(), common_name)
     if san_list is None:
         return None, "Each SAN must be a valid DNS name or IP address"
+    if len(common_name) > MAX_NAME_ATTRIBUTE_LEN and normalize_san(common_name) not in san_list:
+        return None, (f"A common name is at most {MAX_NAME_ATTRIBUTE_LEN} characters. "
+                      "A longer host name goes in the SANs")
+    email = str_field(data, "email").strip() or None
+    upn = str_field(data, "upn").strip() or None
+    if email and not _EMAIL_RE.match(email):
+        return None, "The e-mail address must look like name@example.com"
+    if upn and not _EMAIL_RE.match(upn):
+        return None, "The UPN must look like user@domain"
 
     # include_crl_dp (bool) predates the choice of distribution point and means the placeholder.
     default_mode = "placeholder" if data.get("include_crl_dp") else "none"
@@ -259,8 +294,8 @@ def _parse_issue_request(data: dict[str, Any]) -> tuple[IssueRequest | None, str
         san_list=san_list,
         algorithm=algorithm,
         template=template,
-        email=str_field(data, "email").strip() or None,
-        upn=str_field(data, "upn").strip() or None,
+        email=email,
+        upn=upn,
         crl_dp_mode=crl_dp_mode,
         crl_base_url=crl_base_url,
         lifetime_days=lifetime_days,
@@ -340,12 +375,15 @@ def issue_cert(ca_id: int):
     crl_dp_url = _crl_dp_url(ca, req)
     if req.crl_dp_mode == "cloudflare" and not crl_dp_url:
         return error("This CA has no Cloudflare CRL Worker. Deploy one from the CA page first")
-    cert_pem, key_pem, serial, not_before, not_after = crypto_engine.issue_certificate(
-        ca_cert_pem=ca["cert_pem"], ca_key_pem=ca["key_pem"],
-        common_name=req.common_name, san_domains=req.san_list, algorithm=req.algorithm,
-        lifetime_days=req.lifetime_days, template=req.template, email=req.email, upn=req.upn,
-        crl_dp_url=crl_dp_url,
-    )
+    try:
+        cert_pem, key_pem, serial, not_before, not_after = crypto_engine.issue_certificate(
+            ca_cert_pem=ca["cert_pem"], ca_key_pem=ca["key_pem"],
+            common_name=req.common_name, san_domains=req.san_list, algorithm=req.algorithm,
+            lifetime_days=req.lifetime_days, template=req.template, email=req.email, upn=req.upn,
+            crl_dp_url=crl_dp_url,
+        )
+    except ValueError as e:
+        return value_error(e)
     cert_id = db.save_cert(
         ca_id=ca_id, common_name=req.common_name, san_domains=",".join(req.san_list),
         algorithm=req.algorithm, template=req.template, not_before=not_before, not_after=not_after,
@@ -481,7 +519,7 @@ def revoke_cert(cert_id: int):
     if ca.get("crl_public") or ca.get("cf_worker"):
         db.require_unlocked()  # re-signing the published CRL needs the CA key: fail before revoking
     db.revoke_cert(cert_id)
-    log.info("Certificate revoked: id=%d", cert_id)
+    log.info("Certificate revoked: %s (%s, CA %s)", cert["common_name"], cert["template"], ca["name"])
     crl_publisher.publish(ca["id"])  # also pushes to the CA's Worker, if it has one
     kind = crl_dp_kind(cert.get("crl_dp_url"), ca)
     worker = db.get_ca_worker(ca["id"])
@@ -491,15 +529,16 @@ def revoke_cert(cert_id: int):
         result["cloudflare"] = {"pushed": not worker["cf_push_error"], "error": worker["cf_push_error"]}
         if kind == "cloudflare" and worker["cf_push_error"]:
             result["note"] = ("The certificate is revoked, but publishing the updated CRL to Cloudflare failed. "
-                              "The app retries every hour; use Push now on the CA page to retry sooner.")
+                              "The app retries every hour; use Publish now on the CA page to retry sooner.")
     # served or Worker: nothing to do; otherwise the page offers the updated CRL for import
     return jsonify(result)
 
 
 @bp.delete("/api/certs/<int:cert_id>")
 def delete_cert(cert_id: int):
+    cert = db.get_cert_summary(cert_id)
     if db.delete_cert(cert_id):
-        log.info("Certificate deleted: id=%d", cert_id)
+        log.info("Certificate deleted: %s (%s)", cert["common_name"] if cert else cert_id, cert["template"] if cert else "")
         return jsonify({"ok": True})
     return error("Certificate not found", 404)
 
@@ -558,6 +597,7 @@ def export_ca(ca_id: int):
             export_data, filename = crypto_engine.export_certificate(ca["cert_pem"], ca["key_pem"], fmt, password=password)
     except ValueError as e:
         return value_error(e)
+    log.info("CA exported: %s (%s, %s)", ca["name"], fmt, "certificate only" if part == "public" else "with the CA's private key")
     return deliver_export(export_data, f"ca-{_safe_name(ca['name'])}-{filename}")
 
 
@@ -603,6 +643,8 @@ def export_cert(cert_id: int):
             )
     except ValueError as e:
         return value_error(e)
+    log.info("Certificate exported: %s (%s, %s)", cert["common_name"], fmt,
+             "certificate only" if part in ("public", "chain") else "with private key")
     return deliver_export(export_data, f"{cert['common_name']}-{filename}")
 
 
@@ -644,7 +686,8 @@ def export_install_bundle(cert_id: int):
         )
     except UserError as e:
         return error(e.user_message)
-    log.info("Install bundle exported: cert=%d os=%s with_ca=%s", cert_id, os_name, bool(data.get("include_ca")))
+    log.info("Install bundle exported: %s for %s (with private key%s)", cert["common_name"], os_name,
+             ", with the CA certificates" if data.get("include_ca") else "")
     return deliver_export(bundle, filename)
 
 

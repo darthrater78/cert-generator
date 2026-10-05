@@ -1,5 +1,5 @@
 <div class="guide-head">
-  <h3>Certificate Import Guide</h3>
+  <h3>Certificate Guide</h3>
   <p class="guide-subtitle">How to create, export, and install certificates for each template.</p>
   <div class="guide-tabs" id="guideTabs">
     <button class="guide-tab active" data-action="showGuideTab" data-arg="guide-general">General</button>
@@ -16,10 +16,10 @@
   <div class="guide-content" id="guide-general">
     <h4>Quick Start</h4>
     <ol>
-      <li><strong>Create a Root CA</strong> &mdash; click <code>+ New CA</code>, enter your domain, and choose an algorithm. For maximum Windows compatibility use <code>RSA 4096</code> or <code>ECDSA P-384</code>.</li>
-      <li><strong>Issue a certificate</strong> &mdash; select the CA, click <code>+ Issue Certificate</code>, pick a template, and fill in the common name.</li>
+      <li><strong>Create a Root CA</strong> &mdash; click <code>+ New</code> beside Authorities in the sidebar, enter your domain, and choose an algorithm. For maximum Windows compatibility use <code>RSA 4096</code> or <code>ECDSA P-384</code>.</li>
+      <li><strong>Issue a certificate</strong> &mdash; select the CA, click <code>Issue certificate</code>, pick a template, and fill in the common name.</li>
       <li><strong>Export as PKCS12 (.pfx)</strong> &mdash; this is the default format. Choose a PFX password: it protects the key and you need it to import the file. There is no default.</li>
-      <li><strong>Trust the CA on your machine</strong> &mdash; on the CA page, <strong>Download</strong> the CA certificate (the default, DER &middot; Certificate Only) and import it into <code>Trusted Root Certification Authorities</code>. Without this step, certificates will appear untrusted.</li>
+      <li><strong>Trust the CA on your machine</strong> &mdash; on the CA page, <strong>Download</strong> the CA certificate (the default, DER &middot; Certificate Only) and install it into <code>Trusted Root Certification Authorities</code>. Without this step, certificates will appear untrusted.</li>
       <li><strong>Or let the app walk you through it</strong> &mdash; <strong>Export / install &#9662;</strong> on any certificate gives the files to download (or one .zip with install scripts) and copy-paste commands for Windows, macOS and Linux.</li>
     </ol>
     <div class="step-note">All certificates are self-signed by your CA. They are only trusted on machines where you have installed the CA certificate as a trusted root.</div>
@@ -73,7 +73,7 @@
 
     <h4>Creating the Certificate</h4>
     <ol>
-      <li>Select your CA, click <code>+ Issue Certificate</code>.</li>
+      <li>Select your CA, click <code>Issue certificate</code>.</li>
       <li>Template: <strong>Computer</strong>.</li>
       <li>Common Name: the machine's FQDN, e.g. <code>WORKSTATION01.corp.example.com</code>.</li>
       <li>SANs: add the FQDN and optionally the short hostname.</li>

@@ -10,7 +10,7 @@ using CertGeneratorPal.Core;
 namespace CertGeneratorPal;
 
 /// <summary>
-/// The self-hosted CRL: this PC answers its CA's placeholder CRL address itself, so revocation
+/// The endpoint-hosted CRL: this PC answers its CA's placeholder CRL address itself, so revocation
 /// checks work even when it can't reach the server (a laptop away from the LAN).
 ///
 /// The same listener as the v2.7 install bundles (app/crl_local_server.py), sharing its state,
@@ -123,7 +123,7 @@ internal static partial class LocalCrlServer
             throw new PalException("Listener not answering. The CRL server was installed but doesn't answer. " +
                 "Is another program using port 80? It retries at the next restart.");
         }
-        AppLog.Info("Self-hosted CRL installed for " + string.Join(", ", crls.Select(c => c.Host).Distinct()));
+        AppLog.Info("Endpoint-hosted CRL installed for " + string.Join(", ", crls.Select(c => c.Host).Distinct()));
         return OpResult.Success($"This PC now answers revocation checks itself for {string.Join(", ", crls.Select(c => c.CaName))}, " +
             "even away from your network. Use Update after your admin revokes a certificate.");
     }
@@ -222,7 +222,7 @@ internal static partial class LocalCrlServer
         var record = ReadRecord();
         if (record.Count == 0)
         {
-            return OpResult.Success("The self-hosted CRL isn't installed by Cert Generator Pal on this PC.");
+            return OpResult.Success("The endpoint-hosted CRL isn't installed by Cert Generator Pal on this PC.");
         }
         var ours = record.Select(r => r.Host).Distinct().ToList();
         foreach (var r in record)
@@ -245,13 +245,13 @@ internal static partial class LocalCrlServer
         {
             Run("schtasks.exe", ["/Delete", "/TN", TaskName, "/F"], allowFailure: true);
             Directory.Delete(Base, recursive: true);
-            AppLog.Info("Self-hosted CRL removed (listener and folder)");
+            AppLog.Info("Endpoint-hosted CRL removed (listener and folder)");
             return OpResult.Success("Removed. This PC no longer answers revocation checks itself.");
         }
         File.WriteAllLines(HostList, left);
         File.Delete(PalRecord);
         Run("schtasks.exe", ["/Run", "/TN", TaskName], allowFailure: true);
-        AppLog.Info("Self-hosted CRL removed; listener kept for " + string.Join(", ", left));
+        AppLog.Info("Endpoint-hosted CRL removed; listener kept for " + string.Join(", ", left));
         return OpResult.Success($"Removed. The listener keeps running for {string.Join(", ", left)} (installed by an install bundle).");
     }
 

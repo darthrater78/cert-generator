@@ -67,7 +67,7 @@ def connect():
 @recent_auth_required
 def disconnect():
     if db.count_ca_workers():
-        return error("Tear down every CA's Worker first, or the app can no longer update or remove them", 409)
+        return error("Delete every CA's Worker first, or the app can no longer update or remove them", 409)
     db.clear_cloudflare_credentials()
     log.warning("Cloudflare account disconnected")
     return jsonify({"ok": True})

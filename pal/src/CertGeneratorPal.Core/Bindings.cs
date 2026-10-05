@@ -5,10 +5,39 @@ using System.Xml.Linq;
 
 namespace CertGeneratorPal.Core;
 
-/// <summary>Where a web server certificate should be used: Remote Desktop and/or one IIS site's https binding.</summary>
+/// <summary>What a machine certificate can be put to work for on this PC.</summary>
+[Flags]
+public enum BindTargets
+{
+    None = 0,
+    Rdp = 1,
+    WinRm = 2,
+    Iis = 4,
+    RdGateway = 8,
+    RdBroker = 16,
+    All = Rdp | WinRm | Iis | RdGateway | RdBroker,
+}
+
+/// <summary>
+/// Where a machine certificate should be used. Binding is its own step on an installed
+/// certificate: Remote Desktop and WinRM answer to the PC's own name, so they need a certificate
+/// that carries it; an IIS site and the Remote Desktop Services roles take any server certificate.
+/// </summary>
 public sealed class BindRequest
 {
     public bool Rdp { get; set; }
+
+    /// <summary>The WinRM HTTPS listener (PowerShell remoting on port 5986).</summary>
+    public bool WinRm { get; set; }
+
+    /// <summary>The RD Gateway role on this PC.</summary>
+    public bool RdGateway { get; set; }
+
+    /// <summary>RD Connection Broker on this PC: the certificate that signs RDP files.</summary>
+    public bool RdPublishing { get; set; }
+
+    /// <summary>RD Connection Broker on this PC: the certificate for single sign-on.</summary>
+    public bool RdRedirector { get; set; }
 
     /// <summary>The IIS site, as IIS Manager names it; null for none.</summary>
     public string? IisSite { get; set; }
@@ -18,7 +47,7 @@ public sealed class BindRequest
     /// <summary>A host name for an SNI binding (one of the certificate's names); empty binds every name on the port.</summary>
     public string Host { get; set; } = "";
 
-    public bool IsEmpty => !Rdp && IisSite is null;
+    public bool IsEmpty => !Rdp && !WinRm && IisSite is null && !RdGateway && !RdPublishing && !RdRedirector;
 }
 
 /// <summary>An IIS site and its bindings, as appcmd lists them.</summary>
@@ -48,15 +77,61 @@ public static partial class BindingRules
         thumbprint is { Length: 40 } t && t.All(Uri.IsHexDigit) ? t.ToUpperInvariant() : null;
 
     /// <summary>
-    /// What a newly requested certificate may be bound to: a web server certificate to anything,
-    /// a This computer certificate to Remote Desktop only (it has just the PC's own name). Null for nothing.
+    /// What a server certificate with these names can serve on a PC called <paramref name="fqdn"/>.
+    /// Remote Desktop and WinRM answer to the PC's own name, so the certificate must carry it; an
+    /// IIS site, RD Gateway and the RD Connection Broker answer to whatever names they are given.
     /// </summary>
-    public static BindRequest? ForUseCase(string useCase, BindRequest? request) => request is not { IsEmpty: false } ? null : useCase switch
+    public static BindTargets TargetsFor(IEnumerable<string> certificateNames, string fqdn)
     {
-        UseCases.WebServer => request,
-        UseCases.Computer when request.Rdp => new BindRequest { Rdp = true },
-        _ => null,
+        var targets = BindTargets.Iis | BindTargets.RdGateway | BindTargets.RdBroker;
+        if (fqdn.Length > 0 && certificateNames.Any(n => string.Equals(n, fqdn, StringComparison.OrdinalIgnoreCase)))
+        {
+            targets |= BindTargets.Rdp | BindTargets.WinRm;
+        }
+        return targets;
+    }
+
+    public static BindTargets Flag(string key) => key switch
+    {
+        BindKeys.Rdp => BindTargets.Rdp,
+        BindKeys.WinRm => BindTargets.WinRm,
+        BindKeys.Iis => BindTargets.Iis,
+        BindKeys.RdGateway => BindTargets.RdGateway,
+        BindKeys.RdBroker => BindTargets.RdBroker,
+        _ => BindTargets.None,
     };
+
+    /// <summary>
+    /// One part per role in <paramref name="request"/>, with the words the admin sees. The server
+    /// allows or queues each role separately, so each part is applied on its own.
+    /// </summary>
+    public static List<(string Target, string Detail, BindRequest Part)> Split(BindRequest request)
+    {
+        var parts = new List<(string, string, BindRequest)>();
+        if (request.Rdp)
+        {
+            parts.Add((BindKeys.Rdp, "", new BindRequest { Rdp = true }));
+        }
+        if (request.WinRm)
+        {
+            parts.Add((BindKeys.WinRm, "port 5986", new BindRequest { WinRm = true }));
+        }
+        if (request.IisSite is { } site)
+        {
+            string detail = string.Create(CultureInfo.InvariantCulture, $"{site}, port {request.Port}, {(request.Host.Length > 0 ? request.Host : "every name")}");
+            parts.Add((BindKeys.Iis, detail, new BindRequest { IisSite = site, Port = request.Port, Host = request.Host }));
+        }
+        if (request.RdGateway)
+        {
+            parts.Add((BindKeys.RdGateway, "", new BindRequest { RdGateway = true }));
+        }
+        if (request.RdPublishing || request.RdRedirector)
+        {
+            string detail = string.Join(" and ", new[] { request.RdPublishing ? "signing RDP files" : null, request.RdRedirector ? "single sign-on" : null }.OfType<string>());
+            parts.Add((BindKeys.RdBroker, detail, new BindRequest { RdPublishing = request.RdPublishing, RdRedirector = request.RdRedirector }));
+        }
+        return parts;
+    }
 
     /// <summary>Checks a request from the unelevated app before the helper acts on it. Throws with a short headline.</summary>
     public static void Validate(BindRequest request, IEnumerable<string> certificateNames)
