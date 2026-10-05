@@ -1,4 +1,4 @@
-# Run the packaged EXE's self-tests. Used by CI and runnable on any Windows machine:
+# Run the packaged EXE's self-tests. Used by the release workflow and runnable on any Windows machine:
 #   pwsh scripts/test-exe.ps1 -Exe dist/CertGenerator.exe
 param(
     [Parameter(Mandatory = $true)][string]$Exe,
