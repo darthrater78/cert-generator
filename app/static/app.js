@@ -492,11 +492,30 @@ async function createIntermediate() {
   }
 }
 
+// What will refuse the certificate as it is set up now. Nothing is blocked: a private CA may have reasons.
+const APPLE_MAX_SERVER_DAYS = 825;
+
+function updateCertCompatNote() {
+  const tmpl = document.getElementById('certTemplate').value;
+  const notes = [];
+  if (document.getElementById('certAlgorithm').value === 'ed25519') {
+    notes.push(MACHINE_TEMPLATES.has(tmpl)
+      ? 'Ed25519: browsers and Windows can\'t use an Ed25519 server certificate. Choose ECDSA or RSA unless the client is known to support it.'
+      : 'Ed25519: Windows and many applications can\'t use an Ed25519 certificate. Choose ECDSA or RSA unless the client is known to support it.');
+  }
+  if (MACHINE_TEMPLATES.has(tmpl) && lifetimeDaysFromInputs('certLifetime', 'certLifetimeUnit') > APPLE_MAX_SERVER_DAYS) {
+    notes.push('Lifetime: iPhone, iPad and Mac refuse a server certificate valid for more than ' + APPLE_MAX_SERVER_DAYS + ' days (2 years is fine).');
+  }
+  document.getElementById('certCompatNote').textContent = notes.join(' ');
+  document.getElementById('certCompatRow').classList.toggle('hidden', !notes.length);
+}
+
 function onTemplateChange() {
   const tmpl = document.getElementById('certTemplate').value;
   document.getElementById('templateDesc').textContent = TEMPLATE_DESCS[tmpl] || '';
   // A server certificate still has to be bound on the machine that uses it; the others are picked up from the store.
   document.getElementById('templateBindNote').classList.toggle('hidden', !MACHINE_TEMPLATES.has(tmpl));
+  updateCertCompatNote();
   const showEmail = tmpl === 'email' || tmpl === 'user';
   document.getElementById('emailRow').style.display = showEmail ? '' : 'none';
   if (!showEmail) document.getElementById('certEmail').value = '';
@@ -3546,6 +3565,7 @@ const UI_ACTIONS = new Set([
   'toggleSection',
   'toggleSerial',
   'updateCaPasswordVisibility',
+  'updateCertCompatNote',
   'updateCrlDpFields',
   'updateRecoveryKeyDone',
   'viewCRL',

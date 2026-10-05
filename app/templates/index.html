@@ -564,7 +564,7 @@
     <div class="form-row">
       <div class="form-group">
         <label>Algorithm</label>
-        <select id="certAlgorithm">
+        <select id="certAlgorithm" data-change="updateCertCompatNote">
           <option value="ecdsa-p384">ECDSA P-384</option>
           <option value="ecdsa-p256">ECDSA P-256</option>
           <option value="ed25519">Ed25519</option>
@@ -575,13 +575,16 @@
       <div class="form-group">
         <label>Lifetime</label>
         <div class="lifetime-input">
-          <input type="number" id="certLifetime" value="1" min="1">
-          <select id="certLifetimeUnit">
+          <input type="number" id="certLifetime" value="1" min="1" data-change="updateCertCompatNote">
+          <select id="certLifetimeUnit" data-change="updateCertCompatNote">
             <option value="years" selected>Years</option>
             <option value="days">Days</option>
           </select>
         </div>
       </div>
+    </div>
+    <div class="form-row full hidden" id="certCompatRow">
+      <p class="form-hint" id="certCompatNote"></p>
     </div>
     <div class="form-row full">
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">

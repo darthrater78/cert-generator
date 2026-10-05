@@ -179,8 +179,11 @@ def _issue(request_id: int, device: dict[str, Any]) -> dict[str, Any]:
             not_after=not_after, serial=serial, cert_pem=cert_pem, key_pem=b"", crl_dp_url=crl_dp_url,
             pal_device_id=device["id"], pal_key_storage=row.get("key_storage"), pal_user=row.get("windows_user"),
         )
-    except BaseException:
+    except BaseException as e:
         db.transition_pal_request(request_id, "issuing", "pending")
+        if isinstance(e, UserError) and not isinstance(e, PalError):
+            # the CA can't sign this (it has expired, say): a refusal like any other
+            raise PalError(e.user_message) from e
         raise
     db.transition_pal_request(request_id, "issuing", "issued", cert_id=cert_id)
     _revoke_superseded(device, row, cert_id)
