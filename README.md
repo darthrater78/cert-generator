@@ -5,7 +5,7 @@
 
 **Your own certificate authority for the lab, the office and security demos.** Create root and intermediate CAs, issue certificates that match Windows CA templates, revoke them with a CRL clients can actually reach, and get every certificate onto the machine that needs it. Runs as a **Docker web app**. The standalone **Windows desktop app** is in [maintenance only](#standalone-exe-windows-desktop): no new features after v2.8.0.
 
-[GitHub](https://github.com/darthrater78/cert-generator) · [v2.9.0-dev.1 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.9.0-dev.1) · [What's new](CHANGELOG.md) · [Quick start](#quick-start) · [Cert Generator Pal](#cert-generator-pal-windows-pcs)
+[GitHub](https://github.com/darthrater78/cert-generator) · [v2.9.0-dev.2 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.9.0-dev.2) · [What's new](CHANGELOG.md) · [Quick start](#quick-start) · [Cert Generator Pal](#cert-generator-pal-windows-pcs)
 
 ## New in 2.8: Cert Generator Pal
 
@@ -157,7 +157,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.9.0-dev.1
+    image: ghcr.io/darthrater78/cert-generator:2.9.0-dev.2
     container_name: cert-generator
     restart: unless-stopped
     security_opt:

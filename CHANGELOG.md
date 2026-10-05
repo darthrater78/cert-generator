@@ -6,6 +6,24 @@ What changed in each release of Cert Generator and Cert Generator Pal. The [READ
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
 
+### v2.9.0-dev.2 — 2026-10-05
+
+Second pre-release of 2.9, from the first run on a real Windows PC: **edit what a connected PC may request**, an **activity log**, **timestamps** on certificates, and the Pal shows **where its keys live**. Not for production.
+
+#### Docker
+- **Edit a connected PC:** **Windows PCs › Edit** changes what a PC may request (certificate kinds and their approval, allowed names, longest lifetime) without a new pairing code. The PC picks it up at its next check-in; certificates it already holds are not touched, and remote access keeps its own switch. CRL profiles are still fixed when a PC pairs
+- **Activity log:** **Tools › Activity log** lists what was done, when and by whom: sign-ins and failed ones, certificates issued, revoked, deleted and exported (and whether a private key left with them), PCs connecting and what they asked for, approvals and settings changes. The newest 5,000 entries are kept; keys, passwords and pairing codes are never recorded. Entries start with this version
+- **Timestamps:** each certificate row shows when it was issued and when it was revoked; the Windows PCs page shows when each of a PC's certificates was issued
+- **Where a PC's key lives** moved next to the certificate's name (**key on the PC · TPM**), instead of inside the Key on PC chip
+- **Pal (served by this image):** a **Key storage** line under Connectivity says whether this PC's keys live in its **TPM** or in Windows' software key store, and the certificate list has a **Key** column. Tile subtitles are shorter so they no longer cut off
+- **Fix:** a certificate that checks revocation at its CA's Cloudflare Worker was labelled **External** in the CRL column; it now reads **Cloudflare Worker**, or **Not published** when the last publish failed
+- Private-key exports (CA, certificate, install bundle, SSH key) are now written to the server log, with what was exported
+
+#### Internal
+- CI no longer builds the standalone Windows EXE on every change; the release workflow still builds and self-tests it for a release whose entry has a Windows EXE section. The README marks the EXE as maintenance only: no new features after v2.8.0, security patches when needed
+- `PUT /api/pal/devices/<id>/policy`, `GET /api/activity`, and `key_storage` on the certificates in the Pal's `device` reply
+- The container smoke test no longer fails when `grep` exits before `curl` has finished
+
 ### v2.9.0-dev.1 — 2026-10-05
 
 First pre-release of 2.9: **clearer wording throughout**, the Pal's **TPM state shown in the app**, and **more things a certificate can be bound to** on a PC. Not for production: the Pal's new binds and its key-storage reporting have not run on a real Windows PC yet.
