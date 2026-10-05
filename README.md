@@ -767,7 +767,7 @@ bash scripts/lint-workflows.sh
 ```
 
 CI runs on every push and pull request to `master`:
-- the unit tests on Linux (Python 3.10 and 3.14) and Windows
+- the unit tests on Linux (Python 3.10 and 3.14)
 - the browser tests in Chromium, Firefox, and WebKit
 - a Docker image build with a container smoke test, including a clean shutdown on `docker stop`, and a Trivy scan of the image's OS and Python packages (report only)
 - `actionlint` against `.github/workflows/**` (only runs when those files change)
