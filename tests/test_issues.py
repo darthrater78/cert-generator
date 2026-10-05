@@ -337,3 +337,23 @@ def test_prerelease_entry_is_its_own_version():
     # the final release's entry is not confused with its pre-release
     with pytest.raises(release_notes.NotesError, match="v2.2.0"):
         release_notes.build_notes("2.2.0", PRERELEASE, None, None)
+
+
+def test_release_points_back_to_a_release_not_a_prerelease():
+    # A Docker-only release after a pre-release that built the EXE: its notes name the last *released* EXE.
+    readme = """## Version history
+
+### v2.2.0 — 2026-09-26
+
+#### Docker
+- Server change
+
+### v2.2.0-dev.1 — 2026-09-25
+
+#### Windows EXE
+- Dev desktop build
+
+""" + BOTH.split("## Version history\n\n", 1)[1]
+    assert release_notes.previous_release_of(readme, "2.2.0", release_notes.EXE) == "2.1.0"
+    assert "Windows EXE unchanged (2.1.0)" in release_notes.build_notes("2.2.0", readme, "sha256:abc", None)
+    assert release_notes.previous_release_of(readme, "2.2.0-dev.1", release_notes.DOCKER) == "2.1.0"

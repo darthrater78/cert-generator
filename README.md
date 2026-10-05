@@ -5,7 +5,7 @@
 
 **Your own certificate authority for the lab, the office and security demos.** Create root and intermediate CAs, issue certificates that match Windows CA templates, revoke them with a CRL clients can actually reach, and get every certificate onto the machine that needs it. Runs as a **Docker web app**. The standalone **Windows desktop app** is in [maintenance only](#standalone-exe-windows-desktop): no new features after v2.8.0.
 
-[GitHub](https://github.com/darthrater78/cert-generator) · [v2.9.0-dev.3 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.9.0-dev.3) · [What's new](CHANGELOG.md) · [Quick start](#quick-start) · [Cert Generator Pal](#cert-generator-pal-windows-pcs)
+[GitHub](https://github.com/darthrater78/cert-generator) · [v2.9.0 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.9.0) · [What's new](CHANGELOG.md) · [Quick start](#quick-start) · [Cert Generator Pal](#cert-generator-pal-windows-pcs)
 
 ## New in 2.8: Cert Generator Pal
 
@@ -75,6 +75,7 @@
 - **Intermediate CAs** — create subordinate CAs from any root CA; intermediates can issue their own certificates (intermediates are issued with path length 0, so they cannot create further CAs)
 - **Issue leaf certificates** signed by any CA (root or intermediate), with SAN (Subject Alternative Name) support including wildcards and IP addresses
 - **Certificate templates** matching Windows CA templates — Web Server, Computer, Client Authentication, User (Smart Card Logon), Code Signing, Email (S/MIME) — each with the correct key usage and extended key usage extensions
+- **Standards-clean output** — certificates and CRLs follow RFC 5280: key usage fitted to the key type, CRLs with a CRL Number and Authority Key Identifier, nothing valid past the CA that signed it, names checked before signing (international names are issued in their `xn--` form, and a host name over 64 characters keeps its full name in the SAN). The Issue Certificate form says when a choice will be refused somewhere: Ed25519 for a server, or a server lifetime over 825 days on Apple devices
 - **Track all certificates** — view status (active/revoked/expired), details, and metadata
 - **Activity log** — **Tools › Activity log** lists what was done, when and by whom: sign-ins and failed ones, certificates issued, revoked, deleted and exported (and whether a private key left with them), PCs connecting and what they asked for, approvals, and settings changes. It keeps the newest 5,000 entries and never records keys, passwords or pairing codes
 - **When things happened** — every certificate row shows when it was issued and, if so, when it was revoked
@@ -157,7 +158,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.9.0-dev.3
+    image: ghcr.io/darthrater78/cert-generator:2.9.0
     container_name: cert-generator
     restart: unless-stopped
     security_opt:
