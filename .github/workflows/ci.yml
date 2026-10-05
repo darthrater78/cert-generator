@@ -48,12 +48,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Oldest supported (pyproject requires-python) and the Docker image's version,
-        # plus Windows for the desktop app's platform.
+        # Oldest supported (pyproject requires-python) and the Docker image's version.
+        # Not on Windows: the server ships as a Linux image, and the deprecated desktop EXE
+        # is built and self-tested on Windows by release.yml when a release carries one.
         include:
           - { os: ubuntu-latest, python-version: "3.10" }
           - { os: ubuntu-latest, python-version: "3.14" }
-          - { os: windows-latest, python-version: "3.14" }
     steps:
       - name: Docs-only change — nothing to test
         if: needs.changes.outputs.code == 'false'
