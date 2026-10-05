@@ -6,6 +6,29 @@ What changed in each release of Cert Generator and Cert Generator Pal. The [READ
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
 
+### v2.9.0-dev.1 — 2026-10-05
+
+First pre-release of 2.9: **clearer wording throughout**, the Pal's **TPM state shown in the app**, and **more things a certificate can be bound to** on a PC. Not for production: the Pal's new binds and its key-storage reporting have not run on a real Windows PC yet.
+
+#### Docker
+- **Export / install** asks what you are deciding: **Install the root CA as well?**, with **Root CA + certificate** or **Certificate only**. The steps read **Easiest · one .zip that installs itself**, then **By hand · 1. download the files** and **2. run these commands**
+- **Where a PC's keys live is shown:** the **Windows PCs** page marks each PC's device key and each of its certificates **TPM**, **Software key** or **Not reported**, and a CA's certificate list shows it beside **Key on PC**. The Pal reports this when it makes a key; it is not TPM attestation. Web server and computer certificates issued before this version stay **Not reported** until they are renewed
+- **Pal (served by this image) — Bind…:** a **This computer** certificate serves **Remote Desktop** and, new, **WinRM over HTTPS** (adds or switches the listener on port 5986; Windows Firewall is not changed). A **Web server** certificate serves an **IIS site** and, new, **RD Gateway** (restarts its service) and the **RD Connection Broker**'s publishing and single sign-on certificates. Roles the PC doesn't run aren't offered, and a renewal moves all of them to the new certificate
+- **Changed:** a Web server certificate is no longer offered for Remote Desktop; use the This computer certificate. One already bound that way keeps working and still moves on renewal
+- **One name for each thing:** **Endpoint-hosted** CRL everywhere (was also "self-hosted" and "On each PC"); a CA's Cloudflare Worker has **Publish now** and **Delete Worker** (were Push now and Tear down); the remote connection has **Remove**; the guide is the **Certificate Guide**, and its Quick Start names the buttons as they are
+- **CA export note:** **Trust on a machine** (certificate only, which is also what PCs behind TLS inspection need) and **Signing device / CA move** (certificate and key, for the one device that signs as this CA)
+- **Add a PC:** **Issuing CA**, **Pairing code works for**, **Signed-in user** (the Pal calls it "Me"), and a line saying what a CRL profile is
+- Plainer text on the lock screen, the empty state, the CRL address checkbox and the restore confirmation, which now names the backup file
+
+#### Windows EXE
+- The same wording changes in the desktop app: Export / install, the CA export note, the Certificate Guide, the lock screen, the empty state and the restore confirmation
+- The Cert Generator server CRL option reads **Cert Generator server (not in the desktop app)**
+
+#### Internal
+- The Pal sends `key_storage` with `enroll` and `requests`, and `device_key_storage` and `keys` with `status`; the server keeps it on the device, the request and the certificate
+- The Pal's WinRM, RD Gateway and RD Connection Broker binds run a fixed Windows PowerShell script from the elevated helper, with modules loaded from Windows' own folder only
+- README screenshots retaken where the screens changed
+
 ### v2.8.0 — 2026-10-04
 
 **Cert Generator Pal**: a Windows companion app that pairs a PC with your server once, then requests, installs and renews its own certificates. Also in this release: a one-line command to authorize an SSH key on a server, and the app's own colours. It gathers the eight `2.8.0-dev` pre-releases listed below.
