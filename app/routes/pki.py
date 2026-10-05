@@ -175,8 +175,9 @@ def _descendant_ids(ca_id: int) -> list[int]:
 def delete_ca(ca_id: int):
     if db.count_ca_workers(_descendant_ids(ca_id)):
         return error("Delete the Cloudflare CRL Worker of this CA (and of any intermediate under it) first", 409)
+    ca = db.get_ca_summary(ca_id)
     if db.delete_ca(ca_id):
-        log.info("CA deleted: id=%d", ca_id)
+        log.info("CA deleted: %s (with its certificates)", ca["name"] if ca else ca_id)
         return jsonify({"ok": True})
     return error("CA not found", 404)
 
@@ -481,7 +482,7 @@ def revoke_cert(cert_id: int):
     if ca.get("crl_public") or ca.get("cf_worker"):
         db.require_unlocked()  # re-signing the published CRL needs the CA key: fail before revoking
     db.revoke_cert(cert_id)
-    log.info("Certificate revoked: id=%d", cert_id)
+    log.info("Certificate revoked: %s (%s, CA %s)", cert["common_name"], cert["template"], ca["name"])
     crl_publisher.publish(ca["id"])  # also pushes to the CA's Worker, if it has one
     kind = crl_dp_kind(cert.get("crl_dp_url"), ca)
     worker = db.get_ca_worker(ca["id"])
@@ -498,8 +499,9 @@ def revoke_cert(cert_id: int):
 
 @bp.delete("/api/certs/<int:cert_id>")
 def delete_cert(cert_id: int):
+    cert = db.get_cert_summary(cert_id)
     if db.delete_cert(cert_id):
-        log.info("Certificate deleted: id=%d", cert_id)
+        log.info("Certificate deleted: %s (%s)", cert["common_name"] if cert else cert_id, cert["template"] if cert else "")
         return jsonify({"ok": True})
     return error("Certificate not found", 404)
 
@@ -558,6 +560,7 @@ def export_ca(ca_id: int):
             export_data, filename = crypto_engine.export_certificate(ca["cert_pem"], ca["key_pem"], fmt, password=password)
     except ValueError as e:
         return value_error(e)
+    log.info("CA exported: %s (%s, %s)", ca["name"], fmt, "certificate only" if part == "public" else "with the CA's private key")
     return deliver_export(export_data, f"ca-{_safe_name(ca['name'])}-{filename}")
 
 
@@ -603,6 +606,8 @@ def export_cert(cert_id: int):
             )
     except ValueError as e:
         return value_error(e)
+    log.info("Certificate exported: %s (%s, %s)", cert["common_name"], fmt,
+             "certificate only" if part in ("public", "chain") else "with private key")
     return deliver_export(export_data, f"{cert['common_name']}-{filename}")
 
 
@@ -644,7 +649,8 @@ def export_install_bundle(cert_id: int):
         )
     except UserError as e:
         return error(e.user_message)
-    log.info("Install bundle exported: cert=%d os=%s with_ca=%s", cert_id, os_name, bool(data.get("include_ca")))
+    log.info("Install bundle exported: %s for %s (with private key%s)", cert["common_name"], os_name,
+             ", with the CA certificates" if data.get("include_ca") else "")
     return deliver_export(bundle, filename)
 
 

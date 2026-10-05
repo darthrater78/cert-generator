@@ -470,3 +470,15 @@ def test_restore_never_answers_with_library_error_text(admin_client, monkeypatch
     resp = admin_client.post("/api/restore", json={"password": "pw", "file_data": base64.b64encode(b"x" * 60).decode()})
     assert resp.status_code == 400
     assert resp.get_json()["error"] == "That backup couldn't be read"
+
+
+def test_activity_log_keeps_a_failed_sign_ins_name_only_for_real_accounts(admin_client):
+    from tests.conftest import login
+    admin_client.post("/logout")
+    login(admin_client, username="hunter2-my-password", password="x")
+    login(admin_client, password="wrong-password")
+    assert login(admin_client).status_code == 302
+    messages = [e["message"] for e in admin_client.get("/api/activity").get_json()]
+    assert "Failed sign-in for an unknown user name" in messages
+    assert "Failed sign-in for admin" in messages
+    assert not any("hunter2" in m for m in messages)

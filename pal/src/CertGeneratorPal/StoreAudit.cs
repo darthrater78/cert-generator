@@ -18,6 +18,10 @@ internal sealed class AuditItem
     public string ServerStatus { get; set; } = "unknown";
     public List<string> Flags { get; } = [];
 
+    /// <summary>Where the private key lives: "tpm" or "software" (read here, or as this PC reported it when it
+    /// asked: a machine key can't be read without administrator rights); "" when unknown or there is no key.</summary>
+    public string KeyStorage { get; set; } = "";
+
     /// <summary>What uses this certificate: "Remote Desktop", "HTTPS 0.0.0.0:443" (the computer's Personal store only).</summary>
     public List<string> UsedBy { get; } = [];
 

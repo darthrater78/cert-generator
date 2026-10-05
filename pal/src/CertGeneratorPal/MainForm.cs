@@ -15,8 +15,8 @@ internal sealed class MainForm : Form
     private const string CrlTile = "crl";
     private static readonly Dictionary<string, string> TileSubtitles = new()
     {
-        [UseCases.Computer] = "Wi-Fi, VPN, 802.1X, Remote Desktop, WinRM",
-        [UseCases.WebServer] = "IIS sites, RD Gateway, any names you need",
+        [UseCases.Computer] = "Wi-Fi, VPN, 802.1X, RDP, WinRM",
+        [UseCases.WebServer] = "IIS, RD Gateway, your own names",
         [UseCases.User] = "You: sign-in and smart card",
         [UseCases.CodeSigning] = "Scripts and programs",
         [TrustTile] = "Trust the CA for HTTPS inspection",
@@ -43,6 +43,7 @@ internal sealed class MainForm : Form
     private readonly Button _remove = new() { Text = "Remove", AutoSize = true, Enabled = false, Tag = Theme.ButtonKind.Danger };
     private readonly Button _details = new() { Text = "Details", AutoSize = true, Enabled = false };
     private readonly Button _bind = new() { Text = "Bind…", AutoSize = true, Enabled = false };
+    private string? _deviceKeyStorage;  // where this PC's device key lives, once a refresh has read it
     private readonly Button _refresh = new() { Text = "Refresh", AutoSize = true };
     private readonly Label _status = new()
     {
@@ -238,6 +239,7 @@ internal sealed class MainForm : Form
         _list.Columns.Add("Certificate", 230);
         _list.Columns.Add("Use", 120);
         _list.Columns.Add("Store", 150);
+        _list.Columns.Add("Key", 90);
         _list.Columns.Add("Expires", 95);
         _list.Columns.Add("Renew", 95);
         _list.Columns.Add("Status", 80);
@@ -537,6 +539,14 @@ internal sealed class MainForm : Form
             }
             row++;
         }
+        if (_deviceKeyStorage is { } keyStorage)
+        {
+            bool tpm = keyStorage == "tpm";
+            AddStatusRow(row++, "Key storage", null, new CrlCheck.Result(tpm,
+                tpm ? "TPM  ·  keys the Pal makes can't be exported or copied off this PC"
+                    : "Software key store  ·  this PC has no usable TPM; keys are non-exportable, but an administrator here can extract them", ""),
+                null, neutral: !tpm);
+        }
         _crlPanel.RowCount = row;
         _crlPanel.Visible = true;
         _crlPanel.ResumeLayout();
@@ -733,14 +743,22 @@ internal sealed class MainForm : Form
                 _items = await Task.Run(() => StoreAudit.Run(state));
                 // Where each key lives goes along, so the admin sees which are in the TPM.
                 var keys = new Dictionary<string, string>();
+                var reported = _device.Certs.Where(c => c.KeyStorage is not null)
+                    .GroupBy(c => StoreAudit.NormalizeSerial(c.Serial)).ToDictionary(g => g.Key, g => g.First().KeyStorage!);
                 foreach (var item in _items.Where(i => !i.IsCa))
                 {
                     if (Keys.Storage(item.Cert) is { } storage)
                     {
                         keys[item.Serial] = storage;
+                        item.KeyStorage = storage;
+                    }
+                    else
+                    {
+                        item.KeyStorage = reported.GetValueOrDefault(StoreAudit.NormalizeSerial(item.Serial), "");
                     }
                 }
-                status = await client.StatusAsync(signer, _items.Select(i => i.Serial).Distinct().ToList(), signer.KeyStorage, keys);
+                _deviceKeyStorage = signer.KeyStorage;
+                status = await client.StatusAsync(signer, _items.Select(i => i.Serial).Distinct().ToList(), _deviceKeyStorage, keys);
                 _crlAnswering = await LocalCrlServer.ProbeAsync(_device.SelfHosted);
                 await CheckCrlsAsync();
             }
@@ -823,6 +841,7 @@ internal sealed class MainForm : Form
             var row = new ListViewItem(item.Names) { Tag = item };
             row.SubItems.Add(item.UseLabel + (item.FromPal is not null ? " (Pal)" : ""));
             row.SubItems.Add(item.StoreLabel);
+            row.SubItems.Add(item.IsCa ? "" : item.KeyStorage switch { "tpm" => "TPM", "software" => "Software", _ => item.Cert.HasPrivateKey ? "Unknown" : "" });
             row.SubItems.Add(item.Cert.NotAfter.ToString("d MMM yyyy", CultureInfo.CurrentCulture));
             row.SubItems.Add(RenewText(item));
             row.SubItems.Add(item.ServerStatus);
@@ -1314,19 +1333,21 @@ internal sealed class MainForm : Form
         }
         Color color = e.ColumnIndex switch
         {
-            4 => e.SubItem.Text == "now" ? Theme.Success : Theme.TextDim,
-            5 => e.SubItem.Text switch
+            3 => e.SubItem.Text switch { "TPM" => Theme.Success, "Software" => Theme.Warning, _ => Theme.TextDim },
+            5 => e.SubItem.Text == "now" ? Theme.Success : Theme.TextDim,
+            6 => e.SubItem.Text switch
             {
                 "valid" => Theme.Success,
                 "revoked" or "expired" => Theme.Danger,
                 _ => Theme.TextDim,
             },
-            6 => e.Item.ForeColor == Theme.Danger ? Theme.Danger : Theme.Warning,
+            7 => e.Item.ForeColor == Theme.Danger ? Theme.Danger : Theme.Warning,
             0 => e.Item.ForeColor == SystemColors.WindowText || e.Item.ForeColor == Theme.Text ? Theme.Text : e.Item.ForeColor,
             _ => Theme.Text,
         };
-        var font = e.ColumnIndex == 5 ? Theme.MonoSmall : e.ColumnIndex == 0 ? Theme.Serif : Theme.Ui;
-        string text = e.ColumnIndex == 5 ? e.SubItem.Text.ToUpperInvariant() : e.SubItem.Text;
+        bool label = e.ColumnIndex is 3 or 6;  // Key and Status read as labels
+        var font = label ? Theme.MonoSmall : e.ColumnIndex == 0 ? Theme.Serif : Theme.Ui;
+        string text = label ? e.SubItem.Text.ToUpperInvariant() : e.SubItem.Text;
         var bounds = Rectangle.Inflate(e.Bounds, -LogicalToDeviceUnits(6), 0);
         TextRenderer.DrawText(e.Graphics, text, font, bounds, color, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
     }

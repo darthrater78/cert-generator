@@ -861,3 +861,48 @@ def test_a_pal_that_reports_no_key_storage_still_works(paired):
     device.signed("POST", "/api/pal/v1/status", {"serials": [cert["serial"]]})
     listed = client.get("/api/pal/devices").get_json()[0]
     assert listed["key_storage"] is None and listed["certs"][0]["key_storage"] is None
+
+
+# ── Editing a connected PC, and the activity log ────────────────────
+
+def test_a_connected_pcs_permissions_can_be_edited(paired):
+    client, device, _ = paired
+    assert device.request("code-signing", {"cn": "Scripts"})[0].status_code == 403  # off in the pairing code
+    body = {"use_cases": {"web-server": "auto", "computer": "auto", "user": "approve", "code-signing": "auto"},
+            "dns": ["*.lan"], "users": ["*@lan"], "max_days": 30, "crl_dps": ["none"]}
+    resp = client.put(f"/api/pal/devices/{device.device_id}/policy", json=body)
+    assert resp.status_code == 200, resp.get_json()
+    assert device.signed("GET", "/api/pal/v1/device").get_json()["policy"]["use_cases"]["code-signing"] == "auto"
+    assert device.request("code-signing", {"cn": "Scripts"})[0].status_code == 201
+
+    # The PC's own name must still fit, and a disconnected PC can't be edited.
+    resp = client.put(f"/api/pal/devices/{device.device_id}/policy", json={**body, "dns": ["*.example.com"]})
+    assert resp.status_code == 400 and "Wrong domain" in resp.get_json()["error"]
+    client.post(f"/api/pal/devices/{device.device_id}/revoke", json={})
+    assert client.put(f"/api/pal/devices/{device.device_id}/policy", json=body).status_code == 404
+
+
+def test_editing_keeps_the_remote_switch_as_it_was(paired):
+    client, device, _ = paired
+    body = {"use_cases": {"computer": "auto"}, "dns": ["*.lan"], "users": [], "max_days": 90, "crl_dps": ["none"],
+            "allow_remote": True}
+    assert client.put(f"/api/pal/devices/{device.device_id}/policy", json=body).status_code == 200
+    assert client.get("/api/pal/devices").get_json()[0]["policy"]["allow_remote"] is False
+
+
+def test_activity_log_records_who_did_what(paired):
+    client, device, ca_id = paired
+    cert = device.request("computer", {}, key_storage="tpm")[0].get_json()
+    client.post(f"/api/certs/{cert['cert_id']}/revoke")
+    entries = client.get("/api/activity").get_json()
+    messages = [e["message"] for e in entries]
+    assert any(m.startswith("Certificate issued to PC pc01: computer for pc01.lan (key: tpm)") for m in messages)
+    assert any(m.startswith("Certificate revoked: pc01.lan") for m in messages)
+    assert any(m.startswith("PC connected: pc01") for m in messages)
+    assert not any(" /api/" in m for m in messages)  # no access lines
+    by_message = {e["message"]: e for e in entries}
+    revoked = next(e for m, e in by_message.items() if m.startswith("Certificate revoked"))
+    assert revoked["actor"] == "admin" and revoked["at"].endswith("Z")
+    issued = next(e for m, e in by_message.items() if m.startswith("Certificate issued to PC"))
+    assert issued["actor"] == "a PC"
+    assert entries == sorted(entries, key=lambda e: e["id"], reverse=True)

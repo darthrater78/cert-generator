@@ -3,7 +3,7 @@
 <!-- Dev-build banner: drawn by .github/workflows/dev-banner.yml after every release, empty when no pre-release is ahead of the latest release. -->
 <a href="https://github.com/darthrater78/cert-generator/releases"><img alt="Dev build status" src="https://raw.githubusercontent.com/darthrater78/cert-generator/readme-banner/banner.svg" /></a>
 
-**Your own certificate authority for the lab, the office and security demos.** Create root and intermediate CAs, issue certificates that match Windows CA templates, revoke them with a CRL clients can actually reach, and get every certificate onto the machine that needs it. Runs as a **Docker web app** or a **Windows desktop app**.
+**Your own certificate authority for the lab, the office and security demos.** Create root and intermediate CAs, issue certificates that match Windows CA templates, revoke them with a CRL clients can actually reach, and get every certificate onto the machine that needs it. Runs as a **Docker web app**. The standalone **Windows desktop app** is in [maintenance only](#standalone-exe-windows-desktop): no new features after v2.8.0.
 
 [GitHub](https://github.com/darthrater78/cert-generator) · [v2.9.0-dev.1 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.9.0-dev.1) · [What's new](CHANGELOG.md) · [Quick start](#quick-start) · [Cert Generator Pal](#cert-generator-pal-windows-pcs)
 
@@ -76,6 +76,8 @@
 - **Issue leaf certificates** signed by any CA (root or intermediate), with SAN (Subject Alternative Name) support including wildcards and IP addresses
 - **Certificate templates** matching Windows CA templates — Web Server, Computer, Client Authentication, User (Smart Card Logon), Code Signing, Email (S/MIME) — each with the correct key usage and extended key usage extensions
 - **Track all certificates** — view status (active/revoked/expired), details, and metadata
+- **Activity log** — **Tools › Activity log** lists what was done, when and by whom: sign-ins and failed ones, certificates issued, revoked, deleted and exported (and whether a private key left with them), PCs connecting and what they asked for, approvals, and settings changes. It keeps the newest 5,000 entries and never records keys, passwords or pairing codes
+- **When things happened** — every certificate row shows when it was issued and, if so, when it was revoked
 - **Certificate viewer** — click a certificate (or **View**) to read it like `openssl x509 -text`: subject, issuer, validity, key and signature algorithm, every extension (SANs including UPN, key usage, extended key usage, basic constraints, key identifiers, CRL distribution points), SHA-256/SHA-1 fingerprints and the PEM, with Copy PEM and Export. A **Show the issuing CA's CRL** checkbox adds the CA's revocation list: whether this certificate is on it, the distribution point it carries, the CRL's next update and every revoked serial. The private key is never sent to the viewer
 - **Export in multiple formats** — PEM, DER, CRT (.crt), PKCS12 (.pfx)
 - **Export parts individually** — full bundle, certificate only, private key only, or full chain (cert + every issuing CA up to the root)
@@ -110,7 +112,7 @@
 | Mode | Best for | How it runs |
 |------|----------|-------------|
 | **Docker** (recommended) | Servers, shared access | Web app at `http://host:5000` with login authentication |
-| **Standalone EXE** | Individual workstations | Native Windows window, downloaded from the release — no install needed |
+| **Standalone EXE** (maintenance only) | Individual workstations | Native Windows window, downloaded from the release — no install needed |
 
 **They are separate installs.** Each keeps its own database, and nothing syncs between them. To move your CAs, certificates and SSH keys from one to the other, use **Backup** in one to create an encrypted `.certbak` file and **Restore** it in the other (see [Data storage](#data-storage)). Backups go either way.
 
@@ -204,7 +206,9 @@ Proxies that rewrite the `Host` header should forward the original as `X-Forward
 
 ### Standalone EXE (Windows desktop)
 
-Download `CertGenerator.exe` from the [latest release](https://github.com/darthrater78/cert-generator/releases/latest). Double-click to run — no Python installation needed. The desktop app runs as a native window, and no network port is exposed.
+> **Maintenance only: no new features.** The project has outgrown a single-PC desktop app: CRLs that clients can reach, Cloudflare publishing, Cert Generator Pal and the remote connection all need the server. **v2.8.0 is the last feature release of the EXE.** It stays available and keeps working, and a serious security issue in one of its dependencies still gets a patched build, but everything new goes into the Docker version. To move across, use **Backup** in the EXE and **Restore** in Docker; the database format is the same.
+
+Download `CertGenerator.exe` from the [latest release](https://github.com/darthrater78/cert-generator/releases/latest), which is always the newest one that includes the EXE: v2.8.0, or a later security patch. Double-click to run — no Python installation needed. The desktop app runs as a native window, and no network port is exposed.
 
 On first run the app offers to **protect it with a username and password**. That turns on database encryption with the password as the master password, so the app asks for both at every start and a copied database file can't be read. Next it shows a one-time **recovery key**: if you forget the password, the sign-in screen takes the key, sets a new password and shows your username. You can skip it (**Not now**, or **Don't ask again**) and turn it on later in **Encryption** settings.
 
@@ -307,14 +311,14 @@ Only what the pairing code allows appears. The CA chain is checked before every 
   - The list shows what uses each certificate, and **Remove** warns before taking away one that's in use.
 - **One live certificate** per PC, kind and name: the server refuses duplicates and early renewals.
 - **CRL profiles**: switching profile backs out the current one first (its certificates leave the PC); the root CA stays trusted. **Endpoint-hosted** adds a small listener on the PC that answers its own revocation checks, for laptops away from the LAN; its tile shows only under that profile.
-- **Connectivity** shows the cert server (over the LAN, and through the relay when the PC has one) and the CRL of the profile in use, each with a coloured status and **Test**. **Refresh** re-checks, and **Log** shows the Pal's log with a **Debug logging** switch (every request and check; never keys or pairing codes). The CRL profile is locked while the server can't be reached.
+- **Connectivity** shows the cert server (over the LAN, and through the relay when the PC has one) and the CRL of the profile in use, each with a coloured status and **Test**, and a **Key storage** line saying whether the keys the Pal makes on this PC live in its **TPM** or in Windows' software key store. The certificate list has a **Key** column with the same for each certificate. **Refresh** re-checks, and **Log** shows the Pal's log with a **Debug logging** switch (every request and check; never keys or pairing codes). The CRL profile is locked while the server can't be reached.
 - **Disconnect this PC** removes the pairing and every certificate it installed.
 
 The Pal keeps its pairings in `C:\ProgramData\CertGeneratorPal` (written only with administrator approval) and its log in `%LOCALAPPDATA%\CertGeneratorPal\pal.log`.
 
 ### Managing PCs
 
-The **Windows PCs** page ([pictured above](#new-in-28-cert-generator-pal)) lists each PC with what it may request, its CRL profiles, what its last check-in found installed, its Pal version and how its last request arrived. From there you **approve or deny** requests, **allow or turn off** remote access, **Disconnect** a PC (it can't request again, and its certificates are revoked) or **Delete** it from the list. Pairing codes that haven't been used can be revoked. A PC whose Pal comes from another release is flagged, so you know to update it from the server.
+The **Windows PCs** page ([pictured above](#new-in-28-cert-generator-pal)) lists each PC with what it may request, its CRL profiles, what its last check-in found installed, its Pal version and how its last request arrived. From there you **approve or deny** requests, **Edit** what a connected PC may request (certificate kinds and their approval, allowed names and longest lifetime; the PC picks it up at its next check-in, with no new pairing code. CRL profiles are fixed when a PC pairs), **allow or turn off** remote access, **Disconnect** a PC (it can't request again, and its certificates are revoked) or **Delete** it from the list. Pairing codes that haven't been used can be revoked. A PC whose Pal comes from another release is flagged, so you know to update it from the server.
 
 ### How it stays secure
 
@@ -621,12 +625,11 @@ bash scripts/lint-workflows.sh
 CI runs on every push and pull request to `master`:
 - the unit tests on Linux (Python 3.10 and 3.14) and Windows
 - the browser tests in Chromium, Firefox, and WebKit
-- a Windows EXE build and its `--self-test` / `--self-test-gui` checks (the EXE is kept as a workflow artifact for 7 days)
 - a Docker image build with a container smoke test, including a clean shutdown on `docker stop`, and a Trivy scan of the image's OS and Python packages (report only)
 - `actionlint` against `.github/workflows/**` (only runs when those files change)
 - dependency review on pull requests, which fails a PR that adds a dependency with a known high or critical advisory
 
-A change that touches only documentation (`*.md`, `docs/**`, `LICENSE`) skips the tests, browser tests, EXE build and image build: a first `detect changes` job decides with `scripts/ci-changes.sh`, and the skipped jobs still report as passing, so required checks and the release workflow's CI check are satisfied. If that job fails or can't tell what changed, everything runs.
+A change that touches only documentation (`*.md`, `docs/**`, `LICENSE`) skips the tests, browser tests and image build: a first `detect changes` job decides with `scripts/ci-changes.sh`, and the skipped jobs still report as passing, so required checks and the release workflow's CI check are satisfied. If that job fails or can't tell what changed, everything runs.
 
 ### Releases
 

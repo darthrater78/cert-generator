@@ -185,7 +185,8 @@ def _issue(request_id: int, device: dict[str, Any]) -> dict[str, Any]:
     db.transition_pal_request(request_id, "issuing", "issued", cert_id=cert_id)
     _revoke_superseded(device, row, cert_id)
     publish_after_issue(ca, mode)
-    log.info("Pal certificate issued: request=%d device=%s use_case=%s", request_id, device["id"], row["use_case"])
+    log.info("Certificate issued to PC %s: %s for %s (key: %s)", device["label"], pal.USE_CASE_LABELS[row["use_case"]],
+             names["common_name"], row.get("key_storage") or "not reported")
     return db.get_pal_request(request_id) or row
 
 
@@ -292,7 +293,8 @@ def enroll():
         _enroll_limiter.success(k)
     if remote:
         relay_collector.poke()  # the relay learns the new PC's key now
-    log.info("Pal device connected: %s (%s) with code %s", device_id, hostname, code_id[:8])
+    log.info("PC connected: %s (%s, %s; device key: %s)", hostname or fqdn, fqdn, os_name,
+             pal.key_storage(data.get("key_storage")) or "not reported")
     return _enrolled_response(code, device_id, fqdn)
 
 
@@ -383,7 +385,8 @@ def device_info():
         "crls": _crls(device["ca_id"]),
         "requests": [_request_view(r, False) for r in db.list_pal_requests(device_id=device["id"])[:100]],
         "certs": [{**{k: c[k] for k in ("id", "common_name", "san_domains", "template", "serial", "not_before",
-                                        "not_after", "revoked")}, "renew_from": _renew_from(c)}
+                                        "not_after", "revoked")}, "renew_from": _renew_from(c),
+                   "key_storage": c["pal_key_storage"]}
                   for c in db.list_pal_device_certs(device["id"])],
     })
 
@@ -504,7 +507,8 @@ def create_request():
                                        pal.key_storage(data.get("key_storage")))
     # A renewal of the same names was approved once and needs no new approval.
     if mode == "approve" and renew_of is None:
-        log.info("Pal request %d waiting for approval (device=%s, use_case=%s)", request_id, device["id"], use_case)
+        log.info("PC %s asked for a %s certificate for %s: waiting for approval", device["label"],
+                 pal.USE_CASE_LABELS[use_case], names.common_name)
         return jsonify(_request_view(db.get_pal_request(request_id), False)), 202
     try:
         row = _issue(request_id, device)
@@ -735,7 +739,7 @@ def create_code():
     code_id, key = pal.new_code_id(), pal.new_code_key()
     expires_at = _iso(_utc_now() + timedelta(hours=hours))
     db.create_pal_code(code_id, label, ca_id, policy.to_json(), key, server_url, expires_at)
-    log.info("Pal pairing code created: %s for CA %d by %s", code_id[:8], ca_id, (g.get("user") or {}).get("username"))
+    log.info("Pairing code created%s for CA %s (expires in %d hours)", f" ({label})" if label else "", ca["name"], hours)
     return jsonify({
         "id": code_id,
         "pairing_code": pal.pairing_code(server_url, code_id, key, root_sha256),
@@ -747,7 +751,8 @@ def create_code():
 def revoke_code(code_id: str):
     if not db.revoke_pal_code(code_id):
         return error("Code not found, or already used or revoked", 404)
-    log.info("Pal pairing code revoked: %s", code_id[:8])
+    code = next((c for c in db.list_pal_codes() if c["id"] == code_id), {})
+    log.info("Pairing code revoked%s", f" ({code['label']})" if code.get("label") else "")
     return jsonify({"ok": True})
 
 
@@ -762,6 +767,7 @@ def list_devices():
             "name": cert["common_name"],
             "state": _cert_state(cert, now),
             "key_storage": cert["pal_key_storage"],
+            "issued_at": cert["created_at"],
         })
     for device in devices:
         device["policy"] = Policy.from_json(device["policy"]).public()
@@ -798,8 +804,36 @@ def _disconnect(device_id: str, revoke_certs: bool) -> int:
         db.revoke_cert(cert["id"])
     for ca_id in {c["ca_id"] for c in certs}:
         crl_publisher.publish(ca_id)
-    log.info("Pal device revoked: %s (%d certificates revoked)", device_id, len(certs))
+    log.info("PC disconnected: %s (%d certificates revoked)", (db.get_pal_device(device_id) or {}).get("label", device_id), len(certs))
     return len(certs)
+
+
+@bp.put("/api/pal/devices/<device_id>/policy")
+def edit_device_policy(device_id: str):
+    """Change what a connected PC may request: its certificate kinds, allowed names, longest
+    lifetime and revocation types. The PC picks it up at its next check-in. Remote access has
+    its own switch and is left as it is."""
+    device = db.get_pal_device(device_id)
+    if device is None or device["revoked_at"]:
+        return error("This PC is not connected", 404)
+    data = json_body()
+    old = Policy.from_json(device["policy"])
+    try:
+        policy = pal.parse_policy({**data, "allow_remote": old.allow_remote}, MAX_LIFETIME_DAYS)
+        pal.parse_fqdn(device["fqdn"], policy)  # the PC's own name must still fit
+    except PalError as e:
+        return error(e.user_message)
+    code = next((c for c in db.list_pal_codes() if c["id"] == device["code_id"]), {})
+    crl_error = _set_crl_dp(policy, {**data, "crl_base_url": str_field(data, "crl_base_url") or old.crl_base_url or ""},
+                            device["ca_id"], code.get("server_url") or old.crl_base_url or "")
+    if crl_error:
+        return error(crl_error)
+    if not db.set_pal_device_policy(device_id, policy.to_json()):
+        return error("This PC is not connected", 404)
+    kinds = ", ".join(f"{pal.USE_CASE_LABELS[c]}: {m}" for c, m in policy.use_cases.items() if m != "off")
+    log.info("PC %s: what it may request was changed (%s; CRL: %s; up to %d days)", device["label"], kinds,
+             ", ".join(policy.crl_dps), policy.max_days)
+    return jsonify({"ok": True, "policy": policy.public()})
 
 
 @bp.delete("/api/pal/devices/<device_id>")
@@ -810,7 +844,7 @@ def delete_device(device_id: str):
         return error("Device not found", 404)
     revoked_certs = 0 if device["revoked_at"] else _disconnect(device_id, revoke_certs=True)
     db.delete_pal_device(device_id)
-    log.info("Pal device deleted: %s", device_id)
+    log.info("PC deleted from the list: %s", device["label"])
     return jsonify({"ok": True, "revoked_certs": revoked_certs})
 
 
@@ -837,16 +871,20 @@ def approve_request(request_id: int):
         row = _issue(request_id, device)
     except PalError as e:
         return error(e.user_message, 409)
-    log.info("Pal request %d approved by %s", request_id, (g.get("user") or {}).get("username"))
+    log.info("Request approved: %s certificate for %s on PC %s", pal.USE_CASE_LABELS.get(row["use_case"], row["use_case"]),
+             json.loads(row["names"]).get("common_name", ""), device["label"])
     return jsonify({"ok": True, "status": row["status"], "cert_id": row["cert_id"]})
 
 
 @bp.post("/api/pal/requests/<int:request_id>/deny")
 def deny_request(request_id: int):
     reason = str_field(json_body(), "reason").strip()[:200]
+    row = db.get_pal_request(request_id)
     if not db.transition_pal_request(request_id, "pending", "denied", reason=reason or "Denied by your admin"):
         return error("Request not found or not waiting for approval", 404)
-    log.info("Pal request %d denied by %s", request_id, (g.get("user") or {}).get("username"))
+    device = db.get_pal_device(row["device_id"]) or {}
+    log.info("Request denied: %s certificate for %s on PC %s%s", pal.USE_CASE_LABELS.get(row["use_case"], row["use_case"]),
+             json.loads(row["names"]).get("common_name", ""), device.get("label", ""), f" ({reason})" if reason else "")
     return jsonify({"ok": True})
 
 
@@ -973,6 +1011,6 @@ def device_remote(device_id: str):
     if not db.set_pal_remote_allowed(device_id, allowed):
         return error("Device not found or disconnected", 404)
     relay_collector.poke()  # the relay's list of allowed PCs follows at once
-    log.info("Pal device %s remote access %s by %s", device_id[:8], "on" if allowed else "off",
-             (g.get("user") or {}).get("username"))
+    log.info("PC %s: remote connection %s", (db.get_pal_device(device_id) or {}).get("label", device_id[:8]),
+             "allowed" if allowed else "turned off")
     return jsonify({"ok": True, "remote_allowed": allowed})

@@ -374,7 +374,10 @@ async function loadCerts(caId) {
   tbody.innerHTML = certs.map(c => {
     const tmplLabel = TEMPLATE_LABELS[c.template] || c.template || 'Web Server';
     return '<tr' + (c.revoked ? ' class="revoked"' : '') + '>' +
-      '<td><button type="button" class="cert-link" data-action="viewCert" data-arg="' + c.id + '">' + escapeHtml(c.common_name) + '</button></td>' +
+      '<td><button type="button" class="cert-link" data-action="viewCert" data-arg="' + c.id + '">' + escapeHtml(c.common_name) + '</button>' +
+        '<div class="cert-when">Issued ' + formatDateTime(c.created_at) +
+          (c.revoked && c.revoked_at ? ' · revoked ' + formatDateTime(c.revoked_at) : '') +
+          (c.has_key ? '' : ' · key on the PC ' + palKeyChip(c.pal_key_storage)) + '</div></td>' +
       '<td>' + escapeHtml(tmplLabel) + '</td>' +
       '<td class="sans" title="' + escapeHtml(c.san_domains) + '">' + escapeHtml(c.san_domains) + '</td>' +
       '<td>' + escapeHtml(algoShort(c.algorithm)) + '</td>' +
@@ -386,11 +389,7 @@ async function loadCerts(caId) {
         (c.has_key
           ? '<button type="button" class="import-chip" data-action="toggleImportHelp" data-arg="' + c.id + '" aria-haspopup="dialog" aria-expanded="false">' +
             (c.revoked ? 'Export ▾' : 'Export / install ▾') + '</button> '
-          : '<span class="key-chip" title="Requested by Cert Generator Pal: the private key never left that PC. ' +
-            (c.pal_key_storage === 'tpm' ? 'The Pal reports it is in the PC\'s TPM chip.'
-              : c.pal_key_storage === 'software' ? 'The Pal reports it is in Windows\' software key store (no usable TPM).'
-              : 'The Pal hasn\'t reported whether it is in a TPM.') + '">Key on PC' +
-            (c.pal_key_storage === 'tpm' ? ' · TPM' : c.pal_key_storage === 'software' ? ' · software' : '') + '</span> ') +
+          : '<span class="key-chip" title="Requested by Cert Generator Pal: the private key was made on that PC and never left it, so there is nothing to export here.">Key on PC</span> ') +
         (!c.revoked ? '<button class="btn btn-ghost btn-sm" data-action="revokeCert" data-arg="' + c.id + '\">Revoke</button> ' : '<span></span>') +
         '<button class="btn btn-danger btn-sm" data-action="deleteCert" data-arg="' + c.id + '\">Delete</button>' +
       '</div></td></tr>';
@@ -569,6 +568,8 @@ const CRL_DP_LABELS = {
   placeholder: ['badge-expired', 'Endpoint-hosted', 'Endpoint-hosted: no server answers this address. Each machine needs the CRL: ' +
     'use the install .zip (Export / install ▾), which on Windows also answers the address locally, or import an exported CRL.'],
   server_live: ['badge-active', 'Cert Generator (LAN)', 'Served by this Cert Generator server, which keeps the CRL current automatically.'],
+  cloudflare_live: ['badge-active', 'Cloudflare Worker', 'Served by this CA\'s Cloudflare Worker, which the app keeps current on every revocation.'],
+  cloudflare_pending: ['badge-expired', 'Not published', 'Points at this CA\'s Cloudflare Worker, but the last publish failed or hasn\'t happened yet. Use Publish now on the CA page.'],
   server_pending: ['badge-expired', 'Not published', 'Points at this server, but no CRL is published yet. It publishes once the database is unlocked.'],
   other: ['badge-algo', 'External', 'Points at an address this app does not manage.'],
 };
@@ -576,6 +577,7 @@ const CRL_DP_LABELS = {
 function crlDpKey(dp) {
   if (!dp) return 'none';
   if (dp.kind === 'server') return dp.published ? 'server_live' : 'server_pending';
+  if (dp.kind === 'cloudflare') return dp.published ? 'cloudflare_live' : 'cloudflare_pending';
   return CRL_DP_LABELS[dp.kind] ? dp.kind : 'other';
 }
 
@@ -2781,6 +2783,7 @@ function palCertSummary(d) {
   const live = d.certs.filter(c => c.state === 'installed' || c.state === 'unchecked');
   const rows = live.map(c =>
     '<li>' + escapeHtml(PAL_USE_CASES[c.use_case] || c.use_case) + ' <span class="dim mono pal-name">' + escapeHtml(c.name) + '</span> ' + palKeyChip(c.key_storage) +
+    (c.issued_at ? ' <span class="dim">issued ' + formatDate(c.issued_at) + '</span>' : '') +
     (c.state === 'unchecked' ? ' <span class="dim">(not checked yet)</span>' : '') + '</li>');
   const gone = d.certs.filter(c => !live.includes(c));
   if (gone.length) {
@@ -2931,7 +2934,10 @@ function renderPalPending(rows) {
     '</div>').join('');
 }
 
+let palDeviceIndex = new Map();
+
 function renderPalDevices(devices) {
+  palDeviceIndex = new Map(devices.map(d => [d.id, d]));
   const box = document.getElementById('palDevices');
   const connected = devices.filter(d => !d.revoked_at).length;
   document.getElementById('palDevicesNote').textContent = devices.length
@@ -2955,7 +2961,8 @@ function renderPalDevices(devices) {
             escapeHtml(document.body.dataset.appVersion) + ': features may not match. Update the Pal on the PC from this server.</div>') +
           '</div>' +
         '<div class="pal-row-actions">' +
-          (d.revoked_at ? '' : '<button class="btn btn-ghost btn-sm" data-action="revokePalDevice"' + data + '>Disconnect</button>') +
+          (d.revoked_at ? '' : '<button class="btn btn-ghost btn-sm" data-action="editPalDevice"' + data + '>Edit</button>' +
+            '<button class="btn btn-ghost btn-sm" data-action="revokePalDevice"' + data + '>Disconnect</button>') +
           '<button class="btn btn-danger btn-sm" data-action="deletePalDevice"' + data + '>Delete</button></div>' +
       '</div>' +
       '<div class="pal-device-grid">' +
@@ -3017,6 +3024,7 @@ async function showPalAdd() {
   const usable = cas.find(c => c.algorithm !== 'ed25519' && c.id === currentCAId) || cas.find(c => c.algorithm !== 'ed25519');
   if (!usable) { toast('Create an ECDSA or RSA certificate authority first', 'error'); return; }
   select.value = String(usable.id);
+  setPalEditMode(null);
   document.getElementById('palLabel').value = '';
   document.getElementById('palAllowRemote').checked = false;
   document.getElementById('palServerUrl').value = window.location.origin;
@@ -3035,6 +3043,67 @@ function onPalCaChange(_arg, el) {
 }
 
 const palList = (id) => document.getElementById(id).value.split(',').map(v => v.trim()).filter(Boolean);
+
+// The Add a PC dialog, turned into the editor for one connected PC (or back, with null).
+function setPalEditMode(device) {
+  const form = document.getElementById('palAddForm');
+  form.dataset.editId = device ? device.id : '';
+  document.getElementById('palAddTitle').textContent = device ? 'Edit ' + device.label : 'Add a Windows PC';
+  document.getElementById('palCreateBtn').textContent = device ? 'Save changes' : 'Create pairing code';
+  document.getElementById('palEditHint').classList.toggle('hidden', !device);
+  form.querySelectorAll('.pal-new-only').forEach(el => el.classList.toggle('hidden', Boolean(device)));
+}
+
+function editPalDevice(_arg, el) {
+  const d = palDeviceIndex.get(el.dataset.id);
+  if (!d) return;
+  setPalEditMode(d);
+  const cases = d.policy.use_cases || {};
+  document.getElementById('palCaseWeb').value = cases['web-server'] || 'off';
+  document.getElementById('palCaseComputer').value = cases.computer || 'off';
+  document.getElementById('palCaseUser').value = cases.user || 'off';
+  document.getElementById('palCaseCode').value = cases['code-signing'] || 'off';
+  document.getElementById('palDns').value = (d.policy.dns || []).join(', ');
+  document.getElementById('palUsers').value = (d.policy.users || []).join(', ');
+  document.getElementById('palMaxDays').value = d.policy.max_days;
+  document.querySelectorAll('#palCrlDps input').forEach(i => { i.checked = (d.policy.crl_dps || []).includes(i.value); });
+  document.getElementById('palAddForm').classList.remove('hidden');
+  document.getElementById('palCodeResult').classList.add('hidden');
+  showModal('palAddModal');
+  document.getElementById('palCaseWeb').focus();
+}
+
+async function savePalDevice(id, body) {
+  const btn = document.getElementById('palCreateBtn');
+  btn.disabled = true;
+  try {
+    await api('/api/pal/devices/' + encodeURIComponent(id) + '/policy', { method: 'PUT', body: JSON.stringify(body) });
+    hideModal('palAddModal');
+    toast('Saved. The PC picks it up at its next check-in');
+    await loadPalDevices();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function showActivityLog() {
+  const body = document.getElementById('activityBody');
+  showModal('activityModal');
+  try {
+    const entries = await (await api('/api/activity?limit=500')).json();
+    document.getElementById('activityCount').textContent = entries.length;
+    body.innerHTML = entries.length
+      ? '<table class="cert-table activity-table"><thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead><tbody>' +
+        entries.map(e => '<tr' + (e.level === 'warning' ? ' class="activity-warning"' : '') + '><td class="mono">' + formatDateTime(e.at) + '</td>' +
+          '<td>' + escapeHtml(e.actor) + (e.address ? '<div class="dim mono">' + escapeHtml(e.address) + '</div>' : '') + '</td>' +
+          '<td>' + escapeHtml(e.message) + '</td></tr>').join('') + '</tbody></table>'
+      : '<p class="dim">Nothing recorded yet. Entries start with this version.</p>';
+  } catch (e) {
+    body.innerHTML = '<p class="dim">' + escapeHtml(e.message) + '</p>';
+  }
+}
 
 async function createPalCode() {
   const btn = document.getElementById('palCreateBtn');
@@ -3056,6 +3125,13 @@ async function createPalCode() {
     crl_dps: [...document.querySelectorAll('#palCrlDps input:checked')].map(i => i.value),
     allow_remote: document.getElementById('palAllowRemote').checked,
   };
+  const editId = document.getElementById('palAddForm').dataset.editId;
+  if (editId) {
+    const device = palDeviceIndex.get(editId);
+    if (device) body.crl_dps = device.policy.crl_dps;  // fixed at pairing: sent back as they are, default first
+    await savePalDevice(editId, body);
+    return;
+  }
   btn.disabled = true;
   try {
     const data = await (await api('/api/pal/codes', { method: 'POST', body: JSON.stringify(body) })).json();
@@ -3256,6 +3332,8 @@ const UI_ACTIONS = new Set([
   'approvePalRequest',
   'copyPalCode',
   'createPalCode',
+  'editPalDevice',
+  'showActivityLog',
   'copyPalDownloadUrl',
   'deletePalDevice',
   'palRelayCheck',

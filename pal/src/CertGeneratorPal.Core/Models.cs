@@ -112,6 +112,9 @@ public sealed class DeviceCert
     public string NotAfter { get; set; } = "";
     public int Revoked { get; set; }
 
+    /// <summary>Where this PC said the key lives when it asked: "tpm", "software", or null if it never said.</summary>
+    public string? KeyStorage { get; set; }
+
     /// <summary>When renewal opens (the server refuses earlier renewals).</summary>
     public string? RenewFrom { get; set; }
 

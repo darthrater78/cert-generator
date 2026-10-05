@@ -256,6 +256,13 @@ Machine-scope keys in the machine key store. The device key's ACL also grants
 *use* to Interactive users so the unelevated Pal can sign "Me" / code-signing
 requests (⚠ verify on a real PC, with and without a TPM).
 
+**Editing a connected PC.** `PUT /api/pal/devices/<id>/policy` replaces a connected PC's
+policy (use cases, allowed names, longest lifetime, CRL types) with the same checks as a new
+pairing code, including that the PC's own name still fits. `allow_remote` keeps its own
+switch. The Pal reads the policy from `device` at every check-in, so tiles follow at once.
+The endpoint accepts CRL types too, but the admin page does not offer them: the Pal stores
+its CRL profiles at pairing and does not re-read them yet, so a change would not show there.
+
 **Key storage is reported, not attested.** The Pal sends `key_storage` (`tpm` or
 `software`) with `enroll` (the device key) and with each `requests` call (the key
 behind the CSR); the server keeps it on the device, the request and the issued

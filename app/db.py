@@ -145,6 +145,16 @@ CREATE TABLE IF NOT EXISTS pal_requests (
     decided_at    TEXT
 );
 
+-- What was done, when and by whom: the Activity log page. Nothing secret is written here.
+CREATE TABLE IF NOT EXISTS activity_log (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    actor   TEXT    NOT NULL,
+    address TEXT    NOT NULL DEFAULT '',
+    level   TEXT    NOT NULL DEFAULT 'info',
+    message TEXT    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS pal_nonces (
     device_id   TEXT    NOT NULL,
     nonce       TEXT    NOT NULL,
@@ -861,7 +871,7 @@ def save_cert(
 
 _CERT_LIST_COLUMNS = (
     "id, ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, revoked, created_at, "
-    "crl_dp_url, pal_device_id, pal_present, pal_key_storage, length(key_pem) > 0 AS has_key"
+    "revoked_at, crl_dp_url, pal_device_id, pal_present, pal_key_storage, length(key_pem) > 0 AS has_key"
 )
 
 
@@ -1212,6 +1222,31 @@ def mark_pal_presence(device_id: str, present_serials: set[str]) -> None:
                          (int(row["serial"] in present_serials), now, row["id"]))
 
 
+def set_pal_device_policy(device_id: str, policy: str) -> bool:
+    """Replace what a connected PC may request. False if it is unknown or disconnected."""
+    with _connect() as conn:
+        return conn.execute("UPDATE pal_devices SET policy = ? WHERE id = ? AND revoked_at IS NULL",
+                            (policy, device_id)).rowcount > 0
+
+
+ACTIVITY_KEEP = 5000  # rows; older ones are dropped as new ones arrive
+
+
+def add_activity(actor: str, address: str, level: str, message: str) -> None:
+    with _connect() as conn:
+        cursor = conn.execute("INSERT INTO activity_log (actor, address, level, message) VALUES (?, ?, ?, ?)",
+                              (actor[:100], address[:64], level, message[:1000]))
+        conn.execute("DELETE FROM activity_log WHERE id <= ?", ((cursor.lastrowid or 0) - ACTIVITY_KEEP,))
+
+
+def list_activity(limit: int = 500) -> list[dict[str, Any]]:
+    """The newest entries first."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT id, at, actor, address, level, message FROM activity_log ORDER BY id DESC LIMIT ?",
+                            (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+
 def set_pal_key_storage(device_id: str, device_key: str | None, by_serial: dict[str, str]) -> None:
     """Record where the PC says its keys live: its device key, and its own certificates' keys by serial."""
     with _connect() as conn:
@@ -1226,7 +1261,7 @@ def list_pal_issued_certs() -> list[dict[str, Any]]:
     """Every certificate issued to a Pal device, for the Devices page (one query, not one per device)."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT pal_device_id, template, common_name, not_after, revoked, pal_present, pal_key_storage FROM certificates "
+            "SELECT pal_device_id, template, common_name, not_after, revoked, pal_present, pal_key_storage, created_at FROM certificates "
             "WHERE pal_device_id IS NOT NULL ORDER BY not_after DESC"
         ).fetchall()
         return [dict(r) for r in rows]

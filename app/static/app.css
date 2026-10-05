@@ -447,6 +447,15 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 
 /* ================= certificate register ================= */
 #certTableContainer { overflow-x: auto; }
+.cert-when { margin-top: 2px; font: 11px var(--font-mono); color: var(--text-dim); white-space: normal; min-width: 22ch; }
+.cert-table.activity-table { min-width: 0; }
+.cert-table.activity-table td { vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
+.cert-table.activity-table td:first-child { font: 11px var(--font-mono); white-space: nowrap; padding-left: 0; }
+.cert-table.activity-table th:first-child { padding-left: 0; }
+.cert-table.activity-table td:nth-child(2) { white-space: nowrap; overflow-wrap: normal; }
+.cert-table.activity-table td:last-child, .cert-table.activity-table th:last-child { text-align: left; padding-right: 0; font: 13.5px var(--font-serif); }
+.cert-table.activity-table th:last-child { font: italic 13px var(--font-serif); }
+.cert-table.activity-table .activity-warning td:last-child { color: var(--warning); }
 .cert-table {
   width: 100%;
   border-collapse: collapse;
@@ -1074,7 +1083,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   border: 1px solid var(--border); font-size: 12.5px; white-space: nowrap;
 }
 .pal-chip-approve { border-color: color-mix(in srgb, var(--warning) 55%, var(--border)); }
-.pal-list .pal-key-chip, .pal-device-key .pal-key-chip { margin: 0 0 0 4px; padding: 0 6px; font: 500 10px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.pal-list .pal-key-chip, .pal-device-key .pal-key-chip, .cert-when .pal-key-chip { margin: 0 0 0 4px; padding: 0 6px; font: 500 10px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; }
 .pal-list { list-style: none; margin: 0; padding: 0; }
 .pal-list li { padding: 1px 0; overflow-wrap: anywhere; }
 .nav-alert {
