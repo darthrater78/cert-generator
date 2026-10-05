@@ -38,7 +38,8 @@ Each entry lists its changes per deliverable: a `#### Docker` section means the 
 #### Internal
 - `binds` in a PC's policy; `POST /api/pal/v1/binds`, `GET /api/pal/v1/binds/<id>`, `POST /api/pal/v1/revoke`; `GET /api/pal/binds` with `…/approve` and `…/deny`; `PUT /api/pal/devices/<id>/policy`; `GET /api/activity`
 - New table `pal_binds`; new columns `pal_requests.windows_user`, `pal_requests.note`, `certificates.pal_user`, `certificates.pal_binds`
-- The standalone Windows EXE is maintenance only and is not built for this release: v2.8.0 stays its current build. CI no longer builds it on every change
+- **The standalone Windows EXE is deprecated** and is not built for this release: v2.8.0 is its last build, kept available with security patches only. CI no longer builds it on every change
+- A Docker-only release opens its notes with that notice and is GitHub's **Latest** release (it used to stay on the last release carrying the EXE); the README links the EXE by version instead of through `/releases/latest`
 - A release's notes name the last *released* build of a deliverable it doesn't ship, never a pre-release
 
 ### v2.9.0-dev.3 — 2026-10-05

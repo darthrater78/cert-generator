@@ -283,10 +283,12 @@ def test_release_notes_require_at_least_one_deliverable_section():
         release_notes.build_notes("9.9.9", BOTH, None, None)
 
 
-def test_docker_only_release_reports_the_exe_as_unchanged():
+def test_docker_only_release_says_first_that_the_exe_is_deprecated():
     notes = release_notes.build_notes("2.2.0", DOCKER_ONLY, "sha256:abc", None)
     assert "- Server-only change" in notes
-    assert "Windows EXE unchanged (2.1.0)" in notes
+    assert notes.startswith("> ⚠️ **Docker only: the standalone Windows EXE is deprecated.**")
+    assert "releases/tag/v2.1.0" in notes.split("\n", 1)[0]
+    assert "The last Windows EXE is 2.1.0" in notes
     assert "releases/download/v2.1.0/CertGenerator.exe" in notes
     assert "Download` CertGenerator.exe` from the assets" not in notes
 
@@ -355,5 +357,5 @@ def test_release_points_back_to_a_release_not_a_prerelease():
 
 """ + BOTH.split("## Version history\n\n", 1)[1]
     assert release_notes.previous_release_of(readme, "2.2.0", release_notes.EXE) == "2.1.0"
-    assert "Windows EXE unchanged (2.1.0)" in release_notes.build_notes("2.2.0", readme, "sha256:abc", None)
+    assert "The last Windows EXE is 2.1.0" in release_notes.build_notes("2.2.0", readme, "sha256:abc", None)
     assert release_notes.previous_release_of(readme, "2.2.0-dev.1", release_notes.DOCKER) == "2.1.0"
