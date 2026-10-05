@@ -5,7 +5,7 @@
 
 **Your own certificate authority for the lab, the office and security demos.** Create root and intermediate CAs, issue certificates that match Windows CA templates, revoke them with a CRL clients can actually reach, and get every certificate onto the machine that needs it. Runs as a **Docker web app**. The standalone **Windows desktop app** is in [maintenance only](#standalone-exe-windows-desktop): no new features after v2.8.0.
 
-[GitHub](https://github.com/darthrater78/cert-generator) · [v2.9.0-dev.2 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.9.0-dev.2) · [What's new](CHANGELOG.md) · [Quick start](#quick-start) · [Cert Generator Pal](#cert-generator-pal-windows-pcs)
+[GitHub](https://github.com/darthrater78/cert-generator) · [v2.9.0-dev.3 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.9.0-dev.3) · [What's new](CHANGELOG.md) · [Quick start](#quick-start) · [Cert Generator Pal](#cert-generator-pal-windows-pcs)
 
 ## New in 2.8: Cert Generator Pal
 
@@ -157,7 +157,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.9.0-dev.2
+    image: ghcr.io/darthrater78/cert-generator:2.9.0-dev.3
     container_name: cert-generator
     restart: unless-stopped
     security_opt:
@@ -300,6 +300,7 @@ In the Pal, **Bind…** on a certificate in the computer's store opens one dialo
 - **A role is offered when the certificate fits it**, whichever kind it is. Roles the PC doesn't run, roles you turned off, and roles whose name the certificate doesn't carry are shown greyed out with the reason.
 - **The Notes column lists every bind**, and the same list shows on the PC's card and the certificate's row on the server. Removing a bind needs no approval.
 - **Renewal** moves everything bound to the old certificate onto the new one first, including bindings made by hand.
+- **A certificate issued in the web UI can be bound too.** Install it in the computer's store with its key (the Windows bundle from **Export / install** does this) on a PC paired with the same CA, and it appears in the Pal's list with **Bind…**. Its key was made on the server, so it is not in the TPM, and the Pal can't renew it: at expiry you issue, install and bind a new one.
 - **The switches govern what the Pal does.** An administrator on the PC can still bind a certificate by hand in Windows; it then shows in Notes like any other.
 
 ### Using the Pal

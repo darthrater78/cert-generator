@@ -411,6 +411,13 @@ def test_import_help_lists_commands_per_os(signed_in: Page):
     page = signed_in
     _create_ca(page, "import.test")
     page.click("[data-action=showIssueCert]")
+    # A server certificate still has to be bound where it is used; the dialog says so for those kinds only.
+    bind_note = page.locator("#templateBindNote")
+    expect(bind_note).to_contain_text("Issuing only creates the certificate")
+    page.select_option("#certTemplate", "user")
+    expect(bind_note).to_be_hidden()
+    page.select_option("#certTemplate", "web-server")
+    expect(bind_note).to_be_visible()
     page.fill("#certCN", "host.import.test")
     page.click("[data-action=issueCert]")
     _toast(page, "issued")
@@ -433,6 +440,10 @@ def test_import_help_lists_commands_per_os(signed_in: Page):
     expect(steps).to_contain_text("Cert:\\LocalMachine\\My")
     expect(steps).not_to_contain_text("Cert:\\LocalMachine\\Root")
     expect(page.locator("#importPopCopy")).to_be_enabled()
+    # Installed is not in use: the last step points to Bind… and the README's explanation.
+    expect(steps).to_contain_text("choose Bind… on this certificate")
+    expect(steps.locator("a", has_text="What binding does")).to_have_attribute(
+        "href", "https://github.com/darthrater78/cert-generator#binding-a-certificate")
     # A web server certificate goes to the Local Machine store: PowerShell must run elevated.
     expect(page.locator("#importPopAdmin")).to_contain_text("Run PowerShell as Administrator")
     page.click("#importPop [data-action=setImportTrusted][data-arg=no]")

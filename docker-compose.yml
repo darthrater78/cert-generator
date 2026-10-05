@@ -6,7 +6,7 @@
 
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.9.0-dev.2
+    image: ghcr.io/darthrater78/cert-generator:2.9.0-dev.3
     container_name: cert-generator
     restart: unless-stopped
     security_opt:

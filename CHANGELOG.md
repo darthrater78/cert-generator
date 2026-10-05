@@ -6,6 +6,33 @@ What changed in each release of Cert Generator and Cert Generator Pal. The [READ
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
 
+### v2.9.0-dev.3 — 2026-10-05
+
+Third pre-release of 2.9: **binding is its own step, with your approval per role**, user certificates behave on **shared PCs**, requests say **who asked**, and the Pal's window is tidied. Not for production: none of the Pal's new screens have run on a real Windows PC yet.
+
+#### Docker
+- **Binding is separate from requesting.** A request only gets the certificate. **Bind…** on a certificate in the computer's store opens one dialog with a row per role: Remote Desktop, WinRM over HTTPS, an IIS site, RD Gateway and the RD Connection Broker. After a new machine certificate is installed the Pal says what it already does (a This computer certificate works at once for Wi-Fi, VPN, 802.1X and device identity such as posture checks), lists what needs a bind, and offers the dialog
+- **You decide what a PC may bind.** **Add a PC** and **Edit** have a switch per role: **Off**, **Allow** or **Needs my approval**. The Pal asks the server before every bind. One that needs approval waits on the **Windows PCs** page beside certificate requests and is applied by the Pal's **Check again**. PCs paired earlier allow every role, as before
+- **Changed:** a role is offered when the certificate's names fit it, whichever kind it is. Remote Desktop and WinRM need a certificate that carries the PC's own name; this replaces 2.9.0-dev.1's rule that Remote Desktop is only for This computer certificates
+- **Changed:** a **Web server** request for nothing but the PC's own name, on a PC that already holds a **This computer** certificate, is refused and offers Bind… on that certificate. Ask for a Web server certificate when you need other names
+- **A bind can be removed** for Remote Desktop (Windows goes back to its self-signed certificate), WinRM (the HTTPS listener is removed) and an IIS site (its https binding is removed). RD Gateway and the broker roles can only be given another certificate
+- **Certificates issued on this page are bound the same way.** **Issue Certificate** now says, for Web Server and Computer certificates, that issuing only creates the certificate, and **Export / install** for Windows ends with a step pointing to the Pal's **Bind…** on that PC (or the service's own settings). A certificate installed in the computer's store with its key can be bound in the Pal like one the Pal requested
+- **What uses each certificate** shows in the Pal's Notes column, now including RD Gateway and the broker roles and binds still waiting for approval, and on the server on the PC's card and the certificate's row
+- **Shared PCs:** a **Me** or code-signing certificate lives in one person's own store, so only the Windows account that asked for it can report it missing. Someone else signing in and checking no longer frees its name or gets it revoked when a new one is issued
+- **Who asked:** each request and bind carries the Windows account the Pal ran as (reported by the Pal, not attested) and an optional one-line **note for the admin**. Both show in the waiting list; the account stays on the issued certificate and in the activity log
+- **Remove and Revoke in the Pal:** **Remove** takes a certificate off the PC and has the server revoke it in the same step when this PC was issued it; **Revoke** revokes and leaves it installed. With the server unreachable the revocation is kept on the PC and sent at the next check-in. When the server revokes a certificate, the Pal shows a notice; when one disappears from a PC another way, the server marks it **no longer on the PC, not revoked** and never revokes on absence alone
+- **Pal (served by this image) — window:** a seal in the upper right carries your CA's name and the PC's domain; the certificate list sorts by any column, always fits its width instead of scrolling sideways, and is given room at the default window size (it could shrink to a sliver); **Help** and **Troubleshooting** links in the footer
+- **Changed:** the **Me** tile no longer mentions smart card sign-in. The certificate is for client authentication (Wi-Fi, VPN, websites); signing in to Windows with it is not supported
+- **Fix:** key usage follows the key. An ECDSA or Ed25519 certificate no longer carries Key Encipherment, which only an RSA key can do. This applies to certificates issued in the web UI as well as to the Pal's
+- **Fix:** a Me certificate's sign-in name (UPN) is no longer also written as an e-mail address; an e-mail address goes in only when the request sends one
+- **Fix:** the Pal flagged a Web server and a This computer certificate with the same name as an **Older copy**; it now takes the same name and the same purposes
+- **Fix:** when the administrator step is answered with a different account's password, the Pal says so instead of "ended without a result"
+
+#### Internal
+- `binds` in a PC's policy; `POST /api/pal/v1/binds`, `GET /api/pal/v1/binds/<id>`, `POST /api/pal/v1/revoke`; `GET /api/pal/binds` with `…/approve` and `…/deny`; `windows_user` and `note` on `requests`; `windows_user` and `binds` on `status`
+- New table `pal_binds`; new columns `pal_requests.windows_user`, `pal_requests.note`, `certificates.pal_user`, `certificates.pal_binds`
+- The Pal keeps waiting binds in `pending-binds.json` and the RD Gateway and broker binds it made in `binds.json`, both in its machine folder
+
 ### v2.9.0-dev.2 — 2026-10-05
 
 Second pre-release of 2.9, from the first run on a real Windows PC: **edit what a connected PC may request**, an **activity log**, **timestamps** on certificates, and the Pal shows **where its keys live**. Not for production.

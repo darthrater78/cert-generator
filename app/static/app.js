@@ -495,6 +495,8 @@ async function createIntermediate() {
 function onTemplateChange() {
   const tmpl = document.getElementById('certTemplate').value;
   document.getElementById('templateDesc').textContent = TEMPLATE_DESCS[tmpl] || '';
+  // A server certificate still has to be bound on the machine that uses it; the others are picked up from the store.
+  document.getElementById('templateBindNote').classList.toggle('hidden', !MACHINE_TEMPLATES.has(tmpl));
   const showEmail = tmpl === 'email' || tmpl === 'user';
   document.getElementById('emailRow').style.display = showEmail ? '' : 'none';
   if (!showEmail) document.getElementById('certEmail').value = '';
@@ -1102,6 +1104,10 @@ function importWindows(cert, root, intermediates, files, withTrust) {
     steps,
     hint: 'Export ' + (withTrust ? 'each CA as DER (Certificate Only) and ' : '') + 'this certificate as PKCS12 (.pfx)' +
       (cert.template === 'code-signing' ? ' and DER (Certificate Only)' : '') + ' first.',
+    // Installing puts it in the store; a service only uses it once it is bound.
+    after: machine ? 'Installed is not yet in use. To serve Remote Desktop, WinRM, an IIS site or a Remote Desktop Services role with it, ' +
+      'open Cert Generator Pal on that PC and choose Bind… on this certificate (the PC must be paired with this CA), ' +
+      'or set it in the service\'s own settings. Wi-Fi, VPN and 802.1X pick it up from the store with no further step.' : '',
   };
 }
 
@@ -1238,6 +1244,7 @@ function renderImportHelp() {
   const stepsEl = document.getElementById('importPopSteps');
   const blocks = answered ? [importBundleBlock(cert, help), importFilesBlock(help.files, cert)] : [];
   if (help.steps.length) blocks.push(importCommandsBlock(help.steps));
+  if (answered && help.after) blocks.push(importAfterBlock(help.after));
   stepsEl.replaceChildren(...blocks);
   importState.steps = help.steps;
   positionImportHelp();
@@ -1246,6 +1253,24 @@ function renderImportHelp() {
 // Every step in one block, each headed by a comment, with a Copy code button on it.
 function importCommandsText(steps) {
   return steps.map((s, i) => '# ' + (i + 1) + '. ' + s.label + '\n' + s.code).join('\n\n') + '\n';
+}
+
+// What still has to happen after the install, with where the README explains it.
+function importAfterBlock(text) {
+  const wrap = document.createElement('div');
+  const label = document.createElement('div');
+  label.className = 'step';
+  label.textContent = 'Then · put it to work';
+  const note = document.createElement('p');
+  note.className = 'import-admin';
+  note.textContent = text + ' ';
+  const link = document.createElement('a');
+  link.href = 'https://github.com/darthrater78/cert-generator#binding-a-certificate';
+  link.dataset.action = 'openExternalLink';
+  link.textContent = 'What binding does ↗';
+  note.append(link);
+  wrap.append(label, note);
+  return wrap;
 }
 
 function importCommandsBlock(steps) {
@@ -3035,10 +3060,10 @@ function showPalPendingCount(count) {
   badge.classList.toggle('hidden', count === 0);
   document.getElementById('palPendingBanner').classList.toggle('hidden', count === 0);
   document.getElementById('palPendingBannerText').textContent = count === 1
-    ? 'A Windows PC is waiting for your approval of a certificate request.'
-    : count + ' certificate requests from Windows PCs are waiting for your approval.';
+    ? 'A Windows PC is waiting for your approval of a request.'
+    : count + ' requests from Windows PCs are waiting for your approval.';
   if (palPendingSeen !== null && count > palPendingSeen) {
-    toast((count - palPendingSeen === 1 ? 'New certificate request' : (count - palPendingSeen) + ' new certificate requests') +
+    toast((count - palPendingSeen === 1 ? 'New request' : (count - palPendingSeen) + ' new requests') +
       ' waiting for your approval');
   }
   palPendingSeen = count;

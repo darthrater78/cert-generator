@@ -25,6 +25,11 @@ internal sealed class BindDialog : Form
     private readonly ComboBox _host = new() { Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly TextBox _note = new() { Width = TextWidth, MaxLength = 200 };
     private readonly List<string> _names;
+    private readonly Policy _policy;
+    private readonly string _fqdn;
+    private readonly BindTargets _fits;
+    private readonly HashSet<string> _inUse;
+    private readonly IReadOnlyCollection<string> _waiting;
 
     /// <summary>The roles ticked, to ask the server for and then bind.</summary>
     public BindRequest Request => new()
@@ -48,8 +53,11 @@ internal sealed class BindDialog : Form
     public BindDialog(AuditItem item, Policy policy, string fqdn, IReadOnlyCollection<string> waiting)
     {
         _names = Binder.DnsNames(item.Cert);
-        var fits = BindingRules.TargetsFor(_names, fqdn);
-        var inUse = item.UsedBy.Select(Binder.TargetOf).OfType<string>().ToHashSet();
+        _policy = policy;
+        _fqdn = fqdn;
+        _waiting = waiting;
+        _fits = BindingRules.TargetsFor(_names, fqdn);
+        _inUse = item.UsedBy.Select(Binder.TargetOf).OfType<string>().ToHashSet();
 
         SuspendLayout();
         AutoScaleDimensions = new SizeF(96F, 96F);
@@ -104,68 +112,88 @@ internal sealed class BindDialog : Form
         Theme.Apply(this);
         ResumeLayout(false);
         PerformLayout();
+    }
 
-        // One role's rows: its tick boxes, where it stands, what binding it does, and Remove when it is in use.
-        void AddRole(TableLayoutPanel to, string key, CheckBox[] boxes, string? notHere, string what, string? removeEffect, Control? extra = null)
+    /// <summary>Why a role can't be bound right now, with the short word for its chip; null when it can.</summary>
+    private (string Why, string Chip)? Blocked(string key, string? notHere)
+    {
+        if (notHere is not null)
         {
-            string mode = policy.BindMode(key);
-            bool nameFits = fits.HasFlag(BindingRules.Flag(key));
-            bool isWaiting = waiting.Contains(key);
-            bool used = inUse.Contains(key);
-            string? blocked = notHere
-                ?? (mode == "off" ? "Your admin hasn't allowed this for this PC." : null)
-                ?? (!nameFits ? $"This answers to the PC's own name ({fqdn}), which this certificate doesn't carry." : null)
-                ?? (isWaiting ? "Already waiting for your admin. Choose Check again in the main window once they have approved it." : null);
-
-            var head = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 6, 0, 0) };
-            foreach (var box in boxes)
-            {
-                box.Enabled = blocked is null;
-                box.Margin = new Padding(3, 3, 8, 0);
-            }
-            head.Controls.Add(boxes[0]);
-            if (used)
-            {
-                head.Controls.Add(Chip("In use", Theme.Success));
-            }
-            if (blocked is null && mode == "approve")
-            {
-                head.Controls.Add(Chip("Needs approval", Theme.Warning));
-            }
-            else if (blocked is not null)
-            {
-                head.Controls.Add(Chip(notHere is not null ? "Not on this PC" : mode == "off" ? "Not allowed" : isWaiting ? "Waiting" : "Name doesn't fit", Theme.TextDim));
-            }
-            to.Controls.Add(head);
-            foreach (var more in boxes.Skip(1))
-            {
-                to.Controls.Add(more);
-            }
-            to.Controls.Add(Hint(blocked ?? (used ? "This certificate serves it now. " : "") + what
-                + (blocked is null && mode == "approve" ? " Your admin approves this one before it happens." : "")));
-            if (extra is not null && blocked is null)
-            {
-                to.Controls.Add(extra);
-            }
-            if (used && removeEffect is not null)
-            {
-                var remove = new Button { Text = "Remove this bind", AutoSize = true, Tag = Theme.ButtonKind.Danger, Margin = new Padding(21, 2, 0, 4) };
-                remove.Click += (_, _) =>
-                {
-                    if (MessageBox.Show(this, $"Stop {BindKeys.Label(key)} using this certificate?\n\n{removeEffect}", Text,
-                            MessageBoxButtons.OKCancel, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.OK)
-                    {
-                        RemoveTarget = key;
-                        DialogResult = DialogResult.OK;
-                    }
-                };
-                to.Controls.Add(remove);
-            }
-            else if (used)
-            {
-                to.Controls.Add(Hint("It can't run without a certificate: to change it, bind another certificate to it."));
-            }
+            return (notHere, "Not on this PC");
         }
+        if (_policy.BindMode(key) == "off")
+        {
+            return ("Your admin hasn't allowed this for this PC.", "Not allowed");
+        }
+        if (!_fits.HasFlag(BindingRules.Flag(key)))
+        {
+            return ($"This answers to the PC's own name ({_fqdn}), which this certificate doesn't carry.", "Name doesn't fit");
+        }
+        if (_waiting.Contains(key))
+        {
+            return ("Already waiting for your admin. Choose Check again in the main window once they have approved it.", "Waiting");
+        }
+        return null;
+    }
+
+    /// <summary>One role's rows: its tick boxes, where it stands, what binding it does, and Remove when it is in use.</summary>
+    private void AddRole(TableLayoutPanel to, string key, CheckBox[] boxes, string? notHere, string what, string? removeEffect, Control? extra = null)
+    {
+        var blocked = Blocked(key, notHere);
+        bool needsApproval = blocked is null && _policy.BindMode(key) == "approve";
+        bool used = _inUse.Contains(key);
+
+        var head = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 6, 0, 0) };
+        foreach (var box in boxes)
+        {
+            box.Enabled = blocked is null;
+            box.Margin = new Padding(3, 3, 8, 0);
+        }
+        head.Controls.Add(boxes[0]);
+        if (used)
+        {
+            head.Controls.Add(Chip("In use", Theme.Success));
+        }
+        if (needsApproval)
+        {
+            head.Controls.Add(Chip("Needs approval", Theme.Warning));
+        }
+        else if (blocked is { } b)
+        {
+            head.Controls.Add(Chip(b.Chip, Theme.TextDim));
+        }
+        to.Controls.Add(head);
+        foreach (var more in boxes.Skip(1))
+        {
+            to.Controls.Add(more);
+        }
+        to.Controls.Add(Hint(blocked?.Why ?? (used ? "This certificate serves it now. " : "") + what
+            + (needsApproval ? " Your admin approves this one before it happens." : "")));
+        if (extra is not null && blocked is null)
+        {
+            to.Controls.Add(extra);
+        }
+        if (used)
+        {
+            to.Controls.Add(removeEffect is null
+                ? Hint("It can't run without a certificate: to change it, bind another certificate to it.")
+                : RemoveButton(key, removeEffect));
+        }
+    }
+
+    private Button RemoveButton(string key, string effect)
+    {
+        var remove = new Button { Text = "Remove this bind", AutoSize = true, Tag = Theme.ButtonKind.Danger, Margin = new Padding(21, 2, 0, 4) };
+        remove.Click += (_, _) =>
+        {
+            if (MessageBox.Show(this, $"Stop {BindKeys.Label(key)} using this certificate?\n\n{effect}", Text,
+                    MessageBoxButtons.OKCancel, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.OK)
+            {
+                RemoveTarget = key;
+                DialogResult = DialogResult.OK;
+            }
+        };
+        return remove;
     }
 
     private FlowLayoutPanel IisRows()
