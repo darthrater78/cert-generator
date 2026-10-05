@@ -15,8 +15,8 @@ internal sealed class MainForm : Form
     private const string CrlTile = "crl";
     private static readonly Dictionary<string, string> TileSubtitles = new()
     {
-        [UseCases.Computer] = "Wi-Fi, VPN, 802.1X, Remote Desktop",
-        [UseCases.WebServer] = "IIS sites, any names you need",
+        [UseCases.Computer] = "Wi-Fi, VPN, 802.1X, Remote Desktop, WinRM",
+        [UseCases.WebServer] = "IIS sites, RD Gateway, any names you need",
         [UseCases.User] = "You: sign-in and smart card",
         [UseCases.CodeSigning] = "Scripts and programs",
         [TrustTile] = "Trust the CA for HTTPS inspection",
@@ -202,7 +202,7 @@ internal sealed class MainForm : Form
         {
             var button = new TileButton
             {
-                Text = tile switch { TrustTile => "TLS inspection", CrlTile => "Self-hosted CRL", _ => UseCases.Label(tile) },
+                Text = tile switch { TrustTile => "TLS inspection", CrlTile => "Endpoint-hosted CRL", _ => UseCases.Label(tile) },
                 Subtitle = TileSubtitles[tile],
             };
             button.Click += async (_, _) =>
@@ -402,14 +402,14 @@ internal sealed class MainForm : Form
             + (i.UsedBy.Count > 0 ? $" ⚠ used by {string.Join(", ", i.UsedBy)}: request and bind a new one afterwards" : "")).ToList();
         if (_state?.CrlDp == "placeholder")
         {
-            lines.Add("• the self-hosted CRL listener");
+            lines.Add("• the endpoint-hosted CRL listener");
         }
         bool first = _state is null || _state.CrlDp.Length == 0;  // nothing picked yet: nothing to back out
         string backOut = first ? "" : lines.Count == 0
             ? "\n\nNothing from the current CRL profile is installed, so nothing is removed."
             : $"\n\nThe current CRL profile is backed out. Removed from this PC:\n{string.Join("\n", lines.Take(12))}"
               + (lines.Count > 12 ? $"\n• …and {lines.Count - 12} more" : "") + "\n\nThe root CA stays trusted.";
-        string extra = choice.CrlDp == "placeholder" ? "\n\nThe self-hosted CRL listener is set up for the new CRL profile." : "";
+        string extra = choice.CrlDp == "placeholder" ? "\n\nThe endpoint-hosted CRL listener is set up for the new CRL profile." : "";
         if (MessageBox.Show(this, (first ? $"Use {choice}?\n\nThis PC's certificates will check revocation there." : $"Switch to {choice}?")
                 + $"{backOut}{extra}", first ? "Pick CRL profile" : "Switch CRL profile", MessageBoxButtons.OKCancel,
                 MessageBoxIcon.Question) != DialogResult.OK || !BeginBusy("Switching CRL profile… approve the Windows prompt."))
@@ -685,7 +685,7 @@ internal sealed class MainForm : Form
 
     private async Task RepairAsync()
     {
-        if (!BeginBusy("Repairing the self-hosted CRL… approve the Windows prompt."))
+        if (!BeginBusy("Repairing the endpoint-hosted CRL… approve the Windows prompt."))
         {
             return;
         }
@@ -731,7 +731,16 @@ internal sealed class MainForm : Form
                     state.Chain = _device.Chain;  // picks up a new intermediate; saved by the next elevated step
                 }
                 _items = await Task.Run(() => StoreAudit.Run(state));
-                status = await client.StatusAsync(signer, _items.Select(i => i.Serial).Distinct().ToList());
+                // Where each key lives goes along, so the admin sees which are in the TPM.
+                var keys = new Dictionary<string, string>();
+                foreach (var item in _items.Where(i => !i.IsCa))
+                {
+                    if (Keys.Storage(item.Cert) is { } storage)
+                    {
+                        keys[item.Serial] = storage;
+                    }
+                }
+                status = await client.StatusAsync(signer, _items.Select(i => i.Serial).Distinct().ToList(), signer.KeyStorage, keys);
                 _crlAnswering = await LocalCrlServer.ProbeAsync(_device.SelfHosted);
                 await CheckCrlsAsync();
             }
@@ -865,7 +874,7 @@ internal sealed class MainForm : Form
         _remove.Text = count > 1 ? $"REMOVE {count}" : "REMOVE";
         _details.Enabled = item is not null;
         _bind.Enabled = !_busy && item is { CanBind: true };
-        _crlTip.SetToolTip(_bind, "Use this certificate for Remote Desktop or an IIS site. Renewing it moves them to the new certificate.");
+        _crlTip.SetToolTip(_bind, "Choose what uses this certificate: Remote Desktop, WinRM, an IIS site or a Remote Desktop Services role. Renewing it moves them to the new certificate.");
     }
 
     /// <summary>When a certificate this PC was issued can be renewed: "now", "in 245 days", or "" for others.</summary>
@@ -1054,7 +1063,7 @@ internal sealed class MainForm : Form
         if (inUse.Count > 0)
         {
             warning += "\n\nIn use: " + string.Join("; ", inUse.Select(i => $"{i.Names} by {string.Join(", ", i.UsedBy)}")) +
-                ". Without it, those HTTPS bindings have no certificate and Remote Desktop goes back to its own.";
+                ". Without it, whatever uses it has no certificate, and Remote Desktop goes back to its own.";
         }
         string question = items.Count == 1 ? "Remove this certificate?" : $"Remove these {items.Count} certificates?";
         if (MessageBox.Show(this, question + "\n\n" + string.Join("\n", lines) + warning, Text, MessageBoxButtons.OKCancel,
@@ -1154,7 +1163,7 @@ internal sealed class MainForm : Form
         var lines = _items.Where(i => i.FromPal is not null && !i.IsCa).Select(i => $"• {i.Names}  ({i.UseLabel}, {i.StoreLabel})").ToList();
         if (_state.CrlDp == "placeholder")
         {
-            lines.Add("• the self-hosted CRL listener");
+            lines.Add("• the endpoint-hosted CRL listener");
         }
         string removed = lines.Count == 0 ? "Nothing from it is installed on this PC."
             : "Removed from this PC:\n" + string.Join("\n", lines.Take(12)) + (lines.Count > 12 ? $"\n• …and {lines.Count - 12} more" : "");
@@ -1235,7 +1244,7 @@ internal sealed class MainForm : Form
         }
         using var dialog = new LocalCrlDialog(_device, _crlAnswering, _device.CrlDp == "placeholder");
         if (dialog.ShowDialog(this) != DialogResult.OK || dialog.Choice is null
-            || !BeginBusy(dialog.Choice == "crl-install" ? "Installing the local CRL server… approve the Windows prompt." : "Removing the local CRL server…"))
+            || !BeginBusy(dialog.Choice == "crl-install" ? "Installing the endpoint-hosted CRL… approve the Windows prompt." : "Removing the endpoint-hosted CRL…"))
         {
             return;
         }

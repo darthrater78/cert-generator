@@ -35,7 +35,7 @@ internal static class Operations
         {
             using var client = new PalClient(code.Server, code.RootSha256);
             var result = await client.EnrollAsync(code, Keys.SubjectPublicKeyInfo(deviceKey), LocalIdentity.Hostname, fqdn,
-                LocalIdentity.OsDescription).ConfigureAwait(false);
+                LocalIdentity.OsDescription, Keys.Storage(deviceKey)).ConfigureAwait(false);
             var device = result.Device;
             state = new DeviceState
             {
@@ -67,7 +67,7 @@ internal static class Operations
 
     /// <summary>
     /// Make (pairing, revocation type) the active profile. The current profile is backed out first:
-    /// its certificates and keys leave this PC, its self-hosted listener goes, its pending requests
+    /// its certificates and keys leave this PC, its endpoint-hosted listener goes, its pending requests
     /// are dropped, and its server is told. The root stays trusted (TLS inspection may rely on it).
     /// </summary>
     public static async Task<OpResult> SwitchAsync(string deviceId, string crlDp)
@@ -94,11 +94,11 @@ internal static class Operations
             try
             {
                 await InstallLocalCrlAsync(target).ConfigureAwait(false);
-                notes.Add("The self-hosted CRL is running.");
+                notes.Add("The endpoint-hosted CRL is running.");
             }
             catch (Exception e) when (e is PalException or IOException or UnauthorizedAccessException)
             {
-                notes.Add("The self-hosted CRL couldn't be set up yet (" + FriendlyMessage(e) + "). Use Repair.");
+                notes.Add("The endpoint-hosted CRL couldn't be set up yet (" + FriendlyMessage(e) + "). Use Repair.");
             }
         }
         AppLog.Info($"Active profile: {target.CaName} ({target.DeviceId[..8]}), revocation {crlDp}");
@@ -222,7 +222,7 @@ internal static class Operations
         {
             using var client = state.Client();
             view = await client.CreateRequestAsync(signer, useCase, names, Keys.CsrPem(key), lifetime, renewOf,
-                state.CrlDp).ConfigureAwait(false);
+                state.CrlDp, Keys.Storage(key)).ConfigureAwait(false);
         }
         catch
         {
@@ -306,7 +306,7 @@ internal static class Operations
                 {
                     // Keep the old certificate: removing it would leave IIS or Remote Desktop with nothing to serve.
                     AppLog.Error("Couldn't move bindings to the renewed certificate", e);
-                    return " Couldn't move IIS / Remote Desktop to it (" + FriendlyMessage(e) + "), so the old certificate stays installed: use Bind… on the new one, then remove the old one.";
+                    return " Couldn't move what used the old one to it (" + FriendlyMessage(e) + "), so the old certificate stays installed: use Bind… on the new one, then remove the old one.";
                 }
             }
             if (bind is not null)
@@ -337,13 +337,13 @@ internal static class Operations
         return found.Count > 0 ? found[0] : throw new PalException("Certificate not found. It isn't in the computer's Personal store.");
     }
 
-    /// <summary>Use a certificate already in the computer's Personal store for IIS and/or Remote Desktop.</summary>
+    /// <summary>Use a certificate already in the computer's Personal store for what <paramref name="request"/> names.</summary>
     public static OpResult Bind(string thumbprint, BindRequest request)
     {
         using var cert = FindMachineCert(thumbprint);
         if (!cert.HasPrivateKey)
         {
-            throw new PalException("No private key. A certificate needs its key on this PC to serve HTTPS or Remote Desktop.");
+            throw new PalException("No private key. A certificate needs its key on this PC before anything can use it.");
         }
         var notes = Binder.Apply(cert, request);
         return OpResult.Success(notes.Count > 0 ? string.Join(" ", notes) : "Nothing to change.");
@@ -399,7 +399,7 @@ internal static class Operations
             : $"{state.CaName} is now trusted on this PC, including for TLS inspection:\n" + string.Join("\n", added));
     }
 
-    /// <summary>Install or refresh the self-hosted CRL with freshly signed CRLs from the server.</summary>
+    /// <summary>Install or refresh the endpoint-hosted CRL with freshly signed CRLs from the server.</summary>
     public static async Task<OpResult> InstallLocalCrlAsync(DeviceState state)
     {
         using var signer = new DeviceSigner(state);

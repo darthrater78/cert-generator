@@ -184,6 +184,9 @@ _MIGRATIONS = (
     ("pal_requests", "crl_dp", "TEXT"),
     ("pal_devices", "pal_version", "TEXT"),
     ("pal_devices", "remote_allowed", "INTEGER NOT NULL DEFAULT 0"),  # may use the remote relay (docs/cert-generator-pal.md §8)
+    ("pal_devices", "key_storage", "TEXT"),      # where the PC says its device key lives: 'tpm' or 'software'; NULL = not reported
+    ("pal_requests", "key_storage", "TEXT"),     # the same, for the key behind this request's CSR
+    ("certificates", "pal_key_storage", "TEXT"), # and for the certificate issued from it
     ("pal_devices", "last_via", "TEXT"),  # 'lan' or 'relay': how its last request arrived  # the Pal's version at its last request (it ships with the server's)  # the revocation type (profile) the PC asked with; NULL = the policy's default
 )
 
@@ -840,6 +843,7 @@ def save_cert(
     key_pem: bytes,
     crl_dp_url: str | None = None,
     pal_device_id: str | None = None,
+    pal_key_storage: str | None = None,
 ) -> int:
     """``key_pem`` is empty for a certificate whose key stays with the requester (a Pal CSR)."""
     encrypted_key = _maybe_encrypt(key_pem) if key_pem else b""
@@ -847,17 +851,17 @@ def save_cert(
         cursor = conn.execute(
             """INSERT INTO certificates
                (ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, cert_pem, key_pem,
-                crl_dp_url, pal_device_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                crl_dp_url, pal_device_id, pal_key_storage)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, cert_pem, encrypted_key,
-             crl_dp_url or "", pal_device_id),
+             crl_dp_url or "", pal_device_id, pal_key_storage),
         )
         return cursor.lastrowid
 
 
 _CERT_LIST_COLUMNS = (
     "id, ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, revoked, created_at, "
-    "crl_dp_url, pal_device_id, pal_present, length(key_pem) > 0 AS has_key"
+    "crl_dp_url, pal_device_id, pal_present, pal_key_storage, length(key_pem) > 0 AS has_key"
 )
 
 
@@ -1060,15 +1064,15 @@ def enroll_pal_device(code_id: str, device: dict[str, Any]) -> bool:
             return False
         conn.execute(
             "INSERT INTO pal_devices (id, label, hostname, fqdn, os, public_key, ca_id, policy, code_id, last_seen, "
-            "remote_allowed) SELECT ?, ?, ?, ?, ?, ?, ca_id, policy, id, ?, ? FROM pal_codes WHERE id = ?",
+            "remote_allowed, key_storage) SELECT ?, ?, ?, ?, ?, ?, ca_id, policy, id, ?, ?, ? FROM pal_codes WHERE id = ?",
             (device["id"], device["hostname"] or device["fqdn"].split(".")[0], device["hostname"], device["fqdn"],
-             device["os"], device["public_key"], now, int(bool(device.get("remote_allowed"))), code_id),
+             device["os"], device["public_key"], now, int(bool(device.get("remote_allowed"))), device.get("key_storage"), code_id),
         )
         return True
 
 
 _PAL_DEVICE_COLUMNS = ("id, label, hostname, fqdn, os, public_key, ca_id, policy, code_id, created_at, last_seen, "
-                       "revoked_at, pal_version, remote_allowed, last_via")
+                       "revoked_at, pal_version, remote_allowed, last_via, key_storage")
 
 
 def get_pal_device(device_id: str) -> dict[str, Any] | None:
@@ -1081,7 +1085,7 @@ def list_pal_devices() -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
             "SELECT d.id, d.label, d.hostname, d.fqdn, d.os, d.ca_id, d.policy, d.created_at, d.last_seen, d.revoked_at, d.pal_version, "
-            "d.remote_allowed, d.last_via, "
+            "d.remote_allowed, d.last_via, d.key_storage, "
             "(SELECT COUNT(*) FROM certificates c WHERE c.pal_device_id = d.id) AS cert_count, "
             "(SELECT COUNT(*) FROM pal_requests r WHERE r.device_id = d.id AND r.status = 'pending') AS pending "
             "FROM pal_devices d ORDER BY d.revoked_at IS NOT NULL, d.created_at DESC"  # disconnected PCs last
@@ -1208,11 +1212,21 @@ def mark_pal_presence(device_id: str, present_serials: set[str]) -> None:
                          (int(row["serial"] in present_serials), now, row["id"]))
 
 
+def set_pal_key_storage(device_id: str, device_key: str | None, by_serial: dict[str, str]) -> None:
+    """Record where the PC says its keys live: its device key, and its own certificates' keys by serial."""
+    with _connect() as conn:
+        if device_key:
+            conn.execute("UPDATE pal_devices SET key_storage = ? WHERE id = ?", (device_key, device_id))
+        for serial, storage in by_serial.items():
+            conn.execute("UPDATE certificates SET pal_key_storage = ? WHERE pal_device_id = ? AND serial = ?",
+                         (storage, device_id, serial))
+
+
 def list_pal_issued_certs() -> list[dict[str, Any]]:
     """Every certificate issued to a Pal device, for the Devices page (one query, not one per device)."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT pal_device_id, template, common_name, not_after, revoked, pal_present FROM certificates "
+            "SELECT pal_device_id, template, common_name, not_after, revoked, pal_present, pal_key_storage FROM certificates "
             "WHERE pal_device_id IS NOT NULL ORDER BY not_after DESC"
         ).fetchall()
         return [dict(r) for r in rows]
@@ -1231,12 +1245,12 @@ def use_pal_nonce(device_id: str, nonce: str, now: float, ttl: float) -> bool:
 
 
 def create_pal_request(device_id: str, use_case: str, names: str, csr_pem: bytes, lifetime_days: int,
-                       renew_of: int | None, crl_dp: str | None = None) -> int:
+                       renew_of: int | None, crl_dp: str | None = None, key_storage: str | None = None) -> int:
     with _connect() as conn:
         cursor = conn.execute(
-            "INSERT INTO pal_requests (device_id, use_case, names, csr_pem, lifetime_days, status, renew_of, crl_dp) "
-            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
-            (device_id, use_case, names, csr_pem, lifetime_days, renew_of, crl_dp),
+            "INSERT INTO pal_requests (device_id, use_case, names, csr_pem, lifetime_days, status, renew_of, crl_dp, key_storage) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+            (device_id, use_case, names, csr_pem, lifetime_days, renew_of, crl_dp, key_storage),
         )
         return cursor.lastrowid
 

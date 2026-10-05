@@ -386,7 +386,11 @@ async function loadCerts(caId) {
         (c.has_key
           ? '<button type="button" class="import-chip" data-action="toggleImportHelp" data-arg="' + c.id + '" aria-haspopup="dialog" aria-expanded="false">' +
             (c.revoked ? 'Export ▾' : 'Export / install ▾') + '</button> '
-          : '<span class="key-chip" title="Requested by Cert Generator Pal: the private key never left that PC">Key on PC</span> ') +
+          : '<span class="key-chip" title="Requested by Cert Generator Pal: the private key never left that PC. ' +
+            (c.pal_key_storage === 'tpm' ? 'The Pal reports it is in the PC\'s TPM chip.'
+              : c.pal_key_storage === 'software' ? 'The Pal reports it is in Windows\' software key store (no usable TPM).'
+              : 'The Pal hasn\'t reported whether it is in a TPM.') + '">Key on PC' +
+            (c.pal_key_storage === 'tpm' ? ' · TPM' : c.pal_key_storage === 'software' ? ' · software' : '') + '</span> ') +
         (!c.revoked ? '<button class="btn btn-ghost btn-sm" data-action="revokeCert" data-arg="' + c.id + '\">Revoke</button> ' : '<span></span>') +
         '<button class="btn btn-danger btn-sm" data-action="deleteCert" data-arg="' + c.id + '\">Delete</button>' +
       '</div></td></tr>';
@@ -847,7 +851,7 @@ async function revokeCert(certId) {
   selectCA(currentCAId);
   // Served and Worker CRLs are republished by the app; anything else needs a CRL imported by hand.
   if (result.cloudflare && !result.cloudflare.pushed) {
-    toast('Certificate revoked, but the Cloudflare push failed: ' + (result.cloudflare.error || 'unknown error'), 'error');
+    toast('Certificate revoked, but publishing the CRL to Cloudflare failed: ' + (result.cloudflare.error || 'unknown error'), 'error');
     if (result.download_crl && confirm(result.note + '\n\nDownload the updated CRL now?')) await exportCRL();
   } else if (!result.download_crl) {
     toast('Certificate revoked. ' + result.note);
@@ -906,7 +910,7 @@ function renderCrlView(c) {
   ];
   if (c.out_of_date) {
     general.push(['Status', '<span class="badge badge-expired">Out of date</span> ' + (live
-      ? '<span class="dim">The Worker doesn\'t list every revocation yet. Push now on the CA page, or wait a minute if you just pushed.</span>'
+      ? '<span class="dim">The Worker doesn\'t list every revocation yet. Use Publish now on the CA page, or wait a minute if you just published.</span>'
       : '<span class="dim">Revocations since this CRL was signed publish once the database is unlocked.</span>')]);
   }
   const entries = c.entries.length
@@ -1179,8 +1183,10 @@ function importHelp(cert, os, withTrust) {
     cert: { file: linuxServer ? files.fullchain + ' + ' + files.key : files.pfx,
       how: linuxServer ? 'Export twice: Full Chain (cert + CA), then Private Key Only, both PEM.'
         : 'Export as PKCS12 (.pfx), Certificate + Key' + (cert.template === 'code-signing' && os === 'windows' ? '; and once more as DER, Certificate Only.' : '.') } };
-  help.question = 'Has ' + root.name + (intermediates.length ? ' and its intermediate' + (intermediates.length > 1 ? 's' : '') : '') +
-    ' already been imported on this machine?';
+  help.question = 'Install the root CA ' + root.name + (intermediates.length ? ' and its intermediate' + (intermediates.length > 1 ? 's' : '') : '') +
+    ' as well? A machine needs ' + (intermediates.length ? 'them' : 'it') + ' once: skip ' + (intermediates.length ? 'them' : 'it') +
+    ' where ' + root.name + ' is already trusted.';
+  help.withCaLabel = (intermediates.length ? 'CAs' : 'Root CA') + ' + certificate';
   return help;
 }
 
@@ -1209,12 +1215,13 @@ function renderImportHelp() {
   if (!help) { closeImportHelp(); return; }
   document.getElementById('importPopTitle').textContent = help.title;
   document.getElementById('importPopQuestion').textContent = help.question;
+  document.getElementById('importPopWithCa').textContent = help.withCaLabel;
   document.querySelectorAll('#importPopAsk button').forEach((b) => {
     b.setAttribute('aria-pressed', String(answered && (b.dataset.arg === 'yes') === importState.trusted));
   });
   // Nothing to copy until the trust question is answered: the steps depend on it.
   document.getElementById('importPopWhere').textContent = answered ? help.where : '';
-  document.getElementById('importPopHint').textContent = !answered ? 'Answer the question to see the steps.'
+  document.getElementById('importPopHint').textContent = !answered ? 'Choose one to see the steps.'
     : help.steps.length ? '' : help.hint;
   const adminEl = document.getElementById('importPopAdmin');
   adminEl.textContent = answered ? help.admin || '' : '';
@@ -1238,7 +1245,7 @@ function importCommandsBlock(steps) {
   const wrap = document.createElement('div');
   const label = document.createElement('div');
   label.className = 'step';
-  label.textContent = 'Then · run these commands, in order';
+  label.textContent = 'By hand · 2. run these commands, in order';
   const box = document.createElement('div');
   box.className = 'code-box';
   const pre = document.createElement('pre');
@@ -1263,7 +1270,7 @@ function importBundleBlock(cert, help) {
   const linuxServer = os === 'linux' && MACHINE_TEMPLATES.has(cert.template);
   const label = document.createElement('div');
   label.className = 'step';
-  label.textContent = 'Option · everything in one .zip';
+  label.textContent = 'Easiest · one .zip that installs itself';
   const what = document.createElement('p');
   const run = document.createElement('code');
   run.textContent = os === 'windows' ? 'install.cmd' : 'sh install.sh';
@@ -1337,7 +1344,7 @@ function importFilesBlock(files, cert) {
   block.className = 'import-files';
   const label = document.createElement('div');
   label.className = 'step';
-  label.textContent = 'Or · get the files one by one (into Downloads)';
+  label.textContent = 'By hand · 1. download the files (into Downloads)';
   block.append(label);
   for (const ca of files.cas) {
     const btn = document.createElement('button');
@@ -1444,7 +1451,7 @@ async function copyImportCommands() {
   const text = importCommandsText(importState.steps);
   try {
     await navigator.clipboard.writeText(text);
-    toast('Import commands copied');
+    toast('Install commands copied');
   } catch (e) {
     toast('Copy failed, select the commands and copy them by hand', 'error');
   }
@@ -1799,7 +1806,8 @@ async function restoreBackup() {
   const pw = document.getElementById('restorePassword').value;
   if (!fileInput.files.length) { toast('Select a backup file', 'error'); return; }
   if (!pw) { toast('Password is required', 'error'); return; }
-  if (!confirm('This will REPLACE ALL existing data. Are you sure?')) return;
+  if (!confirm('Restore from ' + fileInput.files[0].name + '?\n\nEvery CA, certificate and SSH key here now is deleted ' +
+    'and replaced with what the backup holds. This cannot be undone.')) return;
 
   const file = fileInput.files[0];
   const arrayBuffer = await file.arrayBuffer();
@@ -1852,8 +1860,8 @@ async function checkEncryptionStatus() {
       const usernameEl = document.getElementById('unlockUsername');
       usernameEl.classList.toggle('hidden', !status.username_required);
       document.getElementById('unlockSubtitle').textContent = status.username_required
-        ? 'Sign in to decrypt your private keys'
-        : 'Enter your master password to decrypt private keys';
+        ? 'Sign in to unlock the database'
+        : 'Enter your master password to unlock the database';
       document.getElementById('unlockOverlay').classList.remove('hidden');
       (status.username_required ? usernameEl : document.getElementById('unlockPassword')).focus();
       return false;
@@ -1902,7 +1910,7 @@ function showUnlockRecovery(useRecovery) {
   document.getElementById('unlockByRecovery').classList.toggle('hidden', !useRecovery);
   document.getElementById('unlockSubtitle').textContent = useRecovery
     ? 'Enter your recovery key and choose a new master password'
-    : needsUsername ? 'Sign in to decrypt your private keys' : 'Enter your master password to decrypt private keys';
+    : needsUsername ? 'Sign in to unlock the database' : 'Enter your master password to unlock the database';
   document.getElementById(useRecovery ? 'recoverKey' : needsUsername ? 'unlockUsername' : 'unlockPassword').focus();
 }
 
@@ -2412,7 +2420,7 @@ async function renderCloudflarePanel(ca) {
   const w = ca.cloudflare || { deployed: false };
   // Shown next to the title, so a folded card still says where things stand.
   document.getElementById('cfCardSummary').textContent = !w.deployed ? 'not deployed'
-    : w.push_error ? 'last push failed' : w.exists === false ? 'missing in Cloudflare' : 'published';
+    : w.push_error ? 'last publish failed' : w.exists === false ? 'missing in Cloudflare' : 'published';
   const conn = await loadCloudflareConnection();
   if (currentCAId !== ca.id) return;  // another CA opened meanwhile
   if (!w.deployed) {
@@ -2428,7 +2436,7 @@ async function renderCloudflarePanel(ca) {
       '<button class="btn btn-ghost btn-sm" data-action="copyCloudflareUrl">Copy</button>'],
     ['Worker', '<span class="mono">' + escapeHtml(w.worker) + '</span>' +
       (w.custom_domain ? ' <span class="dim">on ' + escapeHtml(w.hostname) + '</span>' : '')],
-    ['Last push', w.push_error
+    ['Last published', w.push_error
       ? '<span class="badge badge-expired">Failed</span> <span class="dim">' + escapeHtml(w.push_error) +
         '. Retried every hour.</span>'
       : '<span class="badge badge-active">Published</span> <span class="dim">' + escapeHtml(formatDateTime(w.pushed_at)) + '</span>'],
@@ -2436,7 +2444,7 @@ async function renderCloudflarePanel(ca) {
   ];
   if (w.exists === false) {
     rows.push(['In Cloudflare', '<span class="badge badge-expired">Not found</span> <span class="dim">The Worker was ' +
-      'deleted outside this app. Tear down to clear it here, then deploy a new one.</span>']);
+      'deleted outside this app. Delete it here to clear it, then deploy a new one.</span>']);
   }
   if (!w.account_matches) {
     rows.push(['Account', '<span class="badge badge-expired">Not connected</span> <span class="dim">This Worker is in a ' +
@@ -2445,8 +2453,8 @@ async function renderCloudflarePanel(ca) {
   panel.innerHTML = '<dl class="cert-detail">' + rows.map(([k, v]) => '<dt>' + k + '</dt><dd>' + v + '</dd>').join('') +
     '</dl><div class="cf-actions">' + cfButton('testCloudflareWorker', 'Test', 'primary') +
     cfButton('refreshCloudflarePanel', 'Refresh') +
-    cfButton('viewLiveCloudflareCrl', 'View live CRL') + cfButton('pushCloudflareWorker', 'Push now') +
-    cfButton('teardownCloudflareWorker', 'Tear down', 'danger') + '</div><div id="cfTestResult" class="cf-test"></div>';
+    cfButton('viewLiveCloudflareCrl', 'View live CRL') + cfButton('pushCloudflareWorker', 'Publish now') +
+    cfButton('teardownCloudflareWorker', 'Delete Worker', 'danger') + '</div><div id="cfTestResult" class="cf-test"></div>';
 }
 
 async function copyCloudflareUrl() {
@@ -2709,7 +2717,7 @@ async function deleteUnlinkedCloudflareWorkers() {
 async function pushCloudflareWorker() {
   try {
     const w = await (await api('/api/ca/' + currentCAId + '/cloudflare/push', { method: 'POST' })).json();
-    if (w.push_error) toast('Push failed: ' + w.push_error, 'error');
+    if (w.push_error) toast('Publishing failed: ' + w.push_error, 'error');
     else toast('CRL published to Cloudflare');
     await selectCA(currentCAId);
   } catch (e) {
@@ -2723,11 +2731,11 @@ async function teardownCloudflareWorker() {
     ? w.certificates + (w.certificates === 1 ? ' certificate names' : ' certificates name') + ' this Worker\'s address. ' +
       'Clients will no longer be able to check them for revocation, and a new Worker gets a different address.\n\n'
     : '';
-  if (!confirm('Tear down this CA\'s Cloudflare Worker?\n\n' + warning + 'This deletes the Worker' +
+  if (!confirm('Delete this CA\'s Cloudflare Worker?\n\n' + warning + 'This deletes the Worker' +
     (w.custom_domain ? ' and its custom domain' : '') + ' in Cloudflare.')) return;
   try {
     const r = await (await api('/api/ca/' + currentCAId + '/cloudflare', { method: 'DELETE' })).json();
-    toast('Worker removed' + (r.affected ? '; ' + r.affected + ' certificates lost their CRL address' : ''));
+    toast('Worker deleted' + (r.affected ? '; ' + r.affected + ' certificates lost their CRL address' : ''));
     await loadCloudflareConnection(true);
     await selectCA(currentCAId);
   } catch (e) {
@@ -2738,7 +2746,7 @@ async function teardownCloudflareWorker() {
 // ── Event delegation ────────────────────────────────────────────────
 // ── Cert Generator Pal: Windows PCs ────────────────────────────────
 
-const PAL_USE_CASES = { 'web-server': 'Web server', computer: 'This computer', user: 'Me', 'code-signing': 'Code signing' };
+const PAL_USE_CASES = { 'web-server': 'Web server', computer: 'This computer', user: 'Signed-in user', 'code-signing': 'Code signing' };
 const PAL_MODES = { off: 'Off', auto: 'Issue right away', approve: 'Needs approval' };
 const PAL_CODE_STATES = {
   unused: '<span class="badge badge-active">Not used yet</span>',
@@ -2756,10 +2764,23 @@ function palNames(names) {
 
 // What the PC holds now, by kind, from its own store audit. Certificates it no longer
 // holds (removed, revoked, expired) are only counted.
+// Where the PC says a key lives. The Pal reports it when it makes the key; nothing attests it.
+const PAL_KEY_STORAGE = {
+  tpm: ['TPM', 'pal-chip-on', 'The Pal made this key in the PC\'s TPM chip: it can\'t be exported or copied off the PC. Reported by the Pal, not attested.'],
+  software: ['Software key', 'pal-chip-approve', 'The PC has no usable TPM, so the Pal made this key in Windows\' software key store. ' +
+    'It is marked non-exportable, but an administrator on the PC can still extract it. Reported by the Pal, not attested.'],
+};
+
+function palKeyChip(storage) {
+  const [label, cls, title] = PAL_KEY_STORAGE[storage] ||
+    ['Not reported', '', 'This Pal hasn\'t said where the key lives. Pals from before this version don\'t report it; update the Pal on the PC.'];
+  return '<span class="pal-chip pal-key-chip ' + cls + '" title="' + escapeHtml(title) + '">' + label + '</span>';
+}
+
 function palCertSummary(d) {
   const live = d.certs.filter(c => c.state === 'installed' || c.state === 'unchecked');
   const rows = live.map(c =>
-    '<li>' + escapeHtml(PAL_USE_CASES[c.use_case] || c.use_case) + ' <span class="dim mono pal-name">' + escapeHtml(c.name) + '</span>' +
+    '<li>' + escapeHtml(PAL_USE_CASES[c.use_case] || c.use_case) + ' <span class="dim mono pal-name">' + escapeHtml(c.name) + '</span> ' + palKeyChip(c.key_storage) +
     (c.state === 'unchecked' ? ' <span class="dim">(not checked yet)</span>' : '') + '</li>');
   const gone = d.certs.filter(c => !live.includes(c));
   if (gone.length) {
@@ -2772,7 +2793,7 @@ function palCertSummary(d) {
   return rows.length ? '<ul class="pal-list">' + rows.join('') + '</ul>' : '<span class="dim">Nothing yet</span>';
 }
 
-const PAL_CRL_LABELS = { server: 'Cert Generator (LAN)', cloudflare: 'Cloudflare', placeholder: 'Self-hosted', none: 'No CRL' };
+const PAL_CRL_LABELS = { server: 'Cert Generator (LAN)', cloudflare: 'Cloudflare', placeholder: 'Endpoint-hosted', none: 'No CRL' };
 
 function palUseCaseChips(policy) {
   const chips = Object.entries(PAL_USE_CASES)
@@ -2929,6 +2950,7 @@ function renderPalDevices(devices) {
           '<div class="dim mono">' + escapeHtml(d.fqdn || d.hostname) + '</div>' +
           '<div class="dim">' + escapeHtml(d.os) + (d.last_seen ? ' · seen ' + formatDateTime(d.last_seen) : '') +
             (d.pal_version ? ' · Pal v' + escapeHtml(d.pal_version) : '') + '</div>' +
+          '<div class="dim pal-device-key">Device key ' + palKeyChip(d.key_storage) + '</div>' +
           (d.version_matches ? '' : '<div class="pal-drift">Pal v' + escapeHtml(d.pal_version) + ' on this PC, server v' +
             escapeHtml(document.body.dataset.appVersion) + ': features may not match. Update the Pal on the PC from this server.</div>') +
           '</div>' +
@@ -3143,7 +3165,7 @@ function renderPalRelay(s) {
     '</ul>' +
     '<p><button class="btn btn-ghost btn-sm" data-action="palRelayCheck">Check now</button> ' +
       '<button class="btn btn-ghost btn-sm" data-action="palRelayUpdate">Update Worker</button> ' +
-      '<button class="btn btn-danger btn-sm" data-action="palRelayTeardown">Tear down</button></p>';
+      '<button class="btn btn-danger btn-sm" data-action="palRelayTeardown">Remove</button></p>';
 }
 
 async function palRelayCall(path, message) {
@@ -3167,7 +3189,7 @@ function palRelayCheck() { return loadPalRelay(true); }
 function palRelayUpdate() { return palRelayCall('update', 'Relay Worker updated'); }
 
 async function palRelayTeardown() {
-  if (!confirm('Tear down the remote connection? PCs away from the LAN can no longer reach this server until you set it up again.\n\n' +
+  if (!confirm('Remove the remote connection? PCs away from the LAN can no longer reach this server until you set it up again.\n\n' +
       'The relay key stays, so PCs keep working with a new relay without pairing again.')) return;
   await palRelayCall('teardown', 'Remote connection removed');
 }

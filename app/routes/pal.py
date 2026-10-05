@@ -177,7 +177,7 @@ def _issue(request_id: int, device: dict[str, Any]) -> dict[str, Any]:
             ca_id=ca["id"], common_name=names["common_name"], san_domains=",".join(names["san"]),
             algorithm=algorithm, template=pal.USE_CASES[row["use_case"]], not_before=not_before,
             not_after=not_after, serial=serial, cert_pem=cert_pem, key_pem=b"", crl_dp_url=crl_dp_url,
-            pal_device_id=device["id"],
+            pal_device_id=device["id"], pal_key_storage=row.get("key_storage"),
         )
     except BaseException:
         db.transition_pal_request(request_id, "issuing", "pending")
@@ -285,7 +285,8 @@ def enroll():
     device_id = pal.new_device_id()
     remote = Policy.from_json(code["policy"]).allow_remote
     if not db.enroll_pal_device(code_id, {"id": device_id, "hostname": hostname, "fqdn": fqdn, "os": os_name,
-                                          "public_key": device_key, "remote_allowed": remote}):
+                                          "public_key": device_key, "remote_allowed": remote,
+                                          "key_storage": pal.key_storage(data.get("key_storage"))}):
         return failed()
     for k in keys:
         _enroll_limiter.success(k)
@@ -437,7 +438,7 @@ def _self_hosted_addresses(ca_id: int) -> list[dict[str, str]]:
 @bp.get(DEVICE_PREFIX + "crls")
 def self_hosted_crls():
     """Freshly signed CRLs for the device's CA chain, with the placeholder address each is served
-    at, for the PC's own local CRL server (the "self-hosted" revocation option). Signing needs
+    at, for the PC's own local CRL server (the "endpoint-hosted" revocation option). Signing needs
     the CA keys, so a locked server answers 423."""
     device, err = _signed_device()
     if err:
@@ -499,7 +500,8 @@ def create_request():
     if refusal:
         return error(refusal, 409)
 
-    request_id = db.create_pal_request(device["id"], use_case, names.to_json(), csr.encode(), lifetime, renew_of, crl_dp)
+    request_id = db.create_pal_request(device["id"], use_case, names.to_json(), csr.encode(), lifetime, renew_of, crl_dp,
+                                       pal.key_storage(data.get("key_storage")))
     # A renewal of the same names was approved once and needs no new approval.
     if mode == "approve" and renew_of is None:
         log.info("Pal request %d waiting for approval (device=%s, use_case=%s)", request_id, device["id"], use_case)
@@ -609,6 +611,11 @@ def cert_status():
     found = db.find_serials(tree, [s for s in set(normalized.values()) if s])
     # The serials are the PC's store audit: note which of its own certificates are still installed.
     db.mark_pal_presence(device["id"], {s for s in normalized.values() if s})
+    # Where the PC says its keys live (an older Pal sends neither): the device key, and each certificate's key.
+    keys = data.get("keys") if isinstance(data.get("keys"), dict) else {}
+    db.set_pal_key_storage(device["id"], pal.key_storage(data.get("device_key_storage")), {
+        pal.normalize_serial(raw): storage for raw, storage in list(keys.items())[:pal.MAX_SERIALS]
+        if isinstance(raw, str) and pal.normalize_serial(raw) and pal.key_storage(storage)})
     now = _utc_now()
     result = {}
     for raw, serial in normalized.items():
@@ -754,6 +761,7 @@ def list_devices():
             "use_case": pal.TEMPLATE_USE_CASES.get(cert["template"], cert["template"]),
             "name": cert["common_name"],
             "state": _cert_state(cert, now),
+            "key_storage": cert["pal_key_storage"],
         })
     for device in devices:
         device["policy"] = Policy.from_json(device["policy"]).public()

@@ -3,20 +3,25 @@ using CertGeneratorPal.Core;
 namespace CertGeneratorPal;
 
 /// <summary>
-/// "Use for Remote Desktop" and "Bind to IIS site": part of the Web server request (the This computer
-/// request has Remote Desktop only), and the Bind… dialog for a certificate already installed.
+/// What a machine certificate is used for: Remote Desktop and WinRM on a This computer request, an
+/// IIS site and the Remote Desktop Services roles on a Web server request, and the Bind… dialog
+/// for a certificate already installed. Roles this PC doesn't run aren't offered.
 /// </summary>
 internal sealed class BindPanel : TableLayoutPanel
 {
     private const string AllNames = "Every name (no SNI)";
     private readonly CheckBox _rdp = new() { Text = "Use for Remote Desktop", AutoSize = true };
+    private readonly CheckBox _winRm = new() { Text = "Use for WinRM over HTTPS (PowerShell remoting)", AutoSize = true };
+    private readonly CheckBox _gateway = new() { Text = "Use for RD Gateway", AutoSize = true };
+    private readonly CheckBox _publishing = new() { Text = "RD Connection Broker: sign RDP files (Publishing)", AutoSize = true };
+    private readonly CheckBox _redirector = new() { Text = "RD Connection Broker: single sign-on", AutoSize = true };
     private readonly CheckBox _iis = new() { Text = "Bind to an IIS site", AutoSize = true };
     private readonly ComboBox _site = new() { Width = 220 };
     private readonly NumericUpDown _port = new() { Minimum = 1, Maximum = 65535, Value = 443, Width = 80 };
     private readonly ComboBox _host = new() { Width = 220, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly Func<IEnumerable<string>> _names;
 
-    public BindPanel(Func<IEnumerable<string>> certificateNames, IReadOnlyCollection<string> usedBy, bool iis = true)
+    public BindPanel(Func<IEnumerable<string>> certificateNames, IReadOnlyCollection<string> usedBy, BindTargets targets)
     {
         _names = certificateNames;
         ColumnCount = 1;
@@ -27,10 +32,29 @@ internal sealed class BindPanel : TableLayoutPanel
         {
             Controls.Add(Hint("In use now: " + string.Join(", ", usedBy) + "."));
         }
-        Controls.Add(_rdp);
-        Controls.Add(Hint("Remote Desktop connections to this PC present this certificate instead of a self-signed one."));
-
-        if (!iis)
+        if (targets.HasFlag(BindTargets.Rdp))
+        {
+            Controls.Add(_rdp);
+            Controls.Add(Hint("Remote Desktop connections to this PC present this certificate instead of a self-signed one."));
+        }
+        if (targets.HasFlag(BindTargets.WinRm))
+        {
+            Controls.Add(_winRm);
+            Controls.Add(Hint("Adds an HTTPS listener on port 5986, or switches the existing one to this certificate. " +
+                              "WinRM must already be turned on, and Windows Firewall isn't changed."));
+        }
+        if (targets.HasFlag(BindTargets.RdGateway) && Binder.RdGateway.IsInstalled)
+        {
+            Controls.Add(_gateway);
+            Controls.Add(Hint("Restarts the RD Gateway service: people connected through it are disconnected."));
+        }
+        if (targets.HasFlag(BindTargets.RdBroker) && Binder.RdBroker.IsInstalled)
+        {
+            Controls.Add(_publishing);
+            Controls.Add(_redirector);
+            Controls.Add(Hint("This PC is the RD Connection Broker. For RD Web Access, bind its IIS site below."));
+        }
+        if (!targets.HasFlag(BindTargets.Iis))
         {
             return;
         }
@@ -75,6 +99,10 @@ internal sealed class BindPanel : TableLayoutPanel
     public BindRequest Request => new()
     {
         Rdp = _rdp.Checked,
+        WinRm = _winRm.Checked,
+        RdGateway = _gateway.Checked,
+        RdPublishing = _publishing.Checked,
+        RdRedirector = _redirector.Checked,
         IisSite = _iis.Checked ? _site.Text.Trim() : null,
         Port = (int)_port.Value,
         Host = _host.SelectedItem is string h && h != AllNames ? h : "",
@@ -118,7 +146,7 @@ internal sealed class BindPanel : TableLayoutPanel
     };
 }
 
-/// <summary>Bind… on a web server certificate already in the computer's Personal store.</summary>
+/// <summary>Bind… on a certificate already in the computer's Personal store.</summary>
 internal sealed class BindDialog : Form
 {
     private readonly BindPanel _panel;
@@ -141,12 +169,13 @@ internal sealed class BindDialog : Form
         var layout = new TableLayoutPanel { ColumnCount = 1, AutoSize = true, Dock = DockStyle.Fill };
         layout.Controls.Add(new Label
         {
-            Text = $"Use {item.Names} (expires {item.Cert.NotAfter:d MMM yyyy}) for Remote Desktop or an IIS site. " +
+            Text = $"Choose what uses {item.Names} (expires {item.Cert.NotAfter:d MMM yyyy}). " +
                    "When the Pal renews it, whatever uses it moves to the new certificate.",
             AutoSize = true,
             MaximumSize = new Size(460, 0),
         });
-        _panel = new BindPanel(() => Binder.DnsNames(item.Cert), item.UsedBy);
+        _panel = new BindPanel(() => Binder.DnsNames(item.Cert), item.UsedBy,
+            BindingRules.TargetsFor(UseCases.FromTemplate(item.FromPal?.Template)));
         layout.Controls.Add(_panel);
 
         var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 14, 0, 0) };
@@ -156,7 +185,7 @@ internal sealed class BindDialog : Form
         {
             if (Request.IsEmpty)
             {
-                MessageBox.Show(this, "Choose Remote Desktop, an IIS site, or both.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show(this, "Tick at least one use.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             else if (_panel.ValidateFor(this, Text))
             {

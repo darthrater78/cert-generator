@@ -665,7 +665,7 @@ def test_writable_exe_is_not_served(client, fake_exe):
     assert client.get("/pal/CertGeneratorPal.exe", environ_base=LAN).status_code == 200
 
 
-# ── Self-hosted CRL ─────────────────────────────────────────────────
+# ── Endpoint-hosted CRL ─────────────────────────────────────────────────
 
 def test_self_hosted_crls(admin_client):
     ca_id = _make_ca(admin_client)
@@ -825,3 +825,39 @@ def test_pal_version_is_recorded_and_compared_with_the_server(paired):
 def test_pal_takes_its_version_from_the_server():
     props = (Path(__file__).parents[1] / "pal" / "Directory.Build.props").read_text(encoding="utf-8")
     assert "../app/__init__.py" in props and "<Version>2" not in props
+
+
+# ── Key storage (TPM) ───────────────────────────────────────────────
+
+def test_key_storage_is_recorded_as_the_pal_reports_it(admin_client):
+    ca_id = _make_ca(admin_client)
+    device = FakePal(admin_client, _code(admin_client, ca_id).get_json()["pairing_code"])
+    assert device.enroll(device.enroll_body(key_storage="tpm")).status_code == 201
+    in_tpm = device.request("computer", {}, key_storage="tpm")[0].get_json()
+    waiting = device.request("user", {"upn": "alice@lan"}, key_storage="software")[0].get_json()
+    old_pal = device.request("web-server", {"dns": ["pc01.lan"]}, key_storage="in a drawer")[0].get_json()
+    admin_client.post(f"/api/pal/requests/{waiting['id']}/approve")  # the storage survives the wait for approval
+
+    listed = admin_client.get("/api/pal/devices").get_json()[0]
+    assert listed["key_storage"] == "tpm"
+    assert {c["use_case"]: c["key_storage"] for c in listed["certs"]} == {
+        "computer": "tpm", "user": "software", "web-server": None}
+    assert {c["template"]: c["pal_key_storage"] for c in admin_client.get(f"/api/ca/{ca_id}/certs").get_json()} == {
+        "computer": "tpm", "user": "software", "web-server": None}
+
+    # A later store audit fills in what wasn't reported at request time, for this PC's own certificates only.
+    device.signed("POST", "/api/pal/v1/status", {
+        "serials": [old_pal["serial"]], "device_key_storage": "software",
+        "keys": {old_pal["serial"].upper(): "tpm", in_tpm["serial"]: "nonsense", "DEADBEEF": "tpm"}})
+    listed = admin_client.get("/api/pal/devices").get_json()[0]
+    assert listed["key_storage"] == "software"
+    assert {c["use_case"]: c["key_storage"] for c in listed["certs"]} == {
+        "computer": "tpm", "user": "software", "web-server": "tpm"}
+
+
+def test_a_pal_that_reports_no_key_storage_still_works(paired):
+    client, device, _ = paired
+    cert = device.request("computer", {})[0].get_json()
+    device.signed("POST", "/api/pal/v1/status", {"serials": [cert["serial"]]})
+    listed = client.get("/api/pal/devices").get_json()[0]
+    assert listed["key_storage"] is None and listed["certs"][0]["key_storage"] is None

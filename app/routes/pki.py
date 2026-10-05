@@ -174,7 +174,7 @@ def _descendant_ids(ca_id: int) -> list[int]:
 @bp.delete("/api/ca/<int:ca_id>")
 def delete_ca(ca_id: int):
     if db.count_ca_workers(_descendant_ids(ca_id)):
-        return error("Tear down the Cloudflare CRL Worker of this CA (and of any intermediate under it) first", 409)
+        return error("Delete the Cloudflare CRL Worker of this CA (and of any intermediate under it) first", 409)
     if db.delete_ca(ca_id):
         log.info("CA deleted: id=%d", ca_id)
         return jsonify({"ok": True})
@@ -491,7 +491,7 @@ def revoke_cert(cert_id: int):
         result["cloudflare"] = {"pushed": not worker["cf_push_error"], "error": worker["cf_push_error"]}
         if kind == "cloudflare" and worker["cf_push_error"]:
             result["note"] = ("The certificate is revoked, but publishing the updated CRL to Cloudflare failed. "
-                              "The app retries every hour; use Push now on the CA page to retry sooner.")
+                              "The app retries every hour; use Publish now on the CA page to retry sooner.")
     # served or Worker: nothing to do; otherwise the page offers the updated CRL for import
     return jsonify(result)
 

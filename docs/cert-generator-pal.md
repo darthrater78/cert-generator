@@ -67,15 +67,17 @@ Disconnect, Delete) and the pairing codes (unused / used / expired / revoked).
    Names are filled in the way a Windows (AD CS) CA builds them, so the
    usual request is a single click with nothing to type:
    - **This computer** — Wi-Fi / VPN / 802.1X machine certificate, and the usual
-     one for Remote Desktop (option *Use for Remote Desktop*; no IIS option, since it
-     carries only the PC's own name). **No names
+     one for Remote Desktop and WinRM (options *Use for Remote Desktop* and *Use for
+     WinRM over HTTPS*; no IIS or RDS-role options, since it carries only the PC's own name). **No names
      to enter or edit:** like AD CS's *Computer* template (subject built from
      the directory), it is issued to the PC's FQDN recorded at pairing
      (CN = SAN = `pc01.lan`). The server ignores any names the PC sends.
    - **Web server** — starts from the same FQDN; extra names (aliases,
      the PC's LAN IP) can be added within the policy, like AD CS's *Web
-     Server* template. Options *Use for Remote Desktop* and *Bind to an IIS site*
-     (site, port, every name or one of the certificate's names via SNI); **Bind…**
+     Server* template. Options *Bind to an IIS site* (site, port, every name or one of
+     the certificate's names via SNI) and, where the PC runs them, *RD Gateway* and the
+     *RD Connection Broker* roles. No Remote Desktop option: that is the This computer
+     certificate's job. **Bind…**
      does the same for a certificate already installed (§4 Bindings).
    - **Me** — user/client-auth certificate, filled with the signed-in user's
      UPN (`whoami /upn`, falling back to the e-mail the admin's pattern
@@ -254,6 +256,15 @@ Machine-scope keys in the machine key store. The device key's ACL also grants
 *use* to Interactive users so the unelevated Pal can sign "Me" / code-signing
 requests (⚠ verify on a real PC, with and without a TPM).
 
+**Key storage is reported, not attested.** The Pal sends `key_storage` (`tpm` or
+`software`) with `enroll` (the device key) and with each `requests` call (the key
+behind the CSR); the server keeps it on the device, the request and the issued
+certificate. Each `status` call repeats it (`device_key_storage`, and `keys`:
+serial → storage for the certificates whose key the Pal could read), which fills
+in certificates issued before the Pal reported it. Machine keys can't be read by
+the unelevated Pal, so those are only known from request time. The admin page
+shows it per PC and per certificate; anything else is "Not reported".
+
 **Bindings (web server; This computer for RDP).** `Binder.cs`, elevated (`bind` helper op, or as part of
 `request` / `collect`; a request waiting for approval keeps its choice in the pending entry).
 - **http.sys:** the SSL binding is set through `httpapi.dll` (`HttpSetServiceConfiguration`,
@@ -269,6 +280,20 @@ requests (⚠ verify on a real PC, with and without a TPM).
   `Win32_TSGeneralSetting` sets), plus read access to the key for NETWORK SERVICE, which
   Remote Desktop runs as (⚠ verify with a TPM key, and that new connections pick it up
   without restarting the service).
+- **WinRM:** the HTTPS listener (`winrm/config/Listener`, Transport=HTTPS): its
+  `CertificateThumbprint` is set, or a listener on `*` is created with the certificate's
+  subject name as `Hostname`. WinRM must be running; the firewall is not touched.
+- **RD Gateway:** `RDS:\GatewayServer\SSLCertificate\Thumbprint` (RemoteDesktopServices
+  module), NETWORK SERVICE read access to the key, then a restart of `TSGateway`.
+- **RD Connection Broker:** `Set-RDCertificate -Role RDPublishing|RDRedirector -Thumbprint`
+  on the broker itself. The broker can't distribute the certificate to other servers (the
+  key is non-exportable), so every role is bound on the PC that runs it: RD Web Access is
+  its IIS site, RD Gateway its own entry.
+- These three go through Windows PowerShell (`-EncodedCommand`, a fixed script; values as
+  environment variables), since a PowerShell module is each role's supported interface.
+  The process runs with `-ExecutionPolicy RemoteSigned` and `PSModulePath` set to Windows'
+  own module folder, so the elevated helper never loads a module from a user's profile.
+  (⚠ none of the three has run on a real PC yet, with or without a TPM key.)
 - **Renewal** repoints *everything* that used the old thumbprint (http.sys entries of
   either kind, IIS's recorded hash, RDP) before the old certificate is removed, including
   bindings made by hand. If that fails, the old certificate stays installed and the user
@@ -362,7 +387,9 @@ the admin set.
 2. **Devices page** in the web UI.
 3. **Pal core + UI** — connect, four use cases, trust, renew, store audit. ✅
    (v2.8.0-dev.1 – dev.3, then real-PC feedback rounds)
-4. **Bindings** — IIS and RDP. ✅ built (v2.8.0-dev.6); ⏳ real-PC test
+4. **Bindings** — IIS and RDP. ✅ built (v2.8.0-dev.6); ⏳ real-PC test.
+   WinRM, RD Gateway and the RD Connection Broker roles added after 2.8.0, with RDP
+   moved to the This computer certificate only; ⏳ real-PC test
 5. **CI / release, README, screenshots, real-PC test.** ✅ released as v2.8.0
    after pre-releases `2.8.0-dev.1` – `dev.8`; ⏳ real-PC test of the bindings,
    relay and This computer for RDP continues after the release
@@ -383,7 +410,7 @@ switching with a manual button and both statuses shown.
 
 - **Docker app:** *Tools › Remote connection › Set up* deploys one relay Worker
   per server, the same way CRL Workers are deployed (encrypted Cloudflare token,
-  `workers.dev` or your own domain, Test / Tear down). It never calls the server.
+  `workers.dev` or your own domain, Test / Delete Worker). It never calls the server.
 - **The server connects out:** it keeps one WebSocket to the mailbox's Durable
   Object and polls as a fallback. It authenticates with a secret held only by
   the server and the Worker (a Worker secret binding). **Nothing on the LAN opens
@@ -419,7 +446,7 @@ switching with a manual button and both statuses shown.
 
 - Pairing never happens through the relay: a new PC pairs on the LAN with a
   pairing code, as today. The relay serves the signed API afterwards (requests,
-  status, renewals, CRL refresh for the self-hosted listener).
+  status, renewals, CRL refresh for the endpoint-hosted listener).
 - The EXE download stays LAN-only.
 
 ### The Pal: automatic, with a button and both statuses
@@ -513,5 +540,5 @@ outer signature; a time outside ±5 min; an inner path outside `/api/pal/v1/`; a
   real deploy (dev.4) worked on a free account.
 - Cloudflare answers urllib's default User-Agent with 403 "error code: 1010": the
   collector and the Pal always send their own.
-- A PC remote for longer than a CRL's lifetime: the self-hosted listener's CRL
+- A PC remote for longer than a CRL's lifetime: the endpoint-hosted listener's CRL
   refresh goes through the relay like any other signed request.

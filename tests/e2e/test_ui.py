@@ -54,13 +54,13 @@ def test_certificate_exports_download(signed_in: Page):
     _create_ca(page, "e2e.test")
 
     # The default is the public certificate only, which is all an endpoint needs to trust the CA.
-    expect(page.locator("#caExportNote")).to_contain_text("Trusted Endpoint")
+    expect(page.locator("#caExportNote")).to_contain_text("Trust on a machine")
     name, data = _download(page, "[data-action=exportCA]")
     assert name == "ca-e2e.test_Root_CA-certificate.der" and 300 < len(data) < 2000
 
     page.select_option("#caExportFormat", "pkcs12")
     page.select_option("#caExportPart", "both")
-    expect(page.locator("#caExportNote")).to_contain_text("TLS Inspection / CA Move")
+    expect(page.locator("#caExportNote")).to_contain_text("Signing device / CA move")
     expect(page.locator("#caExportNote")).to_contain_text("Never install it on endpoints")
     # No default password: the field starts empty, and the old default is refused.
     expect(page.locator("#caExportPassword")).to_have_value("")
@@ -424,7 +424,8 @@ def test_import_help_lists_commands_per_os(signed_in: Page):
     steps = page.locator("#importPopSteps")
     # Nothing to run until the trust question is answered.
     expect(page.locator("#importPopQuestion")).to_have_text(
-        "Has import.test Root CA already been imported on this machine?")
+        "Install the root CA import.test Root CA as well? A machine needs it once: "
+        "skip it where import.test Root CA is already trusted.")
     expect(steps).to_be_empty()
     expect(page.locator("#importPopCopy")).to_have_count(0)
     expect(page.locator("#importPopAdmin")).to_be_hidden()

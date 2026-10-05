@@ -27,7 +27,7 @@
 - **Renewal is one click**, and IIS sites and Remote Desktop move to the new certificate by themselves.
 - **Works away from the LAN** through an end-to-end encrypted Cloudflare relay, without opening anything on your network.
 
-<img width="1440" alt="The Windows PCs page: the Cert Generator Pal download card with the LAN link and SHA-256, two requests waiting for approval, and the connected PCs, each with what it may request, its CRL profiles, what is installed on it and its remote access" src="docs/screenshots/pal-windows-pcs.png" />
+<img width="1440" alt="The Windows PCs page: the Cert Generator Pal download card with the LAN link and SHA-256, two requests waiting for approval, and the connected PCs, each with where its device key lives (TPM or software), what it may request, its CRL profiles, what is installed on it and its remote access" src="docs/screenshots/pal-windows-pcs.png" />
 
 <sub><b>Windows PCs</b>: every paired PC, what it may request, what it holds, and the requests waiting for your approval.</sub>
 
@@ -52,7 +52,7 @@
 <table>
 <tr>
 <td width="50%" valign="top"><img alt="The Issue Certificate dialog: the Cert Generator Pal recommendation for Windows PCs at the top, then Include CRL Distribution Point ticked with Cert Generator (LAN) and the address clients fetch the CRL from" src="docs/screenshots/issue-certificate.png" /><br/><sub><b>Issue a certificate</b> from a Windows CA template, with the CRL address it carries.</sub></td>
-<td width="50%" valign="top"><img alt="Export / install for a computer certificate on Windows: the question whether the CA chain is already on the machine, the Administrator notice, Download .zip, Download buttons for the CA files and the CRL, and the PowerShell commands with Copy code" src="docs/screenshots/export-install.png" /><br/><sub><b>Export / install</b>: the files and the commands for Windows, macOS or Linux, or a .zip that installs itself.</sub></td>
+<td width="50%" valign="top"><img alt="Export / install for a computer certificate on Windows: the choice between installing the CAs with the certificate or the certificate only, the Administrator notice, Download .zip, Download buttons for the CA files and the CRL, and the PowerShell commands with Copy code" src="docs/screenshots/export-install.png" /><br/><sub><b>Export / install</b>: the files and the commands for Windows, macOS or Linux, or a .zip that installs itself.</sub></td>
 </tr>
 <tr>
 <td width="50%" valign="top"><img alt="The certificate viewer: a web server certificate's general fields, subject, issuer, extensions, fingerprints and the issuing CA's CRL" src="docs/screenshots/cert-viewer.png" /><br/><sub><b>Certificate viewer</b>: every field and extension, fingerprints, and whether it's on the CRL.</sub></td>
@@ -81,12 +81,12 @@
 - **Export parts individually** — full bundle, certificate only, private key only, or full chain (cert + every issuing CA up to the root)
 - **Password-protected exports** — optionally encrypt the private key (PEM); PKCS12 bundles always require a password you choose: there is no default, and the old pre-filled `changeit` is refused
 - **Optional CA chain inclusion** — choose whether to bundle the issuing CA certificate when exporting issued certs
-- **In-app import guide** — step-by-step instructions for importing certificates on Windows, macOS, and Linux for each template type
+- **In-app certificate guide** — step-by-step instructions for importing certificates on Windows, macOS, and Linux for each template type
 - **Export / install** — on any certificate, **Export / install ▾** asks whether the CA chain is already on the machine, then gives the files to download and copy-paste commands for Windows, macOS or Linux in one block with **Copy code**, with Windows stores per Microsoft's layout (root → Trusted Root Certification Authorities, intermediate → Intermediate Certification Authorities, computer certificates → Local Computer › Personal, user certificates → Current User › Personal) and a notice when PowerShell must run as Administrator. **Download .zip** packs the certificate, the CA chain if needed, the CRL for an endpoint-hosted certificate, and install / uninstall scripts (`install.cmd` / `uninstall.cmd` on Windows). The **Export file** tab downloads the certificate in any format
 - **Modern crypto algorithms** — Ed25519, ECDSA P-256, ECDSA P-384, RSA-2048, RSA-4096
 - **Revoke certificates** to mark them as no longer trusted
 - **CRL generation and publishing** — optionally embed a CRL Distribution Point in issued certificates. The distribution point is either **this server** (`<address>/crl/<CA id>.crl`, answered without sign-in; server mode only, see [Publishing the CRL](#publishing-the-crl)), where the app signs a 7-day CRL itself, re-signs it on every revocation and renews it before it runs out, a **Cloudflare Worker** per CA (server mode), or **endpoint-hosted** (`http://pki.<domain>/crl/<CA>.crl`, which no server answers): each machine gets the CRL from the certificate's install .zip, which on Windows also answers that address locally, or from an exported CRL you import (see [Endpoint-hosted CRL](#endpoint-hosted-crl-for-endpoints-that-cant-reach-docker-or-cloudflare-windows)). Exported CRLs stay valid as long as you choose (7 days to 10 years, default 10 years); the CA page shows the published CRL and the exported one separately, and each certificate shows where its CRL comes from and whether it is published
-- **Cloudflare Worker CRL distribution point** (Docker only) — each CA can publish its CRL from its own Cloudflare Worker, set up entirely from the app: connect an API token under **Tools › Cloudflare**, then **Deploy**, **Test**, **Push now**, **View live CRL** and **Tear down** on the CA page. Revoking a certificate pushes the new CRL to the Worker, and the hourly renewal keeps it current. See [Cloudflare Worker CRL](#cloudflare-worker-crl)
+- **Cloudflare Worker CRL distribution point** (Docker only) — each CA can publish its CRL from its own Cloudflare Worker, set up entirely from the app: connect an API token under **Tools › Cloudflare**, then **Deploy**, **Test**, **Publish now**, **View live CRL** and **Delete Worker** on the CA page. Revoking a certificate pushes the new CRL to the Worker, and the hourly renewal keeps it current. See [Cloudflare Worker CRL](#cloudflare-worker-crl)
 - **CRL viewer** — **View CRL** on the CA page (or **Open in CRL viewer** from a certificate) shows the CRL this server publishes: issuer, this and next update, signature, every revoked serial linked to its certificate, fingerprints and the PEM. For a CA it doesn't publish for, it lists the revocations an export would contain now
 - **Step-up confirmation for key material** — downloading a private key (CA, certificate or SSH), copying an SSH private key, backing up and restoring all ask for your password, or an authenticator code when MFA is on, unless you signed in within the last 5 minutes
 - **Revocation survives deletion** — deleting a revoked certificate keeps its serial on the CA's CRL until the certificate would have expired, and deleting a certificate that isn't revoked warns that clients keep trusting it
@@ -130,7 +130,7 @@ For a CRL that clients fetch over the network, you need the Docker version.
 
 1. Launch the app (Docker: `docker compose up -d`, Desktop: run `CertGenerator.exe`)
 2. Server mode: create your admin account on first launch, then sign in. Desktop: choose whether to protect the app with a username and password
-3. With no CA yet, the **Certificate Import Guide** opens on its Quick Start. **Open in new window** keeps it beside the app while you work
+3. With no CA yet, the **Certificate Guide** opens on its Quick Start. **Open in new window** keeps it beside the app while you work
 4. Click **+ New** next to **Authorities** (or **Tools › Create › New certificate authority**) and enter a domain name (e.g. `example.com`) and lifetime
 5. Select your CA in the sidebar
 6. Click **Issue certificate** to generate leaf certs
@@ -269,13 +269,13 @@ Cert Generator Pal is a Windows companion app for the Docker version. You pair a
 
 | In the Pal | Certificate | Installed in |
 |---|---|---|
-| **Web server** | TLS server certificate named after the PC, plus names you allow (IIS sites; Remote Desktop too) | Local Computer › Personal |
-| **This computer** | The computer's own certificate, named like a Windows CA names it (Wi-Fi, VPN, 802.1X, Remote Desktop) | Local Computer › Personal |
+| **Web server** | TLS server certificate named after the PC, plus names you allow (IIS sites, RD Gateway and the RD Connection Broker's roles) | Local Computer › Personal |
+| **This computer** | The computer's own certificate, named like a Windows CA names it (Wi-Fi, VPN, 802.1X, Remote Desktop, WinRM) | Local Computer › Personal |
 | **Me** | The signed-in user's client certificate (client authentication, smart card logon) | Current User › Personal |
 | **Code signing** | Signing scripts and programs | Current User › Personal |
 | **TLS inspection** | Trusts your CA for HTTPS inspection (no request) | Local Computer › Trusted Root |
 
-Only what the pairing code allows appears. The CA chain is checked before every install and any missing root or intermediate is added. A web server certificate can go straight to work: tick **Use for Remote Desktop** and/or **Bind to an IIS site** (site, port, and every name or one of the certificate's names) when you request it, or use **Bind…** on one already installed.
+Only what the pairing code allows appears. The CA chain is checked before every install and any missing root or intermediate is added. A machine certificate can go straight to work when you request it, or later with **Bind…** on one already installed. A **This computer** certificate serves what answers to the PC's own name: **Remote Desktop** and **WinRM over HTTPS**. A **Web server** certificate serves what may answer to other names: an **IIS site** (site, port, and every name or one of the certificate's names), **RD Gateway**, and the **RD Connection Broker**'s publishing and single sign-on certificates. Roles the PC doesn't run aren't offered.
 
 ### Setting up a PC
 
@@ -284,7 +284,7 @@ Only what the pairing code allows appears. The CA chain is checked before every 
    - **What the PC may request**: each kind is *Off*, *Issue right away* or *Needs my approval*.
    - **Allowed DNS names and addresses** (`*.home.arpa`, `10.0.0.0/24`) and **allowed user names** (`*@home.arpa`). The PC's own name must fit. Wildcard certificates are never issued to a PC.
    - **Longest lifetime**, how long the code works for, and the address the PC uses for this server.
-   - **CRL profiles**: which revocation checks the PC may use: **Cert Generator (LAN)** (this server), **the CA's Cloudflare Worker**, **On each PC (self-hosted)** or **None**. Each one ticked becomes a CRL profile in the Pal.
+   - **CRL profiles**: which revocation checks the PC may use: **Cert Generator (LAN)** (this server), **the CA's Cloudflare Worker**, **Endpoint-hosted (on each PC)** or **None**. Each one ticked becomes a CRL profile in the Pal.
    - **Allow remote connection**: whether the PC may use the [remote connection](#remote-connection-pcs-away-from-the-lan) once paired.
 3. **Send the pairing code** to the PC the way you'd send a password. It is shown only once, works for one PC, and expires.
 4. **On the PC**, run `CertGeneratorPal.exe` (it is unsigned, so Windows SmartScreen asks: choose **More info › Run anyway**), paste the code and choose **Connect**. Windows asks for administrator approval once, to trust your CA. The PC names itself from its own fully qualified name.
@@ -297,9 +297,16 @@ Only what the pairing code allows appears. The CA chain is checked before every 
 - **Request** with a tile. *Issue right away* installs the certificate in seconds. *Needs approval* waits for you: the request appears on the **Windows PCs** page with a banner and a count in the sidebar, and the Pal's **Check again** installs it once you approve.
 - **The certificate list** shows every certificate on the PC that chains to your CA, in the user's and the computer's stores, with the server's view of each (valid, revoked, expired) and anything that needs a look. **Details** opens a full certificate view (every field and extension, the chain, where the key lives). **Remove** takes one or several out, with one administrator prompt for the computer's.
 - **Renew** opens in a certificate's last 30 days (the last third for short-lived ones). Until then the button says how long is left. Renewing makes a new key and replaces the old certificate, which is then revoked. Whatever used the old certificate (IIS sites, other HTTPS bindings, Remote Desktop), even if you set it up by hand, moves to the new one first.
-- **Bind…** uses a web server certificate in the computer's store for **Remote Desktop** or an **IIS site**: the site's https binding is added if it has none, or switched to this certificate. The list shows what uses each certificate, and **Remove** warns before taking away one that's in use.
+- **Bind…** puts a certificate in the computer's store to work:
+  - **Remote Desktop** (This computer): new connections present it instead of the self-signed one.
+  - **WinRM over HTTPS** (This computer): adds the HTTPS listener on port 5986, or switches the existing one. WinRM must already be on, and Windows Firewall isn't changed.
+  - **IIS site** (Web server): the site's https binding is added if it has none, or switched to this certificate. RD Web Access is an IIS site: bind it here.
+  - **RD Gateway** (Web server): sets the gateway's certificate and restarts its service, which disconnects people using it.
+  - **RD Connection Broker** (Web server, on the broker itself): the certificates that sign RDP files and serve single sign-on. Each role is set on the PC that runs it, because the key never leaves that PC.
+  - A web server certificate is no longer offered for Remote Desktop; one already bound that way keeps working and still moves on renewal.
+  - The list shows what uses each certificate, and **Remove** warns before taking away one that's in use.
 - **One live certificate** per PC, kind and name: the server refuses duplicates and early renewals.
-- **CRL profiles**: switching profile backs out the current one first (its certificates leave the PC); the root CA stays trusted. **Self-hosted** adds a small listener on the PC that answers its own revocation checks, for laptops away from the LAN; its tile shows only under that profile.
+- **CRL profiles**: switching profile backs out the current one first (its certificates leave the PC); the root CA stays trusted. **Endpoint-hosted** adds a small listener on the PC that answers its own revocation checks, for laptops away from the LAN; its tile shows only under that profile.
 - **Connectivity** shows the cert server (over the LAN, and through the relay when the PC has one) and the CRL of the profile in use, each with a coloured status and **Test**. **Refresh** re-checks, and **Log** shows the Pal's log with a **Debug logging** switch (every request and check; never keys or pairing codes). The CRL profile is locked while the server can't be reached.
 - **Disconnect this PC** removes the pairing and every certificate it installed.
 
@@ -311,7 +318,8 @@ The **Windows PCs** page ([pictured above](#new-in-28-cert-generator-pal)) lists
 
 ### How it stays secure
 
-- **Keys stay on the PC**, non-exportable, in the TPM when there is one. The server stores no Pal private keys.
+- **Keys stay on the PC**, non-exportable. The Pal makes each key in the PC's **TPM** (Windows' Platform Crypto Provider) and falls back to Windows' software key store only when the PC has no usable TPM; there is nothing to configure. A TPM key can't be copied off the PC even by an administrator; a software key is marked non-exportable, but an administrator on that PC can still extract it. The server stores no Pal private keys.
+- **Where each key ended up is shown**: the **Windows PCs** page marks every PC's device key and each of its certificates **TPM**, **Software key** or **Not reported** (a Pal from before this version), and a CA's certificate list shows it beside **Key on PC**. On the PC, the Pal's certificate viewer says the same under **Private key**. The Pal reports this itself; it is not TPM attestation, so treat it as inventory, not proof.
 - **Pairing** proves both sides hold the code's secret without sending it, and **pins your root CA**: a server or network in the middle can't plant another CA.
 - **Every request is signed** by the PC's own device key, with a timestamp and a single-use nonce. What a PC may ask for is enforced by the server, not the app.
 - **LAN only**: the server answers the Pal's API only from private addresses (RFC 1918, CGNAT `100.64.0.0/10` for SSE / ZTNA overlays such as Tailscale or Zscaler, link-local, IPv6 ULA), and the Pal connects only to such addresses. Don't publish `/api/pal/` through an internet-facing reverse proxy; use the remote connection instead.
@@ -321,14 +329,14 @@ The **Windows PCs** page ([pictured above](#new-in-28-cert-generator-pal)) lists
 
 A PC allowed remote access keeps requesting and renewing when it isn't on your LAN, through a **relay Worker** on your Cloudflare account. **Nothing on your network opens to the internet**: your server connects *out* to the Worker and collects the requests waiting there.
 
-<img width="1440" alt="The Remote connection card once set up: the relay address with a green status, when the server last collected, how many PCs are allowed and requests answered, the Worker's queues, and Check now, Update Worker and Tear down" src="docs/screenshots/pal-remote.png" />
+<img width="1440" alt="The Remote connection card once set up: the relay address with a green status, when the server last collected, how many PCs are allowed and requests answered, the Worker's queues, and Check now, Update Worker and Remove" src="docs/screenshots/pal-remote.png" />
 
 1. Turn on **database encryption** and connect **Cloudflare** (**Tools › Cloudflare**) if you haven't: the relay's keys are only ever stored encrypted.
 2. On **Windows PCs › Remote connection**, choose **Set up remote connection**. It deploys a relay Worker on your `workers.dev` subdomain and the server starts collecting from it. **Check now** shows the server collecting within a minute.
 3. **Allow** remote access for a PC on its card (or tick **Allow remote connection** when you make its pairing code).
 4. The PC learns the relay the next time it checks in **on the LAN**. From then on, when the LAN can't be reached, each request goes through the relay instead. In the Pal, **Cert server · Remote** shows the relay, and **Connect to remote** uses only the relay for the session (to test it).
 
-What Cloudflare sees: a PC's device id, sizes and times. Each request is **end-to-end encrypted** to a key only your server holds (a one-time P-256 key per request, AES-256-GCM), and each reply to a key only that request's sender can derive, so the Worker can't read, change or replay either. The Worker only takes envelopes signed by a PC you allowed, and **pairing never goes through the relay**. **Tear down** deletes the Worker; the relay key stays, so PCs pick up a new relay without pairing again.
+What Cloudflare sees: a PC's device id, sizes and times. Each request is **end-to-end encrypted** to a key only your server holds (a one-time P-256 key per request, AES-256-GCM), and each reply to a key only that request's sender can derive, so the Worker can't read, change or replay either. The Worker only takes envelopes signed by a PC you allowed, and **pairing never goes through the relay**. **Remove** deletes the Worker; the relay key stays, so PCs pick up a new relay without pairing again.
 
 ### Troubleshooting
 
@@ -395,7 +403,7 @@ The desktop app can't serve CRLs (it listens on loopback only), so it offers the
 
 For clients that can't reach this server, each CA can publish its CRL from its own [Cloudflare Worker](https://developers.cloudflare.com/workers/), on Cloudflare's free plan. Everything happens in the app; there is no `wrangler` or command line. Docker only: the EXE never stores a Cloudflare token.
 
-<img width="1440" alt="A root CA's Cloudflare Worker for CRL card after Test: the address certificates carry, the Worker name, the last push, and the plain HTTP and HTTPS results with the recommended address" src="docs/screenshots/cloudflare-worker.png" />
+<img width="1440" alt="A root CA's Cloudflare Worker for CRL card after Test: the address certificates carry, the Worker name, when it last published, and the plain HTTP and HTTPS results with the recommended address" src="docs/screenshots/cloudflare-worker.png" />
 
 **1. Connect (once).** Turn on database encryption first: the API token can rewrite your CRL Workers, so it is only ever stored encrypted with the database key, and the app can't use it while the database is locked (encryption can't be turned off while Cloudflare is connected). Then open **Tools › Cloudflare** and follow its steps: create a custom API token in the Cloudflare dashboard with **Account · Workers Scripts · Edit** on your account only (for an address on your own domain, add **Zone · Zone · Read**, **Zone · Workers Routes · Edit** and **Zone · DNS · Edit** for that one zone), and paste it with your account ID. The token is checked with Cloudflare and never shown again.
 
@@ -403,9 +411,9 @@ For clients that can't reach this server, each CA can publish its CRL from its o
 
 **3. Test.** **Test** fetches the CRL from the Worker over plain HTTP and HTTPS, from this server, and checks that it parses, is signed by the CA, is current and matches what the app last pushed. It recommends the address to put in certificates: plain HTTP with no redirect where that works, since Windows and most clients fetch CRLs over HTTP. **View live CRL** opens the CRL the Worker is serving in the CRL viewer, and **Copy** gives the address for your own testing (`certutil -url`, `openssl crl`).
 
-**Keeping it current.** The CRL is built into the Worker, so publishing is a redeploy. Revoking a certificate asks to confirm and pushes the new CRL; the hourly renewal re-signs and pushes it before it runs out (7-day CRLs, renewed at half-life); **Push now** does it by hand. A failed push shows **not published** on the CA page and in the log, and is retried hourly. **Refresh** re-reads the Worker and checks it still exists in Cloudflare.
+**Keeping it current.** The CRL is built into the Worker, so publishing is a redeploy. Revoking a certificate asks to confirm and pushes the new CRL; the hourly renewal re-signs and pushes it before it runs out (7-day CRLs, renewed at half-life); **Publish now** does it by hand. A failed push shows **not published** on the CA page and in the log, and is retried hourly. **Refresh** re-reads the Worker and checks it still exists in Cloudflare.
 
-**Tear down** deletes the CA's Worker (and its custom domain) after a confirmation that says how many certificates carry its address, since they lose their working CRL. **Tools › Cloudflare** lists every `certgen-crl-*` Worker in the account as **in use**, **unlinked** (in Cloudflare, but no CA here uses it: a deleted CA, a failed setup, a restore or another install of the app) or **missing** (a CA here names a Worker Cloudflare no longer has), with **Delete** and **Delete unlinked**. **Disconnect** deletes the stored token (delete it in the Cloudflare dashboard too); it needs a recent sign-in and is refused while any CA still has a Worker, since the app could no longer update or remove it.
+**Delete Worker** deletes the CA's Worker (and its custom domain) after a confirmation that says how many certificates carry its address, since they lose their working CRL. **Tools › Cloudflare** lists every `certgen-crl-*` Worker in the account as **in use**, **unlinked** (in Cloudflare, but no CA here uses it: a deleted CA, a failed setup, a restore or another install of the app) or **missing** (a CA here names a Worker Cloudflare no longer has), with **Delete** and **Delete unlinked**. **Disconnect** deletes the stored token (delete it in the Cloudflare dashboard too); it needs a recent sign-in and is refused while any CA still has a Worker, since the app could no longer update or remove it.
 
 <img width="49%" alt="Tools › Cloudflare: the connected account and the Workers this app created, each with its CA and state" src="docs/screenshots/cloudflare-settings.png" />
 
@@ -566,7 +574,7 @@ Export options per certificate:
 - **Private Key Only** — private key
 - **Full Chain** — leaf cert + issuing CA cert + root CA cert (PEM only, for leaf certs)
 
-A CA's export defaults to **DER · Certificate Only**, which is all an endpoint needs to trust the CA. Export a CA's **Certificate + Key** only for a device that issues certificates with it, such as a firewall or proxy doing TLS inspection, or to move the CA to another server; never install it on endpoints. CA files are named after the CA (`ca-<CA name>-certificate.der`), certificate files after the common name (`<common name>-certificate.pfx`).
+A CA's export defaults to **DER · Certificate Only**, which is all an endpoint needs to trust the CA, including PCs behind TLS inspection that must trust what the inspecting device presents. Export a CA's **Certificate + Key** only for the one device that signs certificates as this CA, such as the firewall or proxy that performs TLS inspection, or to move the CA to another server; never install it on endpoints. CA files are named after the CA (`ca-<CA name>-certificate.der`), certificate files after the common name (`<common name>-certificate.pfx`).
 
 ## Data storage
 

@@ -17,15 +17,29 @@ public class BindingTests
     }
 
     [Fact]
-    public void ComputerCertificatesBindOnlyToRemoteDesktop()
+    public void EachKindOfCertificateServesOnlyItsOwnTargets()
     {
-        var both = new BindRequest { Rdp = true, IisSite = "Default Web Site", Port = 443 };
-        Assert.Same(both, BindingRules.ForUseCase(UseCases.WebServer, both));
-        var computer = BindingRules.ForUseCase(UseCases.Computer, both);
+        var everything = new BindRequest
+        {
+            Rdp = true, WinRm = true, IisSite = "Default Web Site", Port = 8443, Host = "web.home.arpa",
+            RdGateway = true, RdPublishing = true, RdRedirector = true,
+        };
+        // This computer: what answers to the PC's own name.
+        var computer = BindingRules.ForUseCase(UseCases.Computer, everything);
         Assert.NotNull(computer);
-        Assert.True(computer.Rdp);
+        Assert.True(computer.Rdp && computer.WinRm);
         Assert.Null(computer.IisSite);
+        Assert.False(computer.RdGateway || computer.RdPublishing || computer.RdRedirector);
+        // Web server: sites and RDS roles, never Remote Desktop or WinRM.
+        var web = BindingRules.ForUseCase(UseCases.WebServer, everything);
+        Assert.NotNull(web);
+        Assert.False(web.Rdp || web.WinRm);
+        Assert.Equal(("Default Web Site", 8443, "web.home.arpa"), (web.IisSite, web.Port, web.Host));
+        Assert.True(web.RdGateway && web.RdPublishing && web.RdRedirector);
+        Assert.Null(BindingRules.ForUseCase(UseCases.WebServer, new BindRequest { Rdp = true, WinRm = true }));
         Assert.Null(BindingRules.ForUseCase(UseCases.Computer, new BindRequest { IisSite = "Default Web Site" }));
+        Assert.Equal(BindTargets.All, BindingRules.TargetsFor(null));  // a certificate the Pal didn't issue
+        Assert.Equal(BindTargets.None, BindingRules.TargetsFor(UseCases.CodeSigning));
         Assert.Null(BindingRules.ForUseCase(UseCases.User, new BindRequest { Rdp = true }));
         Assert.Null(BindingRules.ForUseCase(UseCases.WebServer, new BindRequest()));
         Assert.Null(BindingRules.ForUseCase(UseCases.WebServer, null));

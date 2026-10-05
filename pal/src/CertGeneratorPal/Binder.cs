@@ -11,9 +11,10 @@ using Microsoft.Win32;
 namespace CertGeneratorPal;
 
 /// <summary>
-/// Puts a web server certificate to work: IIS sites (http.sys SSL bindings plus the site's
-/// https binding) and Remote Desktop. A renewal repoints everything that used the old
-/// certificate, whoever set it up, before the old one is removed.
+/// Puts a machine certificate to work: Remote Desktop and WinRM (a This computer certificate),
+/// IIS sites (http.sys SSL bindings plus the site's https binding), RD Gateway and the RD
+/// Connection Broker's roles (a web server certificate). A renewal repoints everything that
+/// used the old certificate, whoever set it up, before the old one is removed.
 /// </summary>
 internal static class Binder
 {
@@ -39,6 +40,10 @@ internal static class Binder
         catch (Exception e) when (e is UnauthorizedAccessException or System.Security.SecurityException or IOException)
         {
             AppLog.Debug("Couldn't read the Remote Desktop certificate: " + e.Message);
+        }
+        foreach (string thumbprint in WinRm.ListedHashes())
+        {
+            Add(thumbprint, "WinRM");
         }
         try
         {
@@ -67,6 +72,22 @@ internal static class Binder
         {
             notes.Add(Rdp.Use(cert));
         }
+        if (request.WinRm)
+        {
+            notes.Add(WinRm.Use(cert));
+        }
+        if (request.RdGateway)
+        {
+            notes.Add(RdGateway.Use(cert));
+        }
+        if (request.RdPublishing)
+        {
+            notes.Add(RdBroker.Use(cert, RdBroker.Publishing));
+        }
+        if (request.RdRedirector)
+        {
+            notes.Add(RdBroker.Use(cert, RdBroker.Redirector));
+        }
         return notes;
     }
 
@@ -84,6 +105,18 @@ internal static class Binder
         {
             notes.Add(Rdp.Use(replacement));
         }
+        if (WinRm.CurrentHashes().Contains(oldThumbprint, StringComparer.OrdinalIgnoreCase))
+        {
+            notes.Add(WinRm.Use(replacement));
+        }
+        if (string.Equals(RdGateway.CurrentHash(), oldThumbprint, StringComparison.OrdinalIgnoreCase))
+        {
+            notes.Add(RdGateway.Use(replacement));
+        }
+        foreach (string role in RdBroker.RolesUsing(oldThumbprint))
+        {
+            notes.Add(RdBroker.Use(replacement, role));
+        }
         return notes;
     }
 
@@ -94,8 +127,8 @@ internal static class Binder
     }
 
     /// <summary>
-    /// Lets NETWORK SERVICE read the certificate's private key: Remote Desktop runs as it. IIS
-    /// doesn't need this (http.sys does TLS in LSASS, as SYSTEM).
+    /// Lets NETWORK SERVICE read the certificate's private key: Remote Desktop and RD Gateway run
+    /// as it. IIS and WinRM don't need this (http.sys does TLS in LSASS, as SYSTEM).
     /// </summary>
     internal static bool GrantNetworkService(X509Certificate2 cert)
     {
@@ -158,6 +191,235 @@ internal static class Binder
             key.SetValue(ValueName, Convert.FromHexString(cert.Thumbprint), RegistryValueKind.Binary);
             AppLog.Info($"Remote Desktop uses {cert.Thumbprint}");
             return "Remote Desktop uses it for new connections." + access;
+        }
+    }
+
+    // ── WinRM, RD Gateway, RD Connection Broker (their PowerShell interfaces) ──
+
+    /// <summary>A Windows service is installed (running or not).</summary>
+    private static bool ServiceInstalled(string name)
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\" + name);
+            return key is not null;
+        }
+        catch (Exception e) when (e is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+        {
+            return false;
+        }
+    }
+
+    private static string NormalizeHash(string? text) =>
+        BindingRules.ValidThumbprint(new string((text ?? "").Where(Uri.IsHexDigit).ToArray())) ?? "";
+
+    /// <summary>
+    /// Windows PowerShell, for the roles whose supported interface is a PowerShell module. The
+    /// script is fixed text; values reach it as environment variables, never as part of the command.
+    /// </summary>
+    private static class PowerShell
+    {
+        private static string Exe => Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
+
+        /// <summary>Runs <paramref name="script"/> and returns its output lines. Throws "<paramref name="what"/> refused. …" when it fails.</summary>
+        public static List<string> Run(string what, string script, params (string Name, string Value)[] values)
+        {
+            // A failure leaves as one plain line on stderr, not PowerShell's CLIXML error record.
+            string wrapped = "$ErrorActionPreference = 'Stop'\ntry {\n" + script +
+                "\n} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }";
+            var start = new ProcessStartInfo(Exe)
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            // RemoteSigned, for this one process: the role modules are script modules, which the default policy on a client PC blocks.
+            foreach (string arg in new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned", "-EncodedCommand",
+                         Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(wrapped)) })
+            {
+                start.ArgumentList.Add(arg);
+            }
+            // This runs elevated: load modules from Windows' own folder only, never from a user's profile.
+            start.Environment["PSModulePath"] = Path.Combine(Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "Modules");
+            foreach (var (name, value) in values)
+            {
+                start.Environment["PAL_" + name] = value;
+            }
+            Process? started;
+            try
+            {
+                started = Process.Start(start);
+            }
+            catch (System.ComponentModel.Win32Exception e)
+            {
+                throw new PalException("Windows PowerShell didn't start: " + e.Message);
+            }
+            using var process = started ?? throw new PalException("Windows PowerShell didn't start.");
+            var stderr = process.StandardError.ReadToEndAsync();
+            string output = process.StandardOutput.ReadToEnd();
+            process.WaitForExit();
+            if (process.ExitCode != 0)
+            {
+                string why = stderr.GetAwaiter().GetResult().Trim();
+                throw new PalException(what + " refused. " + (why.Length > 300 ? why[..300] : why));
+            }
+            return [.. output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+        }
+
+        /// <summary>The same for a question: no answer (and a debug line) when it can't be asked.</summary>
+        public static List<string> TryRun(string what, string script, params (string Name, string Value)[] values)
+        {
+            try
+            {
+                return Run(what, script, values);
+            }
+            catch (Exception e) when (e is PalException or IOException)
+            {
+                AppLog.Debug(e.Message);
+                return [];
+            }
+        }
+    }
+
+    /// <summary>The WinRM HTTPS listener (PowerShell remoting over TLS, port 5986).</summary>
+    internal static class WinRm
+    {
+        private const string ListenerKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\WSMAN\Listener";
+
+        /// <summary>The HTTPS listeners' certificates as WinRM's configuration in the registry lists them: for display, readable unelevated.</summary>
+        public static List<string> ListedHashes()
+        {
+            var hashes = new List<string>();
+            try
+            {
+                using var listeners = Registry.LocalMachine.OpenSubKey(ListenerKey);
+                foreach (string name in listeners?.GetSubKeyNames() ?? [])
+                {
+                    if (!name.EndsWith("+HTTPS", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    using var listener = listeners!.OpenSubKey(name);
+                    if (NormalizeHash(listener?.GetValue("certThumbprint") as string) is { Length: > 0 } hash)
+                    {
+                        hashes.Add(hash);
+                    }
+                }
+            }
+            catch (Exception e) when (e is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+            {
+                AppLog.Debug("Couldn't read the WinRM listeners: " + e.Message);
+            }
+            return hashes;
+        }
+
+        /// <summary>The same, asked of WinRM itself (it must be running): what a renewal goes by.</summary>
+        public static List<string> CurrentHashes() => PowerShell.TryRun("WinRM",
+                "Get-WSManInstance -ResourceURI winrm/config/Listener -Enumerate | Where-Object { $_.Transport -eq 'HTTPS' } | ForEach-Object { $_.CertificateThumbprint }")
+            .Select(NormalizeHash).Where(h => h.Length > 0).ToList();
+
+        public static string Use(X509Certificate2 cert)
+        {
+            // WinRM matches the listener's host name against the certificate's subject, not its other names.
+            string host = cert.GetNameInfo(X509NameType.SimpleName, forIssuer: false);
+            if (!BindingRules.IsValidHost(host))
+            {
+                throw new PalException("Name not usable. WinRM needs a certificate issued to a DNS name; this one is issued to " + host + ".");
+            }
+            var result = PowerShell.Run("WinRM",
+                """
+                $listeners = @(Get-WSManInstance -ResourceURI winrm/config/Listener -Enumerate | Where-Object { $_.Transport -eq 'HTTPS' })
+                if ($listeners.Count -gt 0) {
+                    foreach ($l in $listeners) {
+                        Set-WSManInstance -ResourceURI winrm/config/Listener -SelectorSet @{ Address = $l.Address; Transport = 'HTTPS' } -ValueSet @{ CertificateThumbprint = $env:PAL_THUMBPRINT } | Out-Null
+                    }
+                    'updated'
+                } else {
+                    New-WSManInstance -ResourceURI winrm/config/Listener -SelectorSet @{ Address = '*'; Transport = 'HTTPS' } -ValueSet @{ Hostname = $env:PAL_HOST; CertificateThumbprint = $env:PAL_THUMBPRINT } | Out-Null
+                    'created'
+                }
+                """, ("THUMBPRINT", cert.Thumbprint), ("HOST", host));
+            bool created = result.Contains("created");
+            AppLog.Info($"WinRM HTTPS listener {(created ? "created with" : "now uses")} {cert.Thumbprint}");
+            return created
+                ? $"WinRM now listens for HTTPS on port 5986 as {host}. Windows Firewall wasn't changed: open that port if other PCs should reach it."
+                : "WinRM's HTTPS listener uses it.";
+        }
+    }
+
+    /// <summary>The RD Gateway role service on this PC.</summary>
+    internal static class RdGateway
+    {
+        public static bool IsInstalled => ServiceInstalled("TSGateway");
+
+        public static string? CurrentHash() => !IsInstalled ? null
+            : PowerShell.TryRun("RD Gateway",
+                    "Import-Module RemoteDesktopServices\n(Get-Item -Path 'RDS:\\GatewayServer\\SSLCertificate\\Thumbprint').CurrentValue")
+                .Select(NormalizeHash).FirstOrDefault(h => h.Length > 0);
+
+        public static string Use(X509Certificate2 cert)
+        {
+            if (!IsInstalled)
+            {
+                throw new PalException("RD Gateway isn't installed. Add the Remote Desktop Gateway role service first.");
+            }
+            string access = "";
+            try
+            {
+                GrantNetworkService(cert);  // the gateway's own service handles its UDP transport
+            }
+            catch (CryptographicException e)
+            {
+                AppLog.Error("Couldn't give NETWORK SERVICE access to the key", e);
+                access = " Windows refused to let the gateway's service read the key, so its UDP transport may not use it; see pal.log.";
+            }
+            PowerShell.Run("RD Gateway",
+                """
+                Import-Module RemoteDesktopServices
+                Set-Item -Path 'RDS:\GatewayServer\SSLCertificate\Thumbprint' -Value $env:PAL_THUMBPRINT
+                Restart-Service -Name TSGateway -Force
+                """, ("THUMBPRINT", cert.Thumbprint));
+            AppLog.Info($"RD Gateway uses {cert.Thumbprint}");
+            return "RD Gateway uses it; its service was restarted." + access;
+        }
+    }
+
+    /// <summary>
+    /// The RD Connection Broker's own certificates, when this PC is the broker. Each role is set on
+    /// the PC that runs it, from its own store: the key never leaves, so the broker can't hand it to
+    /// other servers. RD Web Access is an IIS site and RD Gateway has its own entry.
+    /// </summary>
+    internal static class RdBroker
+    {
+        public const string Publishing = "RDPublishing";
+        public const string Redirector = "RDRedirector";
+
+        public static bool IsInstalled => ServiceInstalled("RDMS");
+
+        public static List<string> RolesUsing(string thumbprint) => !IsInstalled ? []
+            : PowerShell.TryRun("RD Connection Broker",
+                    "Import-Module RemoteDesktop\nGet-RDCertificate | Where-Object { $_.Thumbprint -eq $env:PAL_THUMBPRINT } | ForEach-Object { [string]$_.Role }",
+                    ("THUMBPRINT", thumbprint))
+                .Where(r => r is Publishing or Redirector).ToList();
+
+        public static string Use(X509Certificate2 cert, string role)
+        {
+            if (role is not (Publishing or Redirector))
+            {
+                throw new PalException("Unknown Remote Desktop role.");
+            }
+            if (!IsInstalled)
+            {
+                throw new PalException("Not a Connection Broker. This PC doesn't run the RD Connection Broker role.");
+            }
+            PowerShell.Run("RD Connection Broker",
+                """
+                Import-Module RemoteDesktop
+                Set-RDCertificate -Role $env:PAL_ROLE -Thumbprint $env:PAL_THUMBPRINT -Force
+                """, ("ROLE", role), ("THUMBPRINT", cert.Thumbprint));
+            AppLog.Info($"RD Connection Broker {role} uses {cert.Thumbprint}");
+            return role == Publishing ? "RD Connection Broker signs RDP files with it." : "RD Connection Broker uses it for single sign-on.";
         }
     }
 

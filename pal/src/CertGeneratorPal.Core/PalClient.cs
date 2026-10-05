@@ -128,7 +128,7 @@ public sealed class PalClient : IDisposable
 
     public sealed record EnrollResult(DeviceInfo Device, byte[] RawBody);
 
-    public async Task<EnrollResult> EnrollAsync(PairingCode code, byte[] deviceSpki, string hostname, string fqdn, string os, CancellationToken token = default)
+    public async Task<EnrollResult> EnrollAsync(PairingCode code, byte[] deviceSpki, string hostname, string fqdn, string os, string? keyStorage = null, CancellationToken token = default)
     {
         ArgumentNullException.ThrowIfNull(code);
         byte[] body = JsonSerializer.SerializeToUtf8Bytes(new EnrollBody
@@ -140,6 +140,7 @@ public sealed class PalClient : IDisposable
             Os = os,
             Ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
             Nonce = Protocol.NewNonce(),
+            KeyStorage = keyStorage,
         }, Json.Options);
         using var request = new HttpRequestMessage(HttpMethod.Post, ApiUri("enroll")) { Content = JsonContent(body) };
         request.Headers.Add("X-Pal-Proof", Protocol.EnrollProof(code.Key, body));
@@ -178,7 +179,7 @@ public sealed class PalClient : IDisposable
         SignedAsync<RequestView>(signer, HttpMethod.Get, "requests/" + requestId.ToString(CultureInfo.InvariantCulture), null, token);
 
     public Task<RequestView> CreateRequestAsync(IDeviceSigner signer, string useCase, Dictionary<string, object> names, string csrPem,
-        int? lifetimeDays, int? renewOf, string? crlDp = null, CancellationToken token = default) =>
+        int? lifetimeDays, int? renewOf, string? crlDp = null, string? keyStorage = null, CancellationToken token = default) =>
         SignedAsync<RequestView>(signer, HttpMethod.Post, "requests", new CreateRequestBody
         {
             UseCase = useCase,
@@ -187,12 +188,14 @@ public sealed class PalClient : IDisposable
             LifetimeDays = lifetimeDays,
             RenewOf = renewOf,
             CrlDp = crlDp,
+            KeyStorage = keyStorage,
         }, token);
 
-    public async Task<Dictionary<string, string>> StatusAsync(IDeviceSigner signer, IReadOnlyCollection<string> serials, CancellationToken token = default)
+    public async Task<Dictionary<string, string>> StatusAsync(IDeviceSigner signer, IReadOnlyCollection<string> serials,
+        string? deviceKeyStorage = null, Dictionary<string, string>? keys = null, CancellationToken token = default)
     {
         // Sent even when empty: it is also how the server learns this PC no longer holds a certificate.
-        var reply = await SignedAsync<StatusReply>(signer, HttpMethod.Post, "status", new StatusBody { Serials = [.. serials] }, token)
+        var reply = await SignedAsync<StatusReply>(signer, HttpMethod.Post, "status", new StatusBody { Serials = [.. serials], DeviceKeyStorage = deviceKeyStorage, Keys = keys is { Count: > 0 } ? keys : null }, token)
             .ConfigureAwait(false);
         return reply.Status;
     }

@@ -47,7 +47,7 @@ internal sealed class RequestDialog : Form
                     MaximumSize = new Size(460, 0),
                     Font = new Font(Font, FontStyle.Bold),
                 });
-                _bind = new BindPanel(() => [state.Fqdn], [], iis: false);
+                _bind = new BindPanel(() => [state.Fqdn], [], BindingRules.TargetsFor(UseCases.Computer));
                 layout.Controls.Add(_bind);
                 break;
             case UseCases.WebServer:
@@ -55,7 +55,7 @@ internal sealed class RequestDialog : Form
                 _names = new TextBox { Multiline = true, Width = 460, Height = 90, ScrollBars = ScrollBars.Vertical, Text = state.Fqdn };
                 layout.Controls.Add(_names);
                 layout.Controls.Add(Hint("Allowed by your admin: " + string.Join(", ", policy.Dns)));
-                _bind = new BindPanel(() => SplitNames(_names.Text), []);
+                _bind = new BindPanel(() => SplitNames(_names.Text), [], BindingRules.TargetsFor(UseCases.WebServer));
                 layout.Controls.Add(_bind);
                 break;
             case UseCases.User:
@@ -119,8 +119,8 @@ internal sealed class RequestDialog : Form
 
     private static string Describe(string useCase) => useCase switch
     {
-        UseCases.Computer => "A machine certificate for Wi-Fi, VPN, 802.1X and Remote Desktop. Installed in the computer's Personal store.",
-        UseCases.WebServer => "A TLS certificate for IIS sites, with the extra names they need. It can serve Remote Desktop too. Installed in the computer's Personal store.",
+        UseCases.Computer => "A machine certificate for Wi-Fi, VPN, 802.1X, Remote Desktop and WinRM. Installed in the computer's Personal store.",
+        UseCases.WebServer => "A TLS certificate for IIS sites, RD Gateway and other Remote Desktop Services roles, with the extra names they need. Installed in the computer's Personal store.",
         UseCases.User => "A certificate for you: client authentication and smart card logon. Installed in your Personal store.",
         _ => "A code-signing certificate for scripts and programs. Installed in your Personal store.",
     };

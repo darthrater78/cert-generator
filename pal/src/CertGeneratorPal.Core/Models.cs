@@ -53,7 +53,7 @@ public static class CrlTypes
     {
         "server" => "Cert Generator (LAN)",
         "cloudflare" => "Cloudflare Worker",
-        "placeholder" => "Self-hosted on this PC",
+        "placeholder" => "Endpoint-hosted (on this PC)",
         "none" => "No revocation checks",
         _ => crlDp,
     };
@@ -194,6 +194,8 @@ internal sealed class EnrollBody
     public string Os { get; set; } = "";
     public long Ts { get; set; }
     public string Nonce { get; set; } = "";
+    /// <summary>Where the device key lives: "tpm" or "software".</summary>
+    public string? KeyStorage { get; set; }
 }
 
 internal sealed class CreateRequestBody
@@ -204,11 +206,16 @@ internal sealed class CreateRequestBody
     public int? LifetimeDays { get; set; }
     public int? RenewOf { get; set; }
     public string? CrlDp { get; set; }
+    /// <summary>Where the key behind the CSR lives: "tpm" or "software".</summary>
+    public string? KeyStorage { get; set; }
 }
 
 internal sealed class StatusBody
 {
     public List<string> Serials { get; set; } = [];
+    public string? DeviceKeyStorage { get; set; }
+    /// <summary>Serial → "tpm" or "software", for the certificates whose key this process could read.</summary>
+    public Dictionary<string, string>? Keys { get; set; }
 }
 
 internal sealed class StatusReply

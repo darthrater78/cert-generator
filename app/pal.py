@@ -85,6 +85,15 @@ def new_code_id() -> str:
     return secrets.token_hex(16)
 
 
+# Where the PC says a key it made lives: the TPM, or Windows' software key store. Self-reported.
+KEY_STORAGES = ("tpm", "software")
+
+
+def key_storage(value: Any) -> str | None:
+    """A key storage the Pal reported, or None when it is missing or not one we know."""
+    return value if value in KEY_STORAGES else None
+
+
 def new_device_id() -> str:
     return secrets.token_hex(16)
 

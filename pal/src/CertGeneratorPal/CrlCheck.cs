@@ -10,7 +10,7 @@ internal static class CrlCheck
 {
     public sealed record Result(bool Ok, string Summary, string Detail);
 
-    /// <param name="onThisPc">The self-hosted address: it must be answered by this PC's own listener, not the network.</param>
+    /// <param name="onThisPc">The endpoint-hosted address: it must be answered by this PC's own listener, not the network.</param>
     public static async Task<Result> TestAsync(string url, bool onThisPc)
     {
         var result = await TestCoreAsync(url, onThisPc).ConfigureAwait(false);
@@ -34,7 +34,7 @@ internal static class CrlCheck
                 if (!resolved.Any(IPAddress.IsLoopback))
                 {
                     return new(false, "Not installed on this PC", $"{url}\n\nAnswered by another machine ({string.Join(", ", resolved.Select(a => a.ToString()))}), " +
-                        "not this PC's own CRL listener. Install the self-hosted CRL.");
+                        "not this PC's own CRL listener. Install the endpoint-hosted CRL.");
                 }
             }
             if (!response.IsSuccessStatusCode)

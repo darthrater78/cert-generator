@@ -61,6 +61,27 @@ internal static class Keys
         throw new PalException("Windows couldn't create a key for this certificate. See pal.log for details.");
     }
 
+    /// <summary>Where a key lives, as the server records it: "tpm" or "software".</summary>
+    public static string Storage(CngKey key) => key.Provider == CngProvider.MicrosoftPlatformCryptoProvider ? "tpm" : "software";
+
+    /// <summary>The same for a certificate in a store; null when it has no key here or this process may not read it.</summary>
+    public static string? Storage(System.Security.Cryptography.X509Certificates.X509Certificate2 cert)
+    {
+        if (!cert.HasPrivateKey)
+        {
+            return null;
+        }
+        try
+        {
+            using var ecdsa = System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions.GetECDsaPrivateKey(cert) as ECDsaCng;
+            return ecdsa is null ? null : Storage(ecdsa.Key);
+        }
+        catch (CryptographicException)
+        {
+            return null;  // a machine key, and the Pal isn't elevated
+        }
+    }
+
     /// <summary>Open a key the Pal made, from whichever provider holds it.</summary>
     public static CngKey Open(string name, bool machine)
     {
@@ -134,6 +155,8 @@ internal sealed class DeviceSigner : IDeviceSigner, IDisposable
     }
 
     public string DeviceId { get; }
+
+    public string KeyStorage => Keys.Storage(_key.Key);
 
     public byte[] Sign(byte[] data) => _key.SignData(data, HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence);
 
