@@ -359,12 +359,12 @@ jobs:
           case "$GITHUB_REF_NAME" in
             *-dev.*|*-alpha.*|*-beta.*|*-rc.*) prerelease=(--prerelease) ;;
           esac
-          # Latest follows the newest release carrying an EXE, so that
-          # /releases/latest/download/CertGenerator.exe resolves to the current build.
+          # Latest is the newest release, with or without the EXE: the EXE is deprecated and
+          # most releases are Docker only. The README links the last EXE build by its version.
           latest=false
+          if [ "$IS_NEWEST" = "true" ] && [ "${#prerelease[@]}" -eq 0 ]; then latest=true; fi
           if [ "$HAS_EXE" = "true" ]; then
             assets=(assets/CertGenerator.exe assets/CertGenerator.exe.sha256)
-            if [ "$IS_NEWEST" = "true" ] && [ "${#prerelease[@]}" -eq 0 ]; then latest=true; fi
           fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release edit "$GITHUB_REF_NAME" --notes-file release-notes.md --latest="$latest"

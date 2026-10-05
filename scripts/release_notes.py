@@ -140,11 +140,23 @@ def _exe_shipped(body: str, exe_sha256: str | None) -> list[str]:
     return lines
 
 
-def _exe_unchanged(previous: str | None) -> list[str]:
+def _exe_deprecation_callout(previous: str) -> list[str]:
+    """Said first, above everything else: someone who came for the EXE must not have to look for it."""
+    return [
+        "> ⚠️ **Docker only: the standalone Windows EXE is deprecated.** It is not part of this release. "
+        f"Its last build is [v{previous}](https://github.com/{REPO}/releases/tag/v{previous}), which stays "
+        "available and gets security patches only. Everything new is in the Docker version. To move across, "
+        "use **Backup** in the EXE and **Restore** in Docker.",
+        "",
+    ]
+
+
+def _exe_deprecated(previous: str | None) -> list[str]:
     if not previous:
         return ["No EXE has been published yet."]
     return [
-        f"Windows EXE unchanged ({previous}) — nothing in this release affects it.",
+        f"**Deprecated: not built for this release.** The last Windows EXE is {previous}. It keeps working "
+        "and gets security patches only; no new features.",
         "",
         f"**Download** it from the [v{previous} release]"
         f"(https://github.com/{REPO}/releases/download/v{previous}/CertGenerator.exe).",
@@ -156,7 +168,10 @@ def build_notes(version: str, readme: str, image_digest: str | None, exe_sha256:
     shipping = released_components(readme, version)
     intro, sections = split_sections(version_entry(readme, version))
 
+    last_exe = previous_release_of(readme, version, EXE)
     lines: list[str] = []
+    if EXE not in shipping and "-" not in version and last_exe:
+        lines += _exe_deprecation_callout(last_exe)
     if intro:
         lines += [intro, ""]
 
@@ -173,9 +188,9 @@ def build_notes(version: str, readme: str, image_digest: str | None, exe_sha256:
     if EXE in shipping:
         lines += _exe_shipped(sections[EXE], exe_sha256)
     elif "-" in version:
-        lines += _not_built(previous_release_of(readme, version, EXE), "Windows EXE")
+        lines += _not_built(last_exe, "Windows EXE")
     else:
-        lines += _exe_unchanged(previous_release_of(readme, version, EXE))
+        lines += _exe_deprecated(last_exe)
     lines += [""]
 
     for title, body in sections.items():
