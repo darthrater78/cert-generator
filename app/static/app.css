@@ -448,6 +448,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 /* ================= certificate register ================= */
 #certTableContainer { overflow-x: auto; }
 .cert-when { margin-top: 2px; font: 11px var(--font-mono); color: var(--text-dim); white-space: normal; min-width: 22ch; }
+.cert-gone { color: var(--warning); }
 .cert-table.activity-table { min-width: 0; }
 .cert-table.activity-table td { vertical-align: top; white-space: normal; overflow-wrap: anywhere; }
 .cert-table.activity-table td:first-child { font: 11px var(--font-mono); white-space: nowrap; padding-left: 0; }
@@ -1052,6 +1053,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .pal-name { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
 .pal-all { margin-left: 8px; vertical-align: middle; }
 .pal-names { font-family: var(--font-mono, monospace); font-size: 12.5px; }
+.pal-note { margin-top: 4px; padding-left: 8px; border-left: 3px solid var(--rule); font-style: italic; overflow-wrap: anywhere; }
 .pal-sha { word-break: break-all; }
 
 /* ================= Windows PCs (Cert Generator Pal) ================= */

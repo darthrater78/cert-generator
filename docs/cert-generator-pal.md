@@ -66,25 +66,26 @@ Disconnect, Delete) and the pairing codes (unused / used / expired / revoked).
    others are hidden).
    Names are filled in the way a Windows (AD CS) CA builds them, so the
    usual request is a single click with nothing to type:
-   - **This computer** — Wi-Fi / VPN / 802.1X machine certificate, and the usual
-     one for Remote Desktop and WinRM (options *Use for Remote Desktop* and *Use for
-     WinRM over HTTPS*; no IIS or RDS-role options, since it carries only the PC's own name). **No names
+   - **This computer** — Wi-Fi / VPN / 802.1X machine certificate and the PC's identity
+     for posture checks, and the usual one to bind to Remote Desktop and WinRM. **No names
      to enter or edit:** like AD CS's *Computer* template (subject built from
      the directory), it is issued to the PC's FQDN recorded at pairing
      (CN = SAN = `pc01.lan`). The server ignores any names the PC sends.
    - **Web server** — starts from the same FQDN; extra names (aliases,
      the PC's LAN IP) can be added within the policy, like AD CS's *Web
-     Server* template. Options *Bind to an IIS site* (site, port, every name or one of
-     the certificate's names via SNI) and, where the PC runs them, *RD Gateway* and the
-     *RD Connection Broker* roles. No Remote Desktop option: that is the This computer
-     certificate's job. **Bind…**
-     does the same for a certificate already installed (§4 Bindings).
-   - **Me** — user/client-auth certificate, filled with the signed-in user's
-     UPN (`whoami /upn`, falling back to the e-mail the admin's pattern
-     expects); editable only within the user patterns.
+     Server* template. It does nothing until bound (§4 Bindings).
+   - **Me** — user/client-auth certificate (Wi-Fi, VPN, websites that ask for one),
+     filled with the signed-in user's UPN (`whoami /upn`, falling back to the name the
+     admin's pattern expects); editable only within the user patterns. The UPN goes in
+     as a UPN only; an e-mail address is added only when the request sends one. It
+     carries the Smart Card Logon usage, but **Windows sign-in with it is not
+     supported**: that needs the key on a (virtual) smart card, the account's SID in
+     the certificate and the CA in the domain's NTAuth store, none of which the Pal does.
    - **Code signing** — CN filled with the user's display name.
    Click → **Request** → installed. If the use case needs approval: "Waiting
-   for your admin" with a **Check again** button.
+   for your admin" with a **Check again** button. Every request can carry a
+   **note for the admin** (optional, one line, up to 200 characters), shown with
+   the request on the Windows PCs page.
 
    **Before every install the Pal checks that the CA chain is present** and
    adds what is missing in the same step: root → `LocalMachine\Root` and
@@ -184,7 +185,7 @@ verifies. Any failure: `401` with a generic message.
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/pal/v1/device` | policy, CA chain, CRL URLs, this device's requests and certs |
-| `POST /api/pal/v1/requests` | `{use_case, names, csr, renew_of?}` → `201 issued {cert, chain}` / `202 pending` / `4xx` |
+| `POST /api/pal/v1/requests` | `{use_case, names, csr, renew_of?, windows_user?, note?}` → `201 issued {cert, chain}` / `202 pending` / `4xx` |
 | `GET /api/pal/v1/requests/<id>` | status; the cert once issued |
 | `POST /api/pal/v1/status` | `{serials: [hex…]}` (≤ 500) → per serial `valid` / `revoked` / `expired` / `unknown` (no such cert under this device's CA chain). Used by the store audit |
 
@@ -193,7 +194,8 @@ verifies. Any failure: `401` with a generic message.
 - The CSR is used **only for its public key**, after its self-signature
   verifies (proof of possession). Subject and extensions in the CSR are ignored;
   the template and the request's `names` decide the certificate.
-- Allowed keys: ECDSA P-256 / P-384, RSA 2048 / 3072 / 4096.
+- Allowed keys: ECDSA P-256 / P-384, RSA 2048 / 3072 / 4096. Key usage follows the key:
+  `keyEncipherment` is set only for RSA (the same holds for certificates issued in the web UI).
 - **"This computer"**: names come from the device record (its FQDN), never
   from the request.
 - Every other DNS name / IP must match the device policy's DNS patterns (`*.lan` =
@@ -256,6 +258,36 @@ Machine-scope keys in the machine key store. The device key's ACL also grants
 *use* to Interactive users so the unelevated Pal can sign "Me" / code-signing
 requests (⚠ verify on a real PC, with and without a TPM).
 
+**Revoke and Remove.** `POST /api/pal/v1/revoke` (`serials`) revokes the PC's own unrevoked
+certificates and republishes their CAs' CRLs; any other serial is ignored. The Pal's
+**Remove** deletes the certificate locally and revokes it in the same pass; **Revoke**
+revokes and leaves it installed. Either writes the serial to
+`%LocalAppData%\CertGeneratorPal\revokes.json` first and sends it over the usual route
+(LAN, then relay); what can't be sent stays in the file and goes out at the next check-in.
+The server never revokes on absence alone (another Windows user running the Pal can't see
+someone else's user store): a certificate that was present at one check-in and is missing
+at the next is flagged on its row and logged once. In the other direction the Pal keeps
+the server's last answer per serial (`seen.json`) and shows a notice when one it knew as
+valid comes back revoked, unless it asked for that revocation itself.
+(⚠ not yet run on a real PC.)
+
+**Who asked, and whose store.** Each `requests` call carries `windows_user`, the Windows
+account the Pal runs as (`PC01\alice`), and an optional `note`. The server keeps both on the
+request and the account on the issued certificate, and shows them to the admin. Like key
+storage, the account is reported, not attested. `status` carries `windows_user` too, because
+a "Me" or code-signing certificate lives in one account's own store, which an audit run by
+any other account can't see: only the account that asked for such a certificate can report
+it missing. Absence reported by anyone else (or by an older Pal that doesn't say who it runs
+as) changes nothing, so on a shared PC one person's check-in never frees the name for a
+second copy or gets the first one revoked as superseded. A certificate issued before
+accounts were recorded is taken as belonging to the first account whose audit finds it.
+Machine certificates are unaffected: every account sees the computer's store.
+
+When the device key can't be used unelevated, a "Me" request runs through the administrator
+step. If UAC is answered with a different account's password, the helper refuses (it only
+accepts operations from its own profile) and the Pal says so: the certificate has to be
+requested from the person's own account.
+
 **Editing a connected PC.** `PUT /api/pal/devices/<id>/policy` replaces a connected PC's
 policy (use cases, allowed names, longest lifetime, CRL types) with the same checks as a new
 pairing code, including that the PC's own name still fits. `allow_remote` keeps its own
@@ -272,8 +304,39 @@ in certificates issued before the Pal reported it. Machine keys can't be read by
 the unelevated Pal, so those are only known from request time. The admin page
 shows it per PC and per certificate; anything else is "Not reported".
 
-**Bindings (web server; This computer for RDP).** `Binder.cs`, elevated (`bind` helper op, or as part of
-`request` / `collect`; a request waiting for approval keeps its choice in the pending entry).
+**Bindings.** Binding is its own step on an installed machine certificate, never part of a
+request. `Binder.cs` runs elevated, from the `bind`, `unbind` and `collect-binds` helper ops.
+- **Why a step of its own:** a certificate in the store is used by nothing until a service's
+  own setting points at it. Wi-Fi, VPN, 802.1X and device identity pick from the store and need
+  no bind; Remote Desktop, WinRM, IIS and the RDS roles do.
+- **Which certificate fits which role** (Core `BindingRules.TargetsFor`): Remote Desktop and
+  WinRM answer to the PC's own name, so the certificate must carry the FQDN recorded at pairing;
+  an IIS site, RD Gateway and the RD Connection Broker take any server certificate. The kind
+  (This computer or Web server) no longer decides.
+- **The admin's switches:** the policy carries `binds`, one mode per role (`rdp`, `winrm`, `iis`,
+  `rd-gateway`, `rd-broker`): `off`, `auto` or `approve`. A policy from before the switches
+  means `auto` for all. Before binding, the helper calls `POST /api/pal/v1/binds`
+  `{serial, binds: [{target, detail}], windows_user?, note?}`. Any role that is off refuses the
+  whole call (`403`); otherwise each role comes back `approved` or `pending`, with `201` when all
+  are approved and `202` when any waits. The certificate must be an unrevoked, unexpired This
+  computer or Web server certificate under the device's CA. `GET /api/pal/v1/binds/<id>` reads
+  one bind's status. Approved roles are bound at once; pending ones are kept in
+  `%ProgramData%\CertGeneratorPal\pending-binds.json` and applied by **Check again**. The admin
+  approves or denies on the Windows PCs page (`/api/pal/binds`, `…/approve`, `…/deny`).
+- **What the switches are:** the Pal's own rule, checked with the server. The bind happens on
+  the PC, and an administrator there can bind by hand in Windows regardless.
+- **Covered requests:** a Web server request whose only name is the PC's FQDN, when the PC
+  holds a This computer certificate it still reports as installed, gets `409 Already covered`;
+  the Pal offers Bind… on that certificate. Renewals of an older such certificate still work.
+- **Removing a bind** (`unbind`, no server call): Remote Desktop's `SSLCertificateSHA1Hash`
+  value is deleted (Windows uses its self-signed certificate again); WinRM's HTTPS listeners
+  using the certificate are removed; for IIS, each http.sys binding serving it is deleted
+  together with the matching https binding on the site. RD Gateway and the broker's roles can't
+  run without a certificate, so they can only be given another.
+- **What uses a certificate:** read live for Remote Desktop, WinRM and http.sys. RD Gateway and
+  the broker's roles only answer an administrator, so the elevated helper records those in
+  `binds.json` when it sets them. Each `status` call sends `binds` (serial → uses); the server
+  keeps the list on the certificate and shows it to the admin. Reported, not attested.
 - **http.sys:** the SSL binding is set through `httpapi.dll` (`HttpSetServiceConfiguration`,
   address:port and SNI host:port kinds), not `netsh`, whose output Windows translates.
   New bindings get IIS's app id and the `MY` store; an existing one keeps every setting

@@ -34,7 +34,7 @@ internal static class Binder
         {
             if (Rdp.CurrentHash() is { } rdp)
             {
-                Add(rdp, "Remote Desktop");
+                Add(rdp, UseRdp);
             }
         }
         catch (Exception e) when (e is UnauthorizedAccessException or System.Security.SecurityException or IOException)
@@ -43,7 +43,7 @@ internal static class Binder
         }
         foreach (string thumbprint in WinRm.ListedHashes())
         {
-            Add(thumbprint, "WinRM");
+            Add(thumbprint, UseWinRm);
         }
         try
         {
@@ -56,8 +56,43 @@ internal static class Binder
         {
             AppLog.Debug("Couldn't read the HTTPS bindings: " + e.Message);
         }
+        // RD Gateway and the broker's roles: Windows tells only an administrator, so these come from the Pal's own record.
+        foreach (var (role, thumbprint) in BindLog.Read())
+        {
+            Add(thumbprint, role);
+        }
         return uses;
     }
+
+    public const string UseRdp = "Remote Desktop";
+    public const string UseWinRm = "WinRM";
+    public const string UseGateway = "RD Gateway";
+    public const string UsePublishing = "RD Connection Broker (signs RDP files)";
+    public const string UseRedirector = "RD Connection Broker (single sign-on)";
+
+    /// <summary>The bind role behind one of <see cref="Uses"/>' labels; null for something else.</summary>
+    public static string? TargetOf(string use) => use switch
+    {
+        UseRdp => BindKeys.Rdp,
+        UseWinRm => BindKeys.WinRm,
+        UseGateway => BindKeys.RdGateway,
+        UsePublishing or UseRedirector => BindKeys.RdBroker,
+        _ when use.StartsWith("HTTPS ", StringComparison.Ordinal) => BindKeys.Iis,
+        _ => null,
+    };
+
+    /// <summary>
+    /// Stop <paramref name="target"/> using the certificate. Remote Desktop goes back to Windows'
+    /// own self-signed certificate; WinRM loses its HTTPS listener; IIS loses the https bindings
+    /// that served it. RD Gateway and the broker can't run without a certificate: bind another instead.
+    /// </summary>
+    public static List<string> Remove(string thumbprint, string target) => target switch
+    {
+        BindKeys.Rdp => [Rdp.Remove(thumbprint)],
+        BindKeys.WinRm => [WinRm.Remove(thumbprint)],
+        BindKeys.Iis => Iis.Remove(thumbprint),
+        _ => throw new PalException("Can't be removed. That role needs a certificate to run: bind another certificate to it instead."),
+    };
 
     /// <summary>Use <paramref name="cert"/> (in LocalMachine\My, with its key) as <paramref name="request"/> says. Returns what changed.</summary>
     public static List<string> Apply(X509Certificate2 cert, BindRequest request)
@@ -191,6 +226,19 @@ internal static class Binder
             key.SetValue(ValueName, Convert.FromHexString(cert.Thumbprint), RegistryValueKind.Binary);
             AppLog.Info($"Remote Desktop uses {cert.Thumbprint}");
             return "Remote Desktop uses it for new connections." + access;
+        }
+
+        public static string Remove(string thumbprint)
+        {
+            if (!string.Equals(CurrentHash(), thumbprint, StringComparison.OrdinalIgnoreCase))
+            {
+                return "Remote Desktop wasn't using it.";
+            }
+            using var key = Registry.LocalMachine.OpenSubKey(KeyPath, writable: true)
+                ?? throw new PalException("Remote Desktop isn't set up. There is nothing to remove.");
+            key.DeleteValue(ValueName, throwOnMissingValue: false);
+            AppLog.Info($"Remote Desktop no longer uses {thumbprint}");
+            return "Remote Desktop goes back to Windows' own self-signed certificate for new connections.";
         }
     }
 
@@ -346,6 +394,25 @@ internal static class Binder
                 ? $"WinRM now listens for HTTPS on port 5986 as {host}. Windows Firewall wasn't changed: open that port if other PCs should reach it."
                 : "WinRM's HTTPS listener uses it.";
         }
+
+        /// <summary>Remove the HTTPS listeners that use this certificate (a listener can't exist without one).</summary>
+        public static string Remove(string thumbprint)
+        {
+            var result = PowerShell.Run("WinRM",
+                """
+                $removed = 0
+                foreach ($l in @(Get-WSManInstance -ResourceURI winrm/config/Listener -Enumerate | Where-Object { $_.Transport -eq 'HTTPS' })) {
+                    if (($l.CertificateThumbprint -replace '[^0-9A-Fa-f]', '') -eq $env:PAL_THUMBPRINT) {
+                        Remove-WSManInstance -ResourceURI winrm/config/Listener -SelectorSet @{ Address = $l.Address; Transport = 'HTTPS' }
+                        $removed++
+                    }
+                }
+                "removed $removed"
+                """, ("THUMBPRINT", thumbprint));
+            bool any = !result.Contains("removed 0");
+            AppLog.Info($"WinRM HTTPS listener for {thumbprint}: {string.Join(" ", result)}");
+            return any ? "WinRM's HTTPS listener was removed. WinRM over HTTP, if it is on, is unchanged." : "WinRM wasn't using it.";
+        }
     }
 
     /// <summary>The RD Gateway role service on this PC.</summary>
@@ -380,6 +447,7 @@ internal static class Binder
                 Set-Item -Path 'RDS:\GatewayServer\SSLCertificate\Thumbprint' -Value $env:PAL_THUMBPRINT
                 Restart-Service -Name TSGateway -Force
                 """, ("THUMBPRINT", cert.Thumbprint));
+            BindLog.Set(UseGateway, cert.Thumbprint);
             AppLog.Info($"RD Gateway uses {cert.Thumbprint}");
             return "RD Gateway uses it; its service was restarted." + access;
         }
@@ -418,6 +486,7 @@ internal static class Binder
                 Import-Module RemoteDesktop
                 Set-RDCertificate -Role $env:PAL_ROLE -Thumbprint $env:PAL_THUMBPRINT -Force
                 """, ("ROLE", role), ("THUMBPRINT", cert.Thumbprint));
+            BindLog.Set(role == Publishing ? UsePublishing : UseRedirector, cert.Thumbprint);
             AppLog.Info($"RD Connection Broker {role} uses {cert.Thumbprint}");
             return role == Publishing ? "RD Connection Broker signs RDP files with it." : "RD Connection Broker uses it for single sign-on.";
         }
@@ -470,6 +539,33 @@ internal static class Binder
             }
             SetConfigHash(found.Name, info, thumbprint);
             return $"IIS site {found.Name} serves HTTPS on port {port}" + (host.Length > 0 ? $" for {host}." : ".");
+        }
+
+        /// <summary>
+        /// Take the certificate out of service: every HTTPS binding http.sys serves with it goes, and
+        /// so does the matching https binding on the IIS site, so the site isn't left with one that has no certificate.
+        /// </summary>
+        public static List<string> Remove(string thumbprint)
+        {
+            var notes = new List<string>();
+            var sites = TryListSites() ?? [];
+            foreach (var binding in HttpSys.List().Where(b => string.Equals(b.Thumbprint, thumbprint, StringComparison.OrdinalIgnoreCase)))
+            {
+                string host = binding.Sni ? binding.Host ?? "" : "";
+                foreach (var site in sites.Where(s => s.Bindings.Any(sb => sb.Protocol == "https" && sb.Port == binding.Port
+                             && string.Equals(sb.Host, host, StringComparison.OrdinalIgnoreCase))))
+                {
+                    if (!BindingRules.IsValidSiteName(site.Name) || (host.Length > 0 && !BindingRules.IsValidHost(host)))
+                    {
+                        continue;  // never hand appcmd a name its syntax would read as something else
+                    }
+                    Run("set", "site", site.Name, $"/-bindings.[protocol='https',bindingInformation='{BindingRules.BindingInformation(binding.Port, host)}']");
+                    notes.Add($"IIS site {site.Name} no longer serves HTTPS on port {binding.Port}" + (host.Length > 0 ? $" for {host}." : "."));
+                }
+                HttpSys.Remove(binding);
+                notes.Add($"HTTPS {binding.Display} no longer has a certificate.");
+            }
+            return notes.Count > 0 ? notes : ["No HTTPS binding was using it."];
         }
 
         /// <summary>IIS also records the certificate on the binding (IIS Manager shows it); keep that in step. Best effort.</summary>
@@ -682,6 +778,17 @@ internal static class Binder
                 return true;
             });
             AppLog.Info($"http.sys: {(sni ? host : BindingRules.AnyAddress)}:{port} → {thumbprint}");
+        }
+
+        /// <summary>Delete one binding: that address and port then has no certificate.</summary>
+        public static void Remove(SslBinding binding)
+        {
+            WithApi(() =>
+            {
+                Check(Delete(binding), "remove the HTTPS binding");
+                return true;
+            });
+            AppLog.Info($"http.sys: {binding.Display} removed (was {binding.Thumbprint})");
         }
 
         /// <summary>Swap the certificate on one binding; on failure, the old one is put back.</summary>

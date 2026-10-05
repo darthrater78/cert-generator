@@ -35,7 +35,7 @@ def test_details_describe_the_certificate(admin_client):
     assert _ext(d, "Subject Alternative Name")["values"] == ["DNS: www.viewer.test", "IP: 10.0.0.5"]
     assert _ext(d, "Extended Key Usage")["values"] == ["Server Authentication"]
     assert _ext(d, "Key Usage")["critical"] is True
-    assert set(_ext(d, "Key Usage")["values"]) == {"Digital Signature", "Key Encipherment"}
+    assert set(_ext(d, "Key Usage")["values"]) == {"Digital Signature"}  # ECDSA: no key encipherment
     assert _ext(d, "Basic Constraints")["values"] == ["CA: no"]
     assert _ext(d, "CRL Distribution Points")["values"][0].startswith("URI: http://pki.viewer.test/crl/")
 

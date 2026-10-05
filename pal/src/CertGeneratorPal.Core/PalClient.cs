@@ -179,7 +179,8 @@ public sealed class PalClient : IDisposable
         SignedAsync<RequestView>(signer, HttpMethod.Get, "requests/" + requestId.ToString(CultureInfo.InvariantCulture), null, token);
 
     public Task<RequestView> CreateRequestAsync(IDeviceSigner signer, string useCase, Dictionary<string, object> names, string csrPem,
-        int? lifetimeDays, int? renewOf, string? crlDp = null, string? keyStorage = null, CancellationToken token = default) =>
+        int? lifetimeDays, int? renewOf, string? crlDp = null, string? keyStorage = null, string? windowsUser = null,
+        string? note = null, CancellationToken token = default) =>
         SignedAsync<RequestView>(signer, HttpMethod.Post, "requests", new CreateRequestBody
         {
             UseCase = useCase,
@@ -189,16 +190,37 @@ public sealed class PalClient : IDisposable
             RenewOf = renewOf,
             CrlDp = crlDp,
             KeyStorage = keyStorage,
+            WindowsUser = windowsUser,
+            Note = string.IsNullOrWhiteSpace(note) ? null : note,
         }, token);
 
     public async Task<Dictionary<string, string>> StatusAsync(IDeviceSigner signer, IReadOnlyCollection<string> serials,
-        string? deviceKeyStorage = null, Dictionary<string, string>? keys = null, CancellationToken token = default)
+        string? deviceKeyStorage = null, Dictionary<string, string>? keys = null, string? windowsUser = null,
+        Dictionary<string, List<string>>? binds = null, CancellationToken token = default)
     {
         // Sent even when empty: it is also how the server learns this PC no longer holds a certificate.
-        var reply = await SignedAsync<StatusReply>(signer, HttpMethod.Post, "status", new StatusBody { Serials = [.. serials], DeviceKeyStorage = deviceKeyStorage, Keys = keys is { Count: > 0 } ? keys : null }, token)
+        var reply = await SignedAsync<StatusReply>(signer, HttpMethod.Post, "status", new StatusBody
+            {
+                Serials = [.. serials], DeviceKeyStorage = deviceKeyStorage, Keys = keys is { Count: > 0 } ? keys : null, WindowsUser = windowsUser, Binds = binds,
+            }, token)
             .ConfigureAwait(false);
         return reply.Status;
     }
+
+    /// <summary>Ask the server whether this certificate may be bound to these roles: each comes back approved or pending.</summary>
+    public async Task<List<BindView>> CreateBindsAsync(IDeviceSigner signer, string serial, IReadOnlyCollection<BindAsk> binds,
+        string? windowsUser = null, string? note = null, CancellationToken token = default) =>
+        (await SignedAsync<BindsReply>(signer, HttpMethod.Post, "binds", new CreateBindsBody
+        {
+            Serial = serial, Binds = [.. binds], WindowsUser = windowsUser, Note = string.IsNullOrWhiteSpace(note) ? null : note,
+        }, token).ConfigureAwait(false)).Binds;
+
+    public Task<BindView> GetBindAsync(IDeviceSigner signer, int bindId, CancellationToken token = default) =>
+        SignedAsync<BindView>(signer, HttpMethod.Get, "binds/" + bindId.ToString(CultureInfo.InvariantCulture), null, token);
+
+    /// <summary>Revoke certificates this PC removed. The server touches only this PC's own; returns the serials it revoked.</summary>
+    public async Task<List<string>> RevokeAsync(IDeviceSigner signer, IReadOnlyCollection<string> serials, CancellationToken token = default) =>
+        (await SignedAsync<RevokeReply>(signer, HttpMethod.Post, "revoke", new StatusBody { Serials = [.. serials] }, token).ConfigureAwait(false)).Revoked;
 
     private async Task<T> SignedAsync<T>(IDeviceSigner signer, HttpMethod method, string relative, object? payload, CancellationToken token)
     {

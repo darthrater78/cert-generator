@@ -199,6 +199,138 @@ internal sealed class DeviceState
 }
 
 /// <summary>Requests waiting for approval, with the name of the key made for each. Machine ones in ProgramData, "Me" ones per user.</summary>
+/// <summary>
+/// Certificates removed on this PC that the server hasn't been told to revoke yet, per pairing.
+/// Kept in the user's folder so a removal made while the server (and the relay) can't be reached
+/// is still revoked at the next check-in. The server revokes only this PC's own certificates,
+/// so a made-up entry here does nothing.
+/// </summary>
+internal static class PendingRevokes
+{
+    private static string FilePath => Path.Combine(Paths.UserDir, "revokes.json");
+
+    private static Dictionary<string, List<string>> LoadAll()
+    {
+        try
+        {
+            return File.Exists(FilePath)
+                ? JsonSerializer.Deserialize<Dictionary<string, List<string>>>(File.ReadAllBytes(FilePath), Json.Options) ?? []
+                : [];
+        }
+        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
+        {
+            AppLog.Error("Couldn't read " + FilePath, e);
+            return [];
+        }
+    }
+
+    public static void Add(string deviceId, IEnumerable<string> serials)
+    {
+        var all = LoadAll();
+        all[deviceId] = [.. all.GetValueOrDefault(deviceId, []).Concat(serials).Distinct(StringComparer.OrdinalIgnoreCase)];
+        Save(all);
+    }
+
+    private static void Save(Dictionary<string, List<string>> all)
+    {
+        try
+        {
+            File.WriteAllBytes(FilePath, JsonSerializer.SerializeToUtf8Bytes(all, Json.Options));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Error("Couldn't write " + FilePath, e);
+        }
+    }
+
+    /// <summary>
+    /// Send what is waiting for this pairing, over whichever route the client uses (the LAN, or the
+    /// relay). True when nothing is left waiting; false keeps it for the next check-in.
+    /// </summary>
+    public static async Task<bool> FlushAsync(PalClient client, IDeviceSigner signer, string deviceId)
+    {
+        var all = LoadAll();
+        if (all.GetValueOrDefault(deviceId) is not { Count: > 0 } waiting)
+        {
+            return true;
+        }
+        try
+        {
+            var done = await client.RevokeAsync(signer, waiting).ConfigureAwait(false);
+            AppLog.Info($"Told the server about {waiting.Count} removed certificate(s): {done.Count} revoked");
+            all.Remove(deviceId);
+            Save(all);
+            return true;
+        }
+        catch (Exception e) when (e is PalException or HttpRequestException or TaskCanceledException)
+        {
+            AppLog.Error($"Couldn't tell the server about {waiting.Count} removed certificate(s); it will be tried again", e);
+            return false;
+        }
+    }
+}
+
+/// <summary>
+/// What the server last said about each certificate on this PC, per pairing, so the Pal can tell
+/// the user when the server did something since: a certificate that was valid and is now revoked.
+/// </summary>
+internal static class SeenStatus
+{
+    private static string FilePath => Path.Combine(Paths.UserDir, "seen.json");
+
+    private static Dictionary<string, Dictionary<string, string>> LoadAll()
+    {
+        try
+        {
+            return File.Exists(FilePath)
+                ? JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, string>>>(File.ReadAllBytes(FilePath), Json.Options) ?? []
+                : [];
+        }
+        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
+        {
+            AppLog.Error("Couldn't read " + FilePath, e);
+            return [];
+        }
+    }
+
+    private static void Save(Dictionary<string, Dictionary<string, string>> all)
+    {
+        try
+        {
+            File.WriteAllBytes(FilePath, JsonSerializer.SerializeToUtf8Bytes(all, Json.Options));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Error("Couldn't write " + FilePath, e);
+        }
+    }
+
+    /// <summary>Record the server's current answers; returns the serials that were not revoked last time and are now.</summary>
+    public static HashSet<string> Update(string deviceId, IReadOnlyDictionary<string, string> now)
+    {
+        var all = LoadAll();
+        var before = all.GetValueOrDefault(deviceId, []);
+        var newlyRevoked = now.Where(kv => kv.Value == "revoked" && before.TryGetValue(kv.Key, out var was) && was != "revoked")
+            .Select(kv => kv.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        all[deviceId] = new Dictionary<string, string>(now, StringComparer.OrdinalIgnoreCase);
+        Save(all);
+        return newlyRevoked;
+    }
+
+    /// <summary>A revocation this PC asked for itself is not news.</summary>
+    public static void MarkRevoked(string deviceId, IEnumerable<string> serials)
+    {
+        var all = LoadAll();
+        var seen = all.GetValueOrDefault(deviceId, []);
+        foreach (string serial in serials)
+        {
+            seen[serial] = "revoked";
+        }
+        all[deviceId] = seen;
+        Save(all);
+    }
+}
+
 internal sealed class PendingStore
 {
     public sealed class Entry
@@ -247,5 +379,80 @@ internal sealed class PendingStore
             Paths.EnsureMachineDir();
         }
         DeviceState.AtomicWrite(_path, JsonSerializer.SerializeToUtf8Bytes(Items, Json.Options));
+    }
+}
+
+/// <summary>
+/// Binds the admin has yet to approve (the computer's folder, written elevated): the server's
+/// bind id → which certificate and which role, applied by Check again once it is approved.
+/// </summary>
+internal sealed class PendingBinds
+{
+    public sealed class Entry
+    {
+        public string DeviceId { get; set; } = "";
+        public string Thumbprint { get; set; } = "";
+        public string Target { get; set; } = "";
+
+        /// <summary>That one role's part of what was asked (an IIS site's name, port and host, say).</summary>
+        public BindRequest Part { get; set; } = new();
+    }
+
+    public Dictionary<int, Entry> Items { get; private set; } = [];
+
+    public static PendingBinds Open()
+    {
+        var store = new PendingBinds();
+        try
+        {
+            if (File.Exists(Paths.PendingBindsFile))
+            {
+                store.Items = JsonSerializer.Deserialize<Dictionary<int, Entry>>(File.ReadAllBytes(Paths.PendingBindsFile), Json.Options) ?? [];
+            }
+        }
+        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
+        {
+            AppLog.Error("Couldn't read " + Paths.PendingBindsFile, e);
+        }
+        return store;
+    }
+
+    public void Save()
+    {
+        Paths.EnsureMachineDir();
+        DeviceState.AtomicWrite(Paths.PendingBindsFile, JsonSerializer.SerializeToUtf8Bytes(Items, Json.Options));
+    }
+}
+
+/// <summary>
+/// The roles the Pal bound that Windows only reveals to an administrator (RD Gateway, the RD
+/// Connection Broker's two certificates): role → thumbprint, written by the elevated helper so
+/// the unelevated list can still say what uses a certificate. One certificate per role.
+/// </summary>
+internal static class BindLog
+{
+    public static Dictionary<string, string> Read()
+    {
+        try
+        {
+            if (File.Exists(Paths.BindLogFile))
+            {
+                return JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllBytes(Paths.BindLogFile), Json.Options) ?? [];
+            }
+        }
+        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
+        {
+            AppLog.Error("Couldn't read " + Paths.BindLogFile, e);
+        }
+        return [];
+    }
+
+    /// <summary>Elevated only: <paramref name="role"/> now uses this certificate.</summary>
+    public static void Set(string role, string thumbprint)
+    {
+        var roles = Read();
+        roles[role] = thumbprint.ToUpperInvariant();
+        Paths.EnsureMachineDir();
+        DeviceState.AtomicWrite(Paths.BindLogFile, JsonSerializer.SerializeToUtf8Bytes(roles, Json.Options));
     }
 }

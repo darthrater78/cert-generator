@@ -273,43 +273,52 @@ Cert Generator Pal is a Windows companion app for the Docker version. You pair a
 
 | In the Pal | Certificate | Installed in |
 |---|---|---|
-| **Web server** | TLS server certificate named after the PC, plus names you allow (IIS sites, RD Gateway and the RD Connection Broker's roles) | Local Computer › Personal |
-| **This computer** | The computer's own certificate, named like a Windows CA names it (Wi-Fi, VPN, 802.1X, Remote Desktop, WinRM) | Local Computer › Personal |
-| **Me** | The signed-in user's client certificate (client authentication, smart card logon) | Current User › Personal |
+| **Web server** | TLS server certificate for names beyond the PC's own: a website, an alias, a gateway's public name. Does nothing until it is bound | Local Computer › Personal |
+| **This computer** | The computer's own certificate, named like a Windows CA names it. Works at once for Wi-Fi, VPN, 802.1X and device identity (posture checks); Remote Desktop, WinRM or a website use it once bound | Local Computer › Personal |
+| **Me** | The signed-in user's client certificate (client authentication for Wi-Fi, VPN and websites) | Current User › Personal |
 | **Code signing** | Signing scripts and programs | Current User › Personal |
 | **TLS inspection** | Trusts your CA for HTTPS inspection (no request) | Local Computer › Trusted Root |
 
-Only what the pairing code allows appears. The CA chain is checked before every install and any missing root or intermediate is added. A machine certificate can go straight to work when you request it, or later with **Bind…** on one already installed. A **This computer** certificate serves what answers to the PC's own name: **Remote Desktop** and **WinRM over HTTPS**. A **Web server** certificate serves what may answer to other names: an **IIS site** (site, port, and every name or one of the certificate's names), **RD Gateway**, and the **RD Connection Broker**'s publishing and single sign-on certificates. Roles the PC doesn't run aren't offered.
+Only what the pairing code allows appears. The CA chain is checked before every install and any missing root or intermediate is added.
 
-### Setting up a PC
+### Binding a certificate
 
-1. **Get the app.** Open **Windows PCs** (sidebar, under Devices). The download card at the top has the EXE, its LAN address to copy, and its SHA-256. PCs on your LAN download it from your server without signing in. It is one file with nothing else to install, and it is **only** shipped inside the Docker image, with the same version as the server.
-2. **Add a PC.** Choose **Add a PC** and set what this code allows:
-   - **What the PC may request**: each kind is *Off*, *Issue right away* or *Needs my approval*.
-   - **Allowed DNS names and addresses** (`*.home.arpa`, `10.0.0.0/24`) and **allowed user names** (`*@home.arpa`). The PC's own name must fit. Wildcard certificates are never issued to a PC.
-   - **Longest lifetime**, how long the code works for, and the address the PC uses for this server.
-   - **CRL profiles**: which revocation checks the PC may use: **Cert Generator (LAN)** (this server), **the CA's Cloudflare Worker**, **Endpoint-hosted (on each PC)** or **None**. Each one ticked becomes a CRL profile in the Pal.
-   - **Allow remote connection**: whether the PC may use the [remote connection](#remote-connection-pcs-away-from-the-lan) once paired.
-3. **Send the pairing code** to the PC the way you'd send a password. It is shown only once, works for one PC, and expires.
-4. **On the PC**, run `CertGeneratorPal.exe` (it is unsigned, so Windows SmartScreen asks: choose **More info › Run anyway**), paste the code and choose **Connect**. Windows asks for administrator approval once, to trust your CA. The PC names itself from its own fully qualified name.
-5. **Pick a CRL profile** in the Pal. Until you do, nothing can be requested: the profile decides where the PC's certificates check revocation.
+**Getting a certificate and using it are two steps.** Installing a certificate only puts it in a Windows store. A server-side service (Remote Desktop, WinRM, IIS, the Remote Desktop Services roles) keeps its own setting that points at one certificate and never looks in the store by itself. **Binding** is changing that setting. Things that pick a certificate from the store automatically need no bind: Wi-Fi, VPN and 802.1X sign-in, device identity checks, a browser offering a client certificate, code signing.
 
-<img width="49%" alt="The Add a Windows PC dialog: what the PC may request with an approval mode for each, allowed DNS and user names, lifetime, code expiry, server address, the CRL profiles the PC may use and Allow remote connection" src="docs/screenshots/pal-add-pc.png" /> <img width="49%" alt="The one-time pairing code, with Copy, the download address and the three steps on the PC" src="docs/screenshots/pal-pairing-code.png" />
+In the Pal, **Bind…** on a certificate in the computer's store opens one dialog with a row per role. After a new machine certificate is installed the Pal says what it already does, lists what needs a bind, and offers the dialog.
+
+| Role | Needs | What the bind changes on the PC | Remove |
+|---|---|---|---|
+| **Remote Desktop** | A certificate that carries the PC's own name | The RDP listener's certificate, and read access to its key for the Remote Desktop service | Goes back to Windows' self-signed certificate |
+| **WinRM over HTTPS** | A certificate that carries the PC's own name | The HTTPS listener on port 5986 is switched to it, or created. WinRM must already be on; Windows Firewall isn't changed | The HTTPS listener is removed |
+| **IIS site** | Any server certificate; for one name, a name the certificate carries | The site's https binding (port, and every name or one name) is added or switched. RD Web Access is an IIS site: bind it here | The https bindings that serve it are removed |
+| **RD Gateway** | Any server certificate | The gateway's certificate; its service restarts, which disconnects people using it | Replace only: it can't run without one |
+| **RD Connection Broker** | Any server certificate, on the broker itself | The certificates that sign RDP files and serve single sign-on | Replace only |
+
+- **You decide what a PC may bind.** **Add a PC** and **Edit** have a switch per role: *Off*, *Allow* or *Needs my approval*. The Pal asks the server before every bind. A bind that needs approval waits on the **Windows PCs** page next to certificate requests, with the Windows account that asked and its note; the Pal applies it at **Check again**. PCs paired before 2.9 allow every role, as they always did.
+- **A request the existing certificate covers is pointed to Bind.** A **Web server** request for nothing but the PC's own name, on a PC that already holds a **This computer** certificate, is refused with an offer to bind that one. Ask for a Web server certificate when you need other names.
+- **A role is offered when the certificate fits it**, whichever kind it is. Roles the PC doesn't run, roles you turned off, and roles whose name the certificate doesn't carry are shown greyed out with the reason.
+- **The Notes column lists every bind**, and the same list shows on the PC's card and the certificate's row on the server. Removing a bind needs no approval.
+- **Renewal** moves everything bound to the old certificate onto the new one first, including bindings made by hand.
+- **The switches govern what the Pal does.** An administrator on the PC can still bind a certificate by hand in Windows; it then shows in Notes like any other.
 
 ### Using the Pal
 
-- **Request** with a tile. *Issue right away* installs the certificate in seconds. *Needs approval* waits for you: the request appears on the **Windows PCs** page with a banner and a count in the sidebar, and the Pal's **Check again** installs it once you approve.
+- **Request** with a tile. *Issue right away* installs the certificate in seconds. *Needs approval* waits for you: the request appears on the **Windows PCs** page with a banner and a count in the sidebar, and the Pal's **Check again** installs it once you approve. Requesting only gets the certificate; putting it to work is **Bind…**.
 - **The certificate list** shows every certificate on the PC that chains to your CA, in the user's and the computer's stores, with the server's view of each (valid, revoked, expired) and anything that needs a look. **Details** opens a full certificate view (every field and extension, the chain, where the key lives). **Remove** takes one or several out, with one administrator prompt for the computer's.
 - **Renew** opens in a certificate's last 30 days (the last third for short-lived ones). Until then the button says how long is left. Renewing makes a new key and replaces the old certificate, which is then revoked. Whatever used the old certificate (IIS sites, other HTTPS bindings, Remote Desktop), even if you set it up by hand, moves to the new one first.
-- **Bind…** puts a certificate in the computer's store to work:
-  - **Remote Desktop** (This computer): new connections present it instead of the self-signed one.
-  - **WinRM over HTTPS** (This computer): adds the HTTPS listener on port 5986, or switches the existing one. WinRM must already be on, and Windows Firewall isn't changed.
-  - **IIS site** (Web server): the site's https binding is added if it has none, or switched to this certificate. RD Web Access is an IIS site: bind it here.
-  - **RD Gateway** (Web server): sets the gateway's certificate and restarts its service, which disconnects people using it.
-  - **RD Connection Broker** (Web server, on the broker itself): the certificates that sign RDP files and serve single sign-on. Each role is set on the PC that runs it, because the key never leaves that PC.
-  - A web server certificate is no longer offered for Remote Desktop; one already bound that way keeps working and still moves on renewal.
-  - The list shows what uses each certificate, and **Remove** warns before taking away one that's in use.
+- **Bind…** tells a Windows service to use a certificate in the computer's store, or takes it out of use. See [Binding a certificate](#binding-a-certificate). The list shows what uses each certificate, and **Remove** warns before taking away one that's in use.
+- **Remove** and **Revoke** are separate buttons:
+  - **Remove** takes a certificate off this PC and, in the same step, has the server revoke it if this PC was issued it. The confirmation says so (**ALSO REVOKED**).
+  - **Revoke** has the server revoke a certificate this PC was issued and leaves it on the PC, marked revoked, until you remove it.
+  - If the server can't be reached, over the LAN or the relay, the revocation is saved on the PC and sent at the next check-in.
+  - **The two sides keep each other informed.** When the server revokes a certificate, the Pal shows a notice the next time it checks in. When a certificate disappears from the PC some other way (deleted in Windows, say), the server lists it as **no longer on the PC, not revoked** and notes it in the activity log; it never revokes on absence alone.
+  - Only the server signs CRLs. It re-signs and republishes the CA's CRL on every revocation; the Pal never changes a CRL, it only fetches the new one (for the endpoint-hosted listener, at its next check-in).
 - **One live certificate** per PC, kind and name: the server refuses duplicates and early renewals.
+- **Who asked:** each request carries the Windows account the Pal ran as (reported by the Pal, not attested) and an optional one-line **note for the admin**. Both show with the request on the **Windows PCs** page, and the account stays on the issued certificate.
+- **Shared PCs:** a **Me** or code-signing certificate lives in one person's own store, so only the account that asked for it can report it missing. Someone else signing in and checking never frees its name or gets it revoked.
+- **Me is for client authentication** (Wi-Fi, VPN, websites that ask for a certificate). Signing in to Windows with it is not supported.
+- The certificate list sorts by any column: click a heading, and again to reverse.
 - **CRL profiles**: switching profile backs out the current one first (its certificates leave the PC); the root CA stays trusted. **Endpoint-hosted** adds a small listener on the PC that answers its own revocation checks, for laptops away from the LAN; its tile shows only under that profile.
 - **Connectivity** shows the cert server (over the LAN, and through the relay when the PC has one) and the CRL of the profile in use, each with a coloured status and **Test**, and a **Key storage** line saying whether the keys the Pal makes on this PC live in its **TPM** or in Windows' software key store. The certificate list has a **Key** column with the same for each certificate. **Refresh** re-checks, and **Log** shows the Pal's log with a **Debug logging** switch (every request and check; never keys or pairing codes). The CRL profile is locked while the server can't be reached.
 - **Disconnect this PC** removes the pairing and every certificate it installed.

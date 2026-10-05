@@ -145,6 +145,22 @@ CREATE TABLE IF NOT EXISTS pal_requests (
     decided_at    TEXT
 );
 
+-- A PC asking to put an installed certificate to work (bind it to Remote Desktop, an IIS site, ...).
+CREATE TABLE IF NOT EXISTS pal_binds (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id    TEXT    NOT NULL REFERENCES pal_devices(id) ON DELETE CASCADE,
+    serial       TEXT    NOT NULL,
+    cert_name    TEXT    NOT NULL DEFAULT '',
+    target       TEXT    NOT NULL,
+    detail       TEXT    NOT NULL DEFAULT '',
+    status       TEXT    NOT NULL,              -- pending | approved | denied
+    windows_user TEXT,
+    note         TEXT,
+    reason       TEXT    NOT NULL DEFAULT '',
+    created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    decided_at   TEXT
+);
+
 -- What was done, when and by whom: the Activity log page. Nothing secret is written here.
 CREATE TABLE IF NOT EXISTS activity_log (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -197,6 +213,10 @@ _MIGRATIONS = (
     ("pal_devices", "key_storage", "TEXT"),      # where the PC says its device key lives: 'tpm' or 'software'; NULL = not reported
     ("pal_requests", "key_storage", "TEXT"),     # the same, for the key behind this request's CSR
     ("certificates", "pal_key_storage", "TEXT"), # and for the certificate issued from it
+    ("pal_requests", "windows_user", "TEXT"),    # the Windows account the Pal ran as when it asked (reported, not attested)
+    ("certificates", "pal_user", "TEXT"),        # the same, for the certificate issued from it
+    ("pal_requests", "note", "TEXT"),            # what the person at the PC typed for the admin who approves
+    ("certificates", "pal_binds", "TEXT"),       # JSON list: what the PC says uses this certificate now (reported, not attested)
     ("pal_devices", "last_via", "TEXT"),  # 'lan' or 'relay': how its last request arrived  # the Pal's version at its last request (it ships with the server's)  # the revocation type (profile) the PC asked with; NULL = the policy's default
 )
 
@@ -854,6 +874,7 @@ def save_cert(
     crl_dp_url: str | None = None,
     pal_device_id: str | None = None,
     pal_key_storage: str | None = None,
+    pal_user: str | None = None,
 ) -> int:
     """``key_pem`` is empty for a certificate whose key stays with the requester (a Pal CSR)."""
     encrypted_key = _maybe_encrypt(key_pem) if key_pem else b""
@@ -861,17 +882,17 @@ def save_cert(
         cursor = conn.execute(
             """INSERT INTO certificates
                (ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, cert_pem, key_pem,
-                crl_dp_url, pal_device_id, pal_key_storage)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                crl_dp_url, pal_device_id, pal_key_storage, pal_user)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, cert_pem, encrypted_key,
-             crl_dp_url or "", pal_device_id, pal_key_storage),
+             crl_dp_url or "", pal_device_id, pal_key_storage, pal_user),
         )
         return cursor.lastrowid
 
 
 _CERT_LIST_COLUMNS = (
     "id, ca_id, common_name, san_domains, algorithm, template, not_before, not_after, serial, revoked, created_at, "
-    "revoked_at, crl_dp_url, pal_device_id, pal_present, pal_key_storage, length(key_pem) > 0 AS has_key"
+    "revoked_at, crl_dp_url, pal_device_id, pal_present, pal_key_storage, pal_user, pal_binds, length(key_pem) > 0 AS has_key"
 )
 
 
@@ -1097,7 +1118,8 @@ def list_pal_devices() -> list[dict[str, Any]]:
             "SELECT d.id, d.label, d.hostname, d.fqdn, d.os, d.ca_id, d.policy, d.created_at, d.last_seen, d.revoked_at, d.pal_version, "
             "d.remote_allowed, d.last_via, d.key_storage, "
             "(SELECT COUNT(*) FROM certificates c WHERE c.pal_device_id = d.id) AS cert_count, "
-            "(SELECT COUNT(*) FROM pal_requests r WHERE r.device_id = d.id AND r.status = 'pending') AS pending "
+            "(SELECT COUNT(*) FROM pal_requests r WHERE r.device_id = d.id AND r.status = 'pending') + "
+            "(SELECT COUNT(*) FROM pal_binds b WHERE b.device_id = d.id AND b.status = 'pending') AS pending "
             "FROM pal_devices d ORDER BY d.revoked_at IS NOT NULL, d.created_at DESC"  # disconnected PCs last
         ).fetchall()
         return [dict(r) for r in rows]
@@ -1186,6 +1208,9 @@ def revoke_pal_device(device_id: str) -> bool:
         conn.execute(
             "UPDATE pal_requests SET status = 'denied', reason = 'Device revoked', decided_at = ? "
             "WHERE device_id = ? AND status = 'pending'", (now, device_id))
+        conn.execute(
+            "UPDATE pal_binds SET status = 'denied', reason = 'Device revoked', decided_at = ? "
+            "WHERE device_id = ? AND status = 'pending'", (now, device_id))
         return True
 
 
@@ -1198,6 +1223,7 @@ def delete_pal_device(device_id: str) -> bool:
         if row is None:
             return False
         conn.execute("DELETE FROM pal_requests WHERE device_id = ?", (device_id,))
+        conn.execute("DELETE FROM pal_binds WHERE device_id = ?", (device_id,))
         conn.execute("DELETE FROM pal_nonces WHERE device_id = ?", (device_id,))
         conn.execute("DELETE FROM pal_devices WHERE id = ?", (device_id,))
         conn.execute("DELETE FROM pal_codes WHERE id = ?", (row["code_id"],))
@@ -1213,13 +1239,38 @@ def list_pal_device_certs(device_id: str) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
-def mark_pal_presence(device_id: str, present_serials: set[str]) -> None:
-    """Record which of the device's own certificates its last store audit found."""
+def mark_pal_presence(device_id: str, present_serials: set[str], windows_user: str | None = None,
+                      user_templates: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
+    """Record which of the device's own certificates its last store audit found. Returns the
+    unrevoked ones that were there at the check before and are gone now.
+
+    A certificate of one of ``user_templates`` lives in one Windows account's own store, which an
+    audit run by any other account can't see. Only the account that asked for it (``pal_user``)
+    can report it missing; found by an account, one with no recorded owner becomes that account's."""
+    now = _utc_now()
+    gone = []
+    with _connect() as conn:
+        for row in conn.execute("SELECT id, serial, common_name, template, revoked, pal_present, pal_user FROM certificates "
+                                "WHERE pal_device_id = ?", (device_id,)).fetchall():
+            present = int(row["serial"] in present_serials)
+            if row["template"] in user_templates:
+                owner = row["pal_user"]
+                if present and not owner and windows_user:
+                    conn.execute("UPDATE certificates SET pal_user = ? WHERE id = ?", (windows_user, row["id"]))
+                if not present and not (owner and windows_user and owner.casefold() == windows_user.casefold()):
+                    continue  # another account's store (or nobody said whose): absence here says nothing
+            if row["pal_present"] == 1 and not present and not row["revoked"]:
+                gone.append(dict(row))
+            conn.execute("UPDATE certificates SET pal_present = ?, pal_checked_at = ? WHERE id = ?", (present, now, row["id"]))
+    return gone
+
+
+def mark_pal_removed(cert_ids: list[int]) -> None:
+    """The PC said it removed these certificates itself."""
     now = _utc_now()
     with _connect() as conn:
-        for row in conn.execute("SELECT id, serial FROM certificates WHERE pal_device_id = ?", (device_id,)).fetchall():
-            conn.execute("UPDATE certificates SET pal_present = ?, pal_checked_at = ? WHERE id = ?",
-                         (int(row["serial"] in present_serials), now, row["id"]))
+        for cert_id in cert_ids:
+            conn.execute("UPDATE certificates SET pal_present = 0, pal_checked_at = ? WHERE id = ?", (now, cert_id))
 
 
 def set_pal_device_policy(device_id: str, policy: str) -> bool:
@@ -1261,7 +1312,7 @@ def list_pal_issued_certs() -> list[dict[str, Any]]:
     """Every certificate issued to a Pal device, for the Devices page (one query, not one per device)."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT pal_device_id, template, common_name, not_after, revoked, pal_present, pal_key_storage, created_at FROM certificates "
+            "SELECT pal_device_id, template, common_name, not_after, revoked, pal_present, pal_key_storage, pal_user, pal_binds, created_at FROM certificates "
             "WHERE pal_device_id IS NOT NULL ORDER BY not_after DESC"
         ).fetchall()
         return [dict(r) for r in rows]
@@ -1280,12 +1331,13 @@ def use_pal_nonce(device_id: str, nonce: str, now: float, ttl: float) -> bool:
 
 
 def create_pal_request(device_id: str, use_case: str, names: str, csr_pem: bytes, lifetime_days: int,
-                       renew_of: int | None, crl_dp: str | None = None, key_storage: str | None = None) -> int:
+                       renew_of: int | None, crl_dp: str | None = None, key_storage: str | None = None,
+                       windows_user: str | None = None, note: str | None = None) -> int:
     with _connect() as conn:
         cursor = conn.execute(
-            "INSERT INTO pal_requests (device_id, use_case, names, csr_pem, lifetime_days, status, renew_of, crl_dp, key_storage) "
-            "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
-            (device_id, use_case, names, csr_pem, lifetime_days, renew_of, crl_dp, key_storage),
+            "INSERT INTO pal_requests (device_id, use_case, names, csr_pem, lifetime_days, status, renew_of, crl_dp, key_storage, "
+            "windows_user, note) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+            (device_id, use_case, names, csr_pem, lifetime_days, renew_of, crl_dp, key_storage, windows_user, note),
         )
         return cursor.lastrowid
 
@@ -1308,12 +1360,75 @@ def list_pal_requests(status: str | None = None, device_id: str | None = None) -
     with _connect() as conn:
         rows = conn.execute(
             "SELECT r.id, r.device_id, d.label AS device_label, d.hostname, r.use_case, r.names, r.lifetime_days, "
-            "r.status, r.cert_id, r.renew_of, r.reason, r.created_at, r.decided_at, r.crl_dp "
+            "r.status, r.cert_id, r.renew_of, r.reason, r.created_at, r.decided_at, r.crl_dp, r.windows_user, r.note "
             f"FROM pal_requests r JOIN pal_devices d ON d.id = r.device_id {where} "  # nosec B608 - constant clauses
             "ORDER BY r.created_at DESC, r.id DESC LIMIT 500",
             params,
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def create_pal_bind(device_id: str, serial: str, cert_name: str, target: str, detail: str, status: str,
+                    windows_user: str | None, note: str | None) -> int:
+    """Record a PC's ask to bind a certificate to a role. One waiting for approval is not asked
+    twice: the same certificate and role again returns the row already waiting."""
+    with _connect() as conn:
+        if status == "pending":
+            row = conn.execute("SELECT id FROM pal_binds WHERE device_id = ? AND serial = ? AND target = ? AND status = 'pending'",
+                               (device_id, serial, target)).fetchone()
+            if row:
+                return row["id"]
+        # Keep one decided row per certificate and role: a PC that binds again and again adds nothing.
+        conn.execute("DELETE FROM pal_binds WHERE device_id = ? AND serial = ? AND target = ? AND status != 'pending'",
+                     (device_id, serial, target))
+        decided = None if status == "pending" else _utc_now()
+        return conn.execute(
+            "INSERT INTO pal_binds (device_id, serial, cert_name, target, detail, status, windows_user, note, decided_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (device_id, serial, cert_name, target, detail, status, windows_user, note, decided)).lastrowid
+
+
+def get_pal_bind(bind_id: int) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM pal_binds WHERE id = ?", (bind_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def list_pal_binds(status: str | None = None) -> list[dict[str, Any]]:
+    where = "WHERE b.status = ?" if status is not None else ""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT b.*, d.label AS device_label, d.hostname FROM pal_binds b JOIN pal_devices d ON d.id = b.device_id "
+            f"{where} ORDER BY b.created_at DESC, b.id DESC LIMIT 500",  # nosec B608 - constant clause
+            (status,) if status is not None else ()).fetchall()
+        return [dict(r) for r in rows]
+
+
+def decide_pal_bind(bind_id: int, status: str, reason: str = "") -> bool:
+    """Approve or deny a bind that is waiting; False if it wasn't waiting any more."""
+    with _connect() as conn:
+        return conn.execute("UPDATE pal_binds SET status = ?, reason = ?, decided_at = ? WHERE id = ? AND status = 'pending'",
+                            (status, reason, _utc_now(), bind_id)).rowcount > 0
+
+
+def set_pal_cert_binds(device_id: str, by_serial: dict[str, list[str]]) -> None:
+    """What the PC says uses each of its certificates now; one it doesn't mention is in use by nothing."""
+    with _connect() as conn:
+        for row in conn.execute("SELECT id, serial FROM certificates WHERE pal_device_id = ?", (device_id,)).fetchall():
+            uses = by_serial.get(row["serial"])
+            conn.execute("UPDATE certificates SET pal_binds = ? WHERE id = ?", (json.dumps(uses) if uses else None, row["id"]))
+
+
+def get_pal_cert_by_serial(ca_ids: list[int], serial: str) -> dict[str, Any] | None:
+    """A certificate issued under one of ``ca_ids``, by its serial: what a bind is asked for."""
+    if not ca_ids:
+        return None
+    marks = ",".join("?" * len(ca_ids))
+    with _connect() as conn:
+        row = conn.execute(
+            f"SELECT id, common_name, template, not_after, revoked, pal_device_id FROM certificates "  # nosec B608 - placeholders only
+            f"WHERE ca_id IN ({marks}) AND serial = ?", (*ca_ids, serial)).fetchone()
+        return dict(row) if row else None
 
 
 def transition_pal_request(request_id: int, from_status: str, to_status: str, cert_id: int | None = None,
@@ -1512,7 +1627,7 @@ def import_all_data(data: dict[str, Any]) -> dict[str, int]:
     try:
         with _connect() as conn:
             # Pairings refer to the CAs being replaced: connected PCs pair again after a restore.
-            for table in ("pal_nonces", "pal_requests", "pal_devices", "pal_codes"):
+            for table in ("pal_nonces", "pal_requests", "pal_binds", "pal_devices", "pal_codes"):
                 conn.execute(f"DELETE FROM {table}")  # nosec B608 - constant table names
             conn.execute("DELETE FROM certificates")
             conn.execute("DELETE FROM deleted_revocations")

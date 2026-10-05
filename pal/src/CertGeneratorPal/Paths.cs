@@ -42,6 +42,10 @@ internal static class Paths
 
     public static string UserPendingFile => Path.Combine(UserDir, "pending.json");
 
+    public static string PendingBindsFile => Path.Combine(MachineDir, "pending-binds.json");
+
+    public static string BindLogFile => Path.Combine(MachineDir, "binds.json");
+
     /// <summary>
     /// Create the machine folder (elevated only) with Administrators/SYSTEM full control and
     /// Users read. ProgramData lets any user create folders, so a folder someone else made

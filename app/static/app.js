@@ -377,7 +377,12 @@ async function loadCerts(caId) {
       '<td><button type="button" class="cert-link" data-action="viewCert" data-arg="' + c.id + '">' + escapeHtml(c.common_name) + '</button>' +
         '<div class="cert-when">Issued ' + formatDateTime(c.created_at) +
           (c.revoked && c.revoked_at ? ' · revoked ' + formatDateTime(c.revoked_at) : '') +
-          (c.has_key ? '' : ' · key on the PC ' + palKeyChip(c.pal_key_storage)) + '</div></td>' +
+          (c.has_key ? '' : ' · key on the PC ' + palKeyChip(c.pal_key_storage)) +
+          (c.pal_user ? ' · asked by <span class="pal-names">' + escapeHtml(c.pal_user) + '</span>' : '') +
+          (palUsedBy(c.pal_binds) ? ' · used by ' + escapeHtml(palUsedBy(c.pal_binds)) : '') +
+          (!c.has_key && c.pal_present === 0 && !c.revoked
+            ? ' <span class="cert-gone" title="The PC\'s last check-in no longer found this certificate in its stores. It is not revoked: revoke it if it should no longer be trusted.">no longer on the PC, not revoked</span>' : '') +
+          '</div></td>' +
       '<td>' + escapeHtml(tmplLabel) + '</td>' +
       '<td class="sans" title="' + escapeHtml(c.san_domains) + '">' + escapeHtml(c.san_domains) + '</td>' +
       '<td>' + escapeHtml(algoShort(c.algorithm)) + '</td>' +
@@ -2773,6 +2778,12 @@ const PAL_KEY_STORAGE = {
     'It is marked non-exportable, but an administrator on the PC can still extract it. Reported by the Pal, not attested.'],
 };
 
+// What the PC says uses a certificate now (a JSON list kept on its row); '' when nothing or unreadable.
+function palUsedBy(raw) {
+  if (!raw) return '';
+  try { const uses = JSON.parse(raw); return Array.isArray(uses) ? uses.join(', ') : ''; } catch (_e) { return ''; }
+}
+
 function palKeyChip(storage) {
   const [label, cls, title] = PAL_KEY_STORAGE[storage] ||
     ['Not reported', '', 'This Pal hasn\'t said where the key lives. Pals from before this version don\'t report it; update the Pal on the PC.'];
@@ -2783,6 +2794,8 @@ function palCertSummary(d) {
   const live = d.certs.filter(c => c.state === 'installed' || c.state === 'unchecked');
   const rows = live.map(c =>
     '<li>' + escapeHtml(PAL_USE_CASES[c.use_case] || c.use_case) + ' <span class="dim mono pal-name">' + escapeHtml(c.name) + '</span> ' + palKeyChip(c.key_storage) +
+    (c.asked_by ? ' <span class="dim">asked by <span class="pal-names">' + escapeHtml(c.asked_by) + '</span></span>' : '') +
+    (c.used_for && c.used_for.length ? ' <span class="dim">used by ' + escapeHtml(c.used_for.join(', ')) + '</span>' : '') +
     (c.issued_at ? ' <span class="dim">issued ' + formatDate(c.issued_at) + '</span>' : '') +
     (c.state === 'unchecked' ? ' <span class="dim">(not checked yet)</span>' : '') + '</li>');
   const gone = d.certs.filter(c => !live.includes(c));
@@ -2899,12 +2912,13 @@ async function loadPalDevices() {
   const boxes = ['palPending', 'palDevices', 'palCodes'].map(id => document.getElementById(id));
   const btn = document.getElementById('palRefreshBtn');
   btn.disabled = true;
-  let codes, devices, pending;
+  let codes, devices, pending, binds;
   try {
-    [codes, devices, pending] = await Promise.all([
+    [codes, devices, pending, binds] = await Promise.all([
       api('/api/pal/codes').then(r => r.json()),
       api('/api/pal/devices').then(r => r.json()),
       api('/api/pal/requests?status=pending').then(r => r.json()),
+      api('/api/pal/binds?status=pending').then(r => r.json()),
     ]);
   } catch (e) {
     boxes.forEach(b => { b.innerHTML = '<p class="dim">' + escapeHtml(e.message) + '</p>'; });
@@ -2912,23 +2926,44 @@ async function loadPalDevices() {
   } finally {
     btn.disabled = false;
   }
-  renderPalPending(pending);
+  renderPalPending(pending, binds);
   renderPalDevices(devices);
   renderPalCodes(codes);
   loadPalRelay(false);
-  showPalPendingCount(pending.length);
+  showPalPendingCount(pending.length + binds.length);
 }
 
-function renderPalPending(rows) {
-  document.getElementById('palPendingBox').classList.toggle('hidden', rows.length === 0);
-  document.getElementById('palPendingNote').textContent = rows.length + (rows.length === 1 ? ' request' : ' requests');
-  document.getElementById('palPending').innerHTML = rows.map(r =>
+// Who asked and what they typed, shared by certificate requests and bind requests.
+function palAskedBy(r) {
+  return ' · Windows account: ' + (r.windows_user ? '<span class="pal-names" title="The account the Pal ran as when it asked. Reported by the Pal, not attested.">' +
+    escapeHtml(r.windows_user) + '</span>' : 'not reported');
+}
+
+function palNoteLine(r) {
+  return r.note ? '<div class="pal-note" title="Typed at the PC by whoever asked.">Note: ' + escapeHtml(r.note) + '</div>' : '';
+}
+
+function renderPalPending(rows, binds) {
+  const total = rows.length + binds.length;
+  document.getElementById('palPendingBox').classList.toggle('hidden', total === 0);
+  document.getElementById('palPendingNote').textContent = total + (total === 1 ? ' request' : ' requests');
+  document.getElementById('palPending').innerHTML = binds.map(b =>
+    '<div class="pal-row">' +
+      '<div class="pal-row-main"><strong>Bind</strong> <span class="pal-names">' + escapeHtml(b.cert_name) + '</span> to <strong>' +
+        escapeHtml(b.target_label) + '</strong>' + (b.detail ? ' <span class="dim">(' + escapeHtml(b.detail) + ')</span>' : '') +
+        '<div class="dim">' + escapeHtml(b.device_label) + (b.hostname ? ' (' + escapeHtml(b.hostname) + ')' : '') + palAskedBy(b) +
+        ' · asked ' + formatDateTime(b.created_at) + '</div>' + palNoteLine(b) + '</div>' +
+      '<div class="pal-row-actions"><button class="btn btn-ghost btn-sm" data-action="denyPalBind" data-id="' + b.id + '">Deny</button>' +
+        '<button class="btn btn-primary btn-sm" data-action="approvePalBind" data-id="' + b.id + '">Approve</button></div>' +
+    '</div>').join('') + rows.map(r =>
     '<div class="pal-row">' +
       '<div class="pal-row-main"><strong>' + escapeHtml(PAL_USE_CASES[r.use_case] || r.use_case) + '</strong> for ' +
         '<span class="pal-names">' + escapeHtml(palNames(r.names)) + '</span>' +
         '<div class="dim">' + escapeHtml(r.device_label) + (r.hostname ? ' (' + escapeHtml(r.hostname) + ')' : '') +
+        palAskedBy(r) +
         ' · ' + r.lifetime_days + ' days' + (r.crl_dp ? ' · CRL profile: ' + escapeHtml(PAL_CRL_LABELS[r.crl_dp] || r.crl_dp) : '') +
-        ' · asked ' + formatDateTime(r.created_at) + '</div></div>' +
+        ' · asked ' + formatDateTime(r.created_at) + '</div>' +
+        palNoteLine(r) + '</div>' +
       '<div class="pal-row-actions"><button class="btn btn-ghost btn-sm" data-action="denyPalRequest" data-id="' + r.id + '">Deny</button>' +
         '<button class="btn btn-primary btn-sm" data-action="approvePalRequest" data-id="' + r.id + '">Approve</button></div>' +
     '</div>').join('');
@@ -3012,7 +3047,11 @@ function showPalPendingCount(count) {
 async function checkPalPending() {
   if (!document.getElementById('palPendingCount') || document.hidden) return;
   try {
-    showPalPendingCount((await (await api('/api/pal/requests?status=pending')).json()).length);
+    const [requests, binds] = await Promise.all([
+      api('/api/pal/requests?status=pending').then(r => r.json()),
+      api('/api/pal/binds?status=pending').then(r => r.json()),
+    ]);
+    showPalPendingCount(requests.length + binds.length);
   } catch (_e) { /* signed out or locked: try again next time */ }
 }
 
@@ -3025,6 +3064,7 @@ async function showPalAdd() {
   if (!usable) { toast('Create an ECDSA or RSA certificate authority first', 'error'); return; }
   select.value = String(usable.id);
   setPalEditMode(null);
+  setPalBindFields(null);
   document.getElementById('palLabel').value = '';
   document.getElementById('palAllowRemote').checked = false;
   document.getElementById('palServerUrl').value = window.location.origin;
@@ -3040,6 +3080,13 @@ function onPalCaChange(_arg, el) {
   if (!ca) return;
   document.getElementById('palDns').value = '*.' + ca.domain;
   document.getElementById('palUsers').value = '*@' + ca.domain;
+}
+
+// The bind switches in the Add / Edit a PC dialog: policy key -> select id.
+const PAL_BIND_FIELDS = { rdp: 'palBindRdp', winrm: 'palBindWinrm', iis: 'palBindIis', 'rd-gateway': 'palBindGateway', 'rd-broker': 'palBindBroker' };
+
+function setPalBindFields(binds) {
+  Object.entries(PAL_BIND_FIELDS).forEach(([key, id]) => { document.getElementById(id).value = (binds || {})[key] || 'auto'; });
 }
 
 const palList = (id) => document.getElementById(id).value.split(',').map(v => v.trim()).filter(Boolean);
@@ -3063,6 +3110,7 @@ function editPalDevice(_arg, el) {
   document.getElementById('palCaseComputer').value = cases.computer || 'off';
   document.getElementById('palCaseUser').value = cases.user || 'off';
   document.getElementById('palCaseCode').value = cases['code-signing'] || 'off';
+  setPalBindFields(d.policy.binds);
   document.getElementById('palDns').value = (d.policy.dns || []).join(', ');
   document.getElementById('palUsers').value = (d.policy.users || []).join(', ');
   document.getElementById('palMaxDays').value = d.policy.max_days;
@@ -3117,6 +3165,7 @@ async function createPalCode() {
       user: document.getElementById('palCaseUser').value,
       'code-signing': document.getElementById('palCaseCode').value,
     },
+    binds: Object.fromEntries(Object.entries(PAL_BIND_FIELDS).map(([key, id]) => [key, document.getElementById(id).value])),
     dns: palList('palDns'),
     users: palList('palUsers'),
     max_days: Number(document.getElementById('palMaxDays').value),
@@ -3325,10 +3374,30 @@ async function denyPalRequest(_arg, el) {
   loadPalDevices();
 }
 
+async function approvePalBind(_arg, el) {
+  try {
+    await api('/api/pal/binds/' + Number(el.dataset.id) + '/approve', { method: 'POST' });
+    toast('Approved. The PC binds it on its next check');
+  } catch (e) { toast(e.message, 'error'); }
+  loadPalDevices();
+}
+
+async function denyPalBind(_arg, el) {
+  const reason = prompt('Deny this bind? You can tell the user why (optional):', '');
+  if (reason === null) return;
+  try {
+    await api('/api/pal/binds/' + Number(el.dataset.id) + '/deny', { method: 'POST', body: JSON.stringify({ reason }) });
+    toast('Bind denied');
+  } catch (e) { toast(e.message, 'error'); }
+  loadPalDevices();
+}
+
 // Markup declares handlers as data-action / data-change / data-enter instead of
 // inline on* attributes, so the Content-Security-Policy can forbid inline script.
 // Handlers receive (data-arg, element, event); numeric args become numbers.
 const UI_ACTIONS = new Set([
+  'approvePalBind',
+  'denyPalBind',
   'approvePalRequest',
   'copyPalCode',
   'createPalCode',

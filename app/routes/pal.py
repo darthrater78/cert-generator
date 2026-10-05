@@ -177,7 +177,7 @@ def _issue(request_id: int, device: dict[str, Any]) -> dict[str, Any]:
             ca_id=ca["id"], common_name=names["common_name"], san_domains=",".join(names["san"]),
             algorithm=algorithm, template=pal.USE_CASES[row["use_case"]], not_before=not_before,
             not_after=not_after, serial=serial, cert_pem=cert_pem, key_pem=b"", crl_dp_url=crl_dp_url,
-            pal_device_id=device["id"], pal_key_storage=row.get("key_storage"),
+            pal_device_id=device["id"], pal_key_storage=row.get("key_storage"), pal_user=row.get("windows_user"),
         )
     except BaseException:
         db.transition_pal_request(request_id, "issuing", "pending")
@@ -486,6 +486,7 @@ def create_request():
         if not isinstance(csr, str):
             raise PalError("csr must be a PEM certificate request")
         crypto_engine.load_csr(csr.encode())
+        note = pal.request_note(data.get("note"))
     except UserError as e:  # PalError and the CSR checks
         return error(e.user_message)
     crl_dp = data.get("crl_dp", policy.crl_dp)
@@ -499,16 +500,17 @@ def create_request():
     renew_of = data.get("renew_of")
     if renew_of is not None and not _renewable(renew_of, device, use_case, names):
         return error("Can't renew. That certificate isn't one this PC holds for the same names. Request a new one instead")
-    refusal = _duplicate_refusal(device, use_case, names, renew_of)
+    refusal = _covered_refusal(device, use_case, names, renew_of) or _duplicate_refusal(device, use_case, names, renew_of)
     if refusal:
         return error(refusal, 409)
 
+    asked_by = pal.windows_user(data.get("windows_user"))
     request_id = db.create_pal_request(device["id"], use_case, names.to_json(), csr.encode(), lifetime, renew_of, crl_dp,
-                                       pal.key_storage(data.get("key_storage")))
+                                       pal.key_storage(data.get("key_storage")), asked_by, note)
     # A renewal of the same names was approved once and needs no new approval.
     if mode == "approve" and renew_of is None:
-        log.info("PC %s asked for a %s certificate for %s: waiting for approval", device["label"],
-                 pal.USE_CASE_LABELS[use_case], names.common_name)
+        log.info("PC %s asked for a %s certificate for %s (Windows account: %s): waiting for approval", device["label"],
+                 pal.USE_CASE_LABELS[use_case], names.common_name, asked_by or "not reported")
         return jsonify(_request_view(db.get_pal_request(request_id), False)), 202
     try:
         row = _issue(request_id, device)
@@ -523,6 +525,20 @@ def _cert_times(cert: dict[str, Any]) -> tuple[datetime, datetime]:
 
 def _renew_from(cert: dict[str, Any]) -> str:
     return _iso(pal.renew_opens(*_cert_times(cert)))
+
+
+def _covered_refusal(device: dict[str, Any], use_case: str, names: pal.Names, renew_of: int | None) -> str | None:
+    """A web server certificate for nothing but the PC's own name, when the PC already holds a
+    This computer certificate: that one carries the name and serves TLS too, so it only needs
+    binding. Extra names still get a web server certificate, and one issued before this rule renews."""
+    fqdn = device["fqdn"]
+    if use_case != "web-server" or renew_of is not None or names.san != [fqdn]:
+        return None
+    held = [c for c in _live_certs(device, "computer", pal.Names(fqdn, [fqdn])) if c["pal_present"] != 0]
+    if not held:
+        return None
+    return (f"Already covered. This PC's This computer certificate already carries {fqdn} and can serve it: "
+            "choose Bind… on that certificate. Ask for a Web server certificate only when you need other names too")
 
 
 def _duplicate_refusal(device: dict[str, Any], use_case: str, names: pal.Names, renew_of: int | None) -> str | None:
@@ -614,12 +630,22 @@ def cert_status():
     tree = db.ca_tree_ids(root) if root is not None else []
     found = db.find_serials(tree, [s for s in set(normalized.values()) if s])
     # The serials are the PC's store audit: note which of its own certificates are still installed.
-    db.mark_pal_presence(device["id"], {s for s in normalized.values() if s})
+    for cert in db.mark_pal_presence(device["id"], {s for s in normalized.values() if s},
+                                      pal.windows_user(data.get("windows_user")), pal.USER_TEMPLATES):
+        log.warning("PC %s no longer holds its %s certificate for %s (not revoked)", device["label"],
+                    pal.TEMPLATE_USE_CASES.get(cert["template"], cert["template"]), cert["common_name"])
     # Where the PC says its keys live (an older Pal sends neither): the device key, and each certificate's key.
     keys = data.get("keys") if isinstance(data.get("keys"), dict) else {}
     db.set_pal_key_storage(device["id"], pal.key_storage(data.get("device_key_storage")), {
         pal.normalize_serial(raw): storage for raw, storage in list(keys.items())[:pal.MAX_SERIALS]
         if isinstance(raw, str) and pal.normalize_serial(raw) and pal.key_storage(storage)})
+    # What uses each certificate on the PC now (an older Pal doesn't say, and then nothing changes).
+    uses = data.get("binds")
+    if isinstance(uses, dict):
+        db.set_pal_cert_binds(device["id"], {
+            pal.normalize_serial(raw): [u[:80] for u in labels if isinstance(u, str)][:20]
+            for raw, labels in list(uses.items())[:pal.MAX_SERIALS]
+            if isinstance(raw, str) and pal.normalize_serial(raw) and isinstance(labels, list)})
     now = _utc_now()
     result = {}
     for raw, serial in normalized.items():
@@ -633,6 +659,95 @@ def cert_status():
         else:
             result[raw] = "valid"
     return jsonify({"status": result})
+
+
+# Kinds of certificate that can serve TLS, and so be bound to a role.
+_BINDABLE_TEMPLATES = (pal.USE_CASES["web-server"], pal.USE_CASES["computer"])
+
+
+def _bind_view(row: dict[str, Any]) -> dict[str, Any]:
+    return {k: row[k] for k in ("id", "serial", "target", "detail", "status", "reason", "created_at", "decided_at")}
+
+
+@bp.post(DEVICE_PREFIX + "binds")
+def create_binds():
+    """A PC asks to put one installed certificate to work for one or more roles. The admin's
+    switch for each role decides: off refuses the whole ask, auto allows it now, approve queues
+    it. The server allows; the bind itself happens on the PC, which asks first every time."""
+    device, err = _signed_device()
+    if err:
+        return err
+    data, err = _device_json()
+    if err:
+        return err
+    policy = Policy.from_json(device["policy"])
+    try:
+        wanted = pal.parse_binds(data.get("binds"))
+        note = pal.request_note(data.get("note"))
+    except PalError as e:
+        return error(e.user_message)
+    serial = pal.normalize_serial(data.get("serial")) if isinstance(data.get("serial"), str) else None
+    root = db.root_ca_id(device["ca_id"])
+    cert = db.get_pal_cert_by_serial(db.ca_tree_ids(root) if root is not None else [], serial) if serial else None
+    if cert is None:
+        return error("Not one of ours. That certificate wasn't issued by this PC's CA", 404)
+    if cert["revoked"] or _parse_time(cert["not_after"]) <= _utc_now():
+        return error("Not usable. That certificate is revoked or has expired: renew it first", 409)
+    if cert["template"] not in _BINDABLE_TEMPLATES:
+        return error("Wrong kind. Only a This computer or Web server certificate can be bound")
+    refused = [pal.BIND_TARGETS[t] for t, _ in wanted if policy.binds.get(t, "off") == "off"]
+    if refused:
+        return error(f"Not allowed. Your admin hasn't allowed binding to: {', '.join(refused)}", 403)
+    asked_by = pal.windows_user(data.get("windows_user"))
+    rows = []
+    for target, detail in wanted:
+        status = "pending" if policy.binds[target] == "approve" else "approved"
+        bind_id = db.create_pal_bind(device["id"], serial, cert["common_name"], target, detail, status, asked_by, note)
+        rows.append(db.get_pal_bind(bind_id))
+        log.info("PC %s asked to bind %s to %s%s (Windows account: %s): %s", device["label"], cert["common_name"],
+                 pal.BIND_TARGETS[target], f" [{detail}]" if detail else "", asked_by or "not reported",
+                 "waiting for approval" if status == "pending" else "allowed")
+    waiting = any(r["status"] == "pending" for r in rows)
+    return jsonify({"binds": [_bind_view(r) for r in rows]}), 202 if waiting else 201
+
+
+@bp.get(DEVICE_PREFIX + "binds/<int:bind_id>")
+def get_bind(bind_id: int):
+    device, err = _signed_device()
+    if err:
+        return err
+    row = db.get_pal_bind(bind_id)
+    if row is None or row["device_id"] != device["id"]:
+        return error("Bind not found", 404)
+    return jsonify(_bind_view(row))
+
+
+@bp.post(DEVICE_PREFIX + "revoke")
+def revoke_own_certs():
+    """A PC revokes certificates it removed (Remove in the Pal). Only its own unrevoked
+    certificates are touched; any other serial is ignored."""
+    device, err = _signed_device()
+    if err:
+        return err
+    data, err = _device_json()
+    if err:
+        return err
+    serials = data.get("serials")
+    if not isinstance(serials, list) or len(serials) > pal.MAX_SERIALS:
+        return error(f"serials must be a list of at most {pal.MAX_SERIALS} hex strings")
+    wanted = {pal.normalize_serial(raw) for raw in serials if isinstance(raw, str)} - {None}
+    certs = [c for c in db.list_pal_device_certs(device["id"]) if c["serial"] in wanted and not c["revoked"]]
+    cas = {c["ca_id"] for c in certs}
+    if any((db.get_ca_summary(ca_id) or {}).get("crl_public") or (db.get_ca_summary(ca_id) or {}).get("cf_worker") for ca_id in cas):
+        db.require_unlocked()  # re-signing a published CRL needs the CA key: fail before revoking
+    for cert in certs:
+        db.revoke_cert(cert["id"])
+        log.info("PC %s removed its %s certificate for %s: revoked", device["label"],
+                 pal.TEMPLATE_USE_CASES.get(cert["template"], cert["template"]), cert["common_name"])
+    db.mark_pal_removed([c["id"] for c in certs])
+    for ca_id in cas:
+        crl_publisher.publish(ca_id)
+    return jsonify({"revoked": [c["serial"] for c in certs]})
 
 
 # ── Admin API ───────────────────────────────────────────────────────
@@ -767,6 +882,8 @@ def list_devices():
             "name": cert["common_name"],
             "state": _cert_state(cert, now),
             "key_storage": cert["pal_key_storage"],
+            "asked_by": cert["pal_user"],
+            "used_for": json.loads(cert["pal_binds"]) if cert["pal_binds"] else [],
             "issued_at": cert["created_at"],
         })
     for device in devices:
@@ -831,8 +948,9 @@ def edit_device_policy(device_id: str):
     if not db.set_pal_device_policy(device_id, policy.to_json()):
         return error("This PC is not connected", 404)
     kinds = ", ".join(f"{pal.USE_CASE_LABELS[c]}: {m}" for c, m in policy.use_cases.items() if m != "off")
-    log.info("PC %s: what it may request was changed (%s; CRL: %s; up to %d days)", device["label"], kinds,
-             ", ".join(policy.crl_dps), policy.max_days)
+    binds = ", ".join(f"{pal.BIND_TARGETS[t]}: {m}" for t, m in policy.binds.items() if m != "auto") or "all allowed"
+    log.info("PC %s: what it may request was changed (%s; binds: %s; CRL: %s; up to %d days)", device["label"], kinds,
+             binds, ", ".join(policy.crl_dps), policy.max_days)
     return jsonify({"ok": True, "policy": policy.public()})
 
 
@@ -874,6 +992,42 @@ def approve_request(request_id: int):
     log.info("Request approved: %s certificate for %s on PC %s", pal.USE_CASE_LABELS.get(row["use_case"], row["use_case"]),
              json.loads(row["names"]).get("common_name", ""), device["label"])
     return jsonify({"ok": True, "status": row["status"], "cert_id": row["cert_id"]})
+
+
+@bp.get("/api/pal/binds")
+def list_binds():
+    status = request.args.get("status")
+    if status not in (None, "pending", "approved", "denied"):
+        return error("status must be pending, approved or denied")
+    rows = db.list_pal_binds(status=status)
+    for row in rows:
+        row["target_label"] = pal.BIND_TARGETS.get(row["target"], row["target"])
+    return jsonify(rows)
+
+
+def _decide_bind(bind_id: int, status: str, reason: str = ""):
+    row = db.get_pal_bind(bind_id)
+    if row is None or not db.decide_pal_bind(bind_id, status, reason):
+        return error("Bind not found or not waiting for approval", 404)
+    device = db.get_pal_device(row["device_id"]) or {}
+    log.info("Bind %s: %s to %s on PC %s%s", status, row["cert_name"], pal.BIND_TARGETS.get(row["target"], row["target"]),
+             device.get("label", ""), f" ({reason})" if reason and status == "denied" else "")
+    return jsonify({"ok": True})
+
+
+@bp.post("/api/pal/binds/<int:bind_id>/approve")
+def approve_bind(bind_id: int):
+    row = db.get_pal_bind(bind_id)
+    device = db.get_pal_device(row["device_id"]) if row else None
+    if row is not None and (device is None or device["revoked_at"]):
+        return error("This PC has been disconnected", 409)
+    return _decide_bind(bind_id, "approved")
+
+
+@bp.post("/api/pal/binds/<int:bind_id>/deny")
+def deny_bind(bind_id: int):
+    reason = str_field(json_body(), "reason").strip()[:200]
+    return _decide_bind(bind_id, "denied", reason or "Denied by your admin")
 
 
 @bp.post("/api/pal/requests/<int:request_id>/deny")

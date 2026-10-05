@@ -67,7 +67,50 @@ public sealed class Policy
     public int MaxDays { get; set; }
     public List<string> CrlDps { get; set; } = [];
 
+    /// <summary>Per role (see <see cref="BindKeys"/>): "off", "auto" or "approve". A server from before the switches sends none.</summary>
+    public Dictionary<string, string> Binds { get; set; } = [];
+
     public string Mode(string useCase) => UseCases.GetValueOrDefault(useCase, "off");
+
+    /// <summary>What the admin allows for a bind role. A role the server never mentioned is allowed, as it was before the switches.</summary>
+    public string BindMode(string target) => Binds.GetValueOrDefault(target, "auto");
+}
+
+/// <summary>The roles a machine certificate can be bound to, as the server names them (app/pal.py BIND_TARGETS).</summary>
+public static class BindKeys
+{
+    public const string Rdp = "rdp";
+    public const string WinRm = "winrm";
+    public const string Iis = "iis";
+    public const string RdGateway = "rd-gateway";
+    public const string RdBroker = "rd-broker";
+
+    public static readonly IReadOnlyList<string> All = [Rdp, WinRm, Iis, RdGateway, RdBroker];
+
+    public static string Label(string key) => key switch
+    {
+        Rdp => "Remote Desktop",
+        WinRm => "WinRM over HTTPS",
+        Iis => "IIS site",
+        RdGateway => "RD Gateway",
+        RdBroker => "RD Connection Broker",
+        _ => key,
+    };
+}
+
+/// <summary>The server's answer about one bind: "approved", "pending" (the admin decides) or "denied".</summary>
+public sealed class BindView
+{
+    public int Id { get; set; }
+    public string Target { get; set; } = "";
+    public string Status { get; set; } = "";
+    public string Reason { get; set; } = "";
+}
+
+public sealed class BindAsk
+{
+    public string Target { get; set; } = "";
+    public string Detail { get; set; } = "";
 }
 
 public sealed class CrlEntry
@@ -211,6 +254,23 @@ internal sealed class CreateRequestBody
     public string? CrlDp { get; set; }
     /// <summary>Where the key behind the CSR lives: "tpm" or "software".</summary>
     public string? KeyStorage { get; set; }
+    /// <summary>The Windows account asking (PC01\alice), shown to the admin who approves.</summary>
+    public string? WindowsUser { get; set; }
+    /// <summary>What the person asking typed for the admin who approves.</summary>
+    public string? Note { get; set; }
+}
+
+internal sealed class CreateBindsBody
+{
+    public string Serial { get; set; } = "";
+    public List<BindAsk> Binds { get; set; } = [];
+    public string? WindowsUser { get; set; }
+    public string? Note { get; set; }
+}
+
+internal sealed class BindsReply
+{
+    public List<BindView> Binds { get; set; } = [];
 }
 
 internal sealed class StatusBody
@@ -219,6 +279,15 @@ internal sealed class StatusBody
     public string? DeviceKeyStorage { get; set; }
     /// <summary>Serial → "tpm" or "software", for the certificates whose key this process could read.</summary>
     public Dictionary<string, string>? Keys { get; set; }
+    /// <summary>The Windows account whose stores were audited: only it can report its own certificates missing.</summary>
+    public string? WindowsUser { get; set; }
+    /// <summary>Serial → what uses that certificate on this PC now ("Remote Desktop", "HTTPS 0.0.0.0:443").</summary>
+    public Dictionary<string, List<string>>? Binds { get; set; }
+}
+
+internal sealed class RevokeReply
+{
+    public List<string> Revoked { get; set; } = [];
 }
 
 internal sealed class StatusReply

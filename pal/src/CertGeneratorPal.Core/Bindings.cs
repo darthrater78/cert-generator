@@ -19,9 +19,9 @@ public enum BindTargets
 }
 
 /// <summary>
-/// Where a machine certificate should be used. A This computer certificate serves what answers
-/// to the PC's own name (Remote Desktop, WinRM); a web server certificate serves what may answer
-/// to other names (an IIS site, RD Gateway, the RD Connection Broker's roles).
+/// Where a machine certificate should be used. Binding is its own step on an installed
+/// certificate: Remote Desktop and WinRM answer to the PC's own name, so they need a certificate
+/// that carries it; an IIS site and the Remote Desktop Services roles take any server certificate.
 /// </summary>
 public sealed class BindRequest
 {
@@ -77,38 +77,60 @@ public static partial class BindingRules
         thumbprint is { Length: 40 } t && t.All(Uri.IsHexDigit) ? t.ToUpperInvariant() : null;
 
     /// <summary>
-    /// What a certificate of this kind may serve. A This computer certificate has just the PC's own
-    /// name: Remote Desktop and WinRM. A web server certificate carries the names a site or an RDS
-    /// role answers to. One the Pal didn't issue (<paramref name="useCase"/> null) is the admin's call.
+    /// What a server certificate with these names can serve on a PC called <paramref name="fqdn"/>.
+    /// Remote Desktop and WinRM answer to the PC's own name, so the certificate must carry it; an
+    /// IIS site, RD Gateway and the RD Connection Broker answer to whatever names they are given.
     /// </summary>
-    public static BindTargets TargetsFor(string? useCase) => useCase switch
+    public static BindTargets TargetsFor(IEnumerable<string> certificateNames, string fqdn)
     {
-        UseCases.Computer => BindTargets.Rdp | BindTargets.WinRm,
-        UseCases.WebServer => BindTargets.Iis | BindTargets.RdGateway | BindTargets.RdBroker,
-        null => BindTargets.All,
+        var targets = BindTargets.Iis | BindTargets.RdGateway | BindTargets.RdBroker;
+        if (fqdn.Length > 0 && certificateNames.Any(n => string.Equals(n, fqdn, StringComparison.OrdinalIgnoreCase)))
+        {
+            targets |= BindTargets.Rdp | BindTargets.WinRm;
+        }
+        return targets;
+    }
+
+    public static BindTargets Flag(string key) => key switch
+    {
+        BindKeys.Rdp => BindTargets.Rdp,
+        BindKeys.WinRm => BindTargets.WinRm,
+        BindKeys.Iis => BindTargets.Iis,
+        BindKeys.RdGateway => BindTargets.RdGateway,
+        BindKeys.RdBroker => BindTargets.RdBroker,
         _ => BindTargets.None,
     };
 
-    /// <summary>The part of <paramref name="request"/> a newly requested certificate of this kind may serve. Null for nothing.</summary>
-    public static BindRequest? ForUseCase(string useCase, BindRequest? request)
+    /// <summary>
+    /// One part per role in <paramref name="request"/>, with the words the admin sees. The server
+    /// allows or queues each role separately, so each part is applied on its own.
+    /// </summary>
+    public static List<(string Target, string Detail, BindRequest Part)> Split(BindRequest request)
     {
-        if (request is null)
+        var parts = new List<(string, string, BindRequest)>();
+        if (request.Rdp)
         {
-            return null;
+            parts.Add((BindKeys.Rdp, "", new BindRequest { Rdp = true }));
         }
-        var targets = TargetsFor(useCase);
-        var allowed = new BindRequest
+        if (request.WinRm)
         {
-            Rdp = request.Rdp && targets.HasFlag(BindTargets.Rdp),
-            WinRm = request.WinRm && targets.HasFlag(BindTargets.WinRm),
-            IisSite = targets.HasFlag(BindTargets.Iis) ? request.IisSite : null,
-            Port = request.Port,
-            Host = request.Host,
-            RdGateway = request.RdGateway && targets.HasFlag(BindTargets.RdGateway),
-            RdPublishing = request.RdPublishing && targets.HasFlag(BindTargets.RdBroker),
-            RdRedirector = request.RdRedirector && targets.HasFlag(BindTargets.RdBroker),
-        };
-        return allowed.IsEmpty ? null : allowed;
+            parts.Add((BindKeys.WinRm, "port 5986", new BindRequest { WinRm = true }));
+        }
+        if (request.IisSite is { } site)
+        {
+            string detail = string.Create(CultureInfo.InvariantCulture, $"{site}, port {request.Port}, {(request.Host.Length > 0 ? request.Host : "every name")}");
+            parts.Add((BindKeys.Iis, detail, new BindRequest { IisSite = site, Port = request.Port, Host = request.Host }));
+        }
+        if (request.RdGateway)
+        {
+            parts.Add((BindKeys.RdGateway, "", new BindRequest { RdGateway = true }));
+        }
+        if (request.RdPublishing || request.RdRedirector)
+        {
+            string detail = string.Join(" and ", new[] { request.RdPublishing ? "signing RDP files" : null, request.RdRedirector ? "single sign-on" : null }.OfType<string>());
+            parts.Add((BindKeys.RdBroker, detail, new BindRequest { RdPublishing = request.RdPublishing, RdRedirector = request.RdRedirector }));
+        }
+        return parts;
     }
 
     /// <summary>Checks a request from the unelevated app before the helper acts on it. Throws with a short headline.</summary>

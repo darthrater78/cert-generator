@@ -1015,14 +1015,30 @@
       <h4>What this PC may request</h4>
       <table class="cf-workers pal-cases">
         <tbody>
-          <tr><td><strong>Web server</strong><div class="dim">IIS sites, RD Gateway and other Remote Desktop Services roles. Named after the PC, plus names you allow below</div></td>
+          <tr><td><strong>Web server</strong><div class="dim">For names beyond the PC's own: websites, aliases, a gateway's public name. Named after the PC, plus names you allow below</div></td>
             <td><select id="palCaseWeb" aria-label="Web server"><option value="off">Off</option><option value="auto" selected>Issue right away</option><option value="approve">Needs my approval</option></select></td></tr>
-          <tr><td><strong>This computer</strong><div class="dim">Wi-Fi, VPN, 802.1X, Remote Desktop, WinRM. Always issued to the PC's own name, like a Windows CA</div></td>
+          <tr><td><strong>This computer</strong><div class="dim">Wi-Fi, VPN, 802.1X, and TLS for the PC's own name. Always issued to the PC's own name, like a Windows CA</div></td>
             <td><select id="palCaseComputer" aria-label="This computer"><option value="off">Off</option><option value="auto" selected>Issue right away</option><option value="approve">Needs my approval</option></select></td></tr>
-          <tr><td><strong>Signed-in user</strong><div class="dim">Whoever is signed in to the PC (shown there as "Me"): client authentication, smart card logon</div></td>
+          <tr><td><strong>Signed-in user</strong><div class="dim">Whoever is signed in to the PC (shown there as "Me"): client authentication for Wi-Fi, VPN and websites</div></td>
             <td><select id="palCaseUser" aria-label="Signed-in user"><option value="off">Off</option><option value="auto">Issue right away</option><option value="approve" selected>Needs my approval</option></select></td></tr>
           <tr><td><strong>Code signing</strong><div class="dim">Signing scripts and programs</div></td>
             <td><select id="palCaseCode" aria-label="Code signing"><option value="off" selected>Off</option><option value="auto">Issue right away</option><option value="approve">Needs my approval</option></select></td></tr>
+        </tbody>
+      </table>
+      <h4>What its certificates may be put to work for</h4>
+      <p class="form-hint">A certificate does nothing until a Windows service is told to use it: that is a bind. The Pal asks the server before each one, and a bind that needs your approval waits in the list like a certificate request.</p>
+      <table class="cf-workers pal-cases">
+        <tbody>
+          <tr><td><strong>Remote Desktop</strong><div class="dim">Connections to this PC show its certificate instead of a self-signed one</div></td>
+            <td><select id="palBindRdp" aria-label="Bind to Remote Desktop"><option value="off">Off</option><option value="auto" selected>Allow</option><option value="approve">Needs my approval</option></select></td></tr>
+          <tr><td><strong>WinRM over HTTPS</strong><div class="dim">PowerShell remoting on port 5986</div></td>
+            <td><select id="palBindWinrm" aria-label="Bind to WinRM over HTTPS"><option value="off">Off</option><option value="auto" selected>Allow</option><option value="approve">Needs my approval</option></select></td></tr>
+          <tr><td><strong>IIS site</strong><div class="dim">A website's https binding</div></td>
+            <td><select id="palBindIis" aria-label="Bind to IIS site"><option value="off">Off</option><option value="auto" selected>Allow</option><option value="approve">Needs my approval</option></select></td></tr>
+          <tr><td><strong>RD Gateway</strong><div class="dim">The gateway role's certificate</div></td>
+            <td><select id="palBindGateway" aria-label="Bind to RD Gateway"><option value="off">Off</option><option value="auto" selected>Allow</option><option value="approve">Needs my approval</option></select></td></tr>
+          <tr><td><strong>RD Connection Broker</strong><div class="dim">Signing RDP files and single sign-on</div></td>
+            <td><select id="palBindBroker" aria-label="Bind to RD Connection Broker"><option value="off">Off</option><option value="auto" selected>Allow</option><option value="approve">Needs my approval</option></select></td></tr>
         </tbody>
       </table>
       <div class="form-row full">

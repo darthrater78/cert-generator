@@ -29,6 +29,8 @@ internal sealed class HelperOp
     public string? CrlDp { get; set; }
     public BindRequest? Bind { get; set; }
     public string? Thumbprint { get; set; }
+    public string? Note { get; set; }
+    public string? Target { get; set; }
 }
 
 /// <summary>
@@ -70,7 +72,9 @@ internal static class Elevation
             await process.WaitForExitAsync().ConfigureAwait(false);
             if (!File.Exists(resultPath))
             {
-                return OpResult.Failure("The administrator step ended without a result. See pal.log.");
+                // Exit code 2: the helper refused the operation file, which is what happens when UAC was
+                // answered with another account's password. That account has its own profile and stores.
+                return OpResult.Failure(process.ExitCode == 2 ? OtherAccountMessage(op) : "The administrator step ended without a result. See pal.log.");
             }
             return JsonSerializer.Deserialize<OpResult>(File.ReadAllBytes(resultPath), Json.Options) ?? OpResult.Failure("No result.");
         }
@@ -84,6 +88,14 @@ internal static class Elevation
             File.Delete(resultPath);
         }
     }
+
+    private static string OtherAccountMessage(HelperOp op) =>
+        (op.Op is "request" && op.UseCase is { } useCase && !UseCases.IsMachine(useCase)) || (op.Op is "collect" && !op.Machine)
+            ? "This PC's key can only be used by an administrator, and the administrator step ran as a different Windows account. "
+              + "A certificate for you has to be requested from your own account: sign in to Windows with an administrator account "
+              + "and request it there, or ask your admin to connect this PC again."
+            : "The administrator step ran as a different Windows account, which isn't supported. "
+              + "Sign in to Windows with an administrator account and try again.";
 
     /// <summary>The elevated side: read the operation from the user's ops folder, run it, write the result next to it.</summary>
     public static int RunHelper(string path)
@@ -140,9 +152,13 @@ internal static class Elevation
                     return await Operations.RemoveProfileAsync(op.DeviceId).ConfigureAwait(false);
                 case "request" when op.UseCase is not null && UseCases.All.Contains(op.UseCase) && op.Names is not null:
                     return await Operations.RequestAsync(RequireState(), op.UseCase, op.Names, op.LifetimeDays, op.RenewOf,
-                        ValidThumbprint(op.ReplaceThumbprint), op.Bind).ConfigureAwait(false);
+                        ValidThumbprint(op.ReplaceThumbprint), op.Note).ConfigureAwait(false);
                 case "bind" when ValidThumbprint(op.Thumbprint) is { } thumbprint && op.Bind is { IsEmpty: false } bind:
-                    return Operations.Bind(thumbprint, bind);
+                    return await Operations.BindAsync(RequireState(), thumbprint, bind, op.Note).ConfigureAwait(false);
+                case "unbind" when ValidThumbprint(op.Thumbprint) is { } thumbprint && op.Target is BindKeys.Rdp or BindKeys.WinRm or BindKeys.Iis:
+                    return Operations.Unbind(thumbprint, op.Target!);
+                case "collect-binds":
+                    return await Operations.CollectBindsAsync(RequireState()).ConfigureAwait(false);
                 case "collect":
                     return await Operations.CollectAsync(RequireState(), op.Machine).ConfigureAwait(false);
                 case "remove" when op.Targets is { Count: > 0 and <= 500 } targets

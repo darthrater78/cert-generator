@@ -43,6 +43,14 @@ def _key_usage(**enabled: bool) -> dict[str, bool]:
     return flags
 
 
+def _key_usage_for(flags: dict[str, bool], public_key) -> dict[str, bool]:
+    """A template's key usage, fitted to the key. Only an RSA key can encipher another key:
+    on an ECDSA or Ed25519 key the bit must not be set (RFC 5480, RFC 8410)."""
+    if isinstance(public_key, rsa.RSAPublicKey):
+        return flags
+    return {**flags, "key_encipherment": False}
+
+
 CERT_TEMPLATES: dict[str, dict] = {
     "web-server": {
         "label": "Web Server",
@@ -322,7 +330,7 @@ def issue_certificate(
             critical=True,
         )
         .add_extension(
-            x509.KeyUsage(**tmpl["key_usage"]),
+            x509.KeyUsage(**_key_usage_for(tmpl["key_usage"], leaf_public)),
             critical=True,
         )
         .add_extension(

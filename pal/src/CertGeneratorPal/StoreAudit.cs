@@ -157,6 +157,11 @@ internal static class StoreAudit
     }
 
     /// <summary>Problems worth a look: expiry, missing keys, stale copies, CA certificates in the wrong store.</summary>
+    /// <summary>What a certificate may be used for (its extended key usages), as one comparable string.</summary>
+    private static string Purposes(X509Certificate2 cert) => string.Join(",",
+        cert.Extensions.OfType<X509EnhancedKeyUsageExtension>().SelectMany(e => e.EnhancedKeyUsages.Cast<System.Security.Cryptography.Oid>())
+            .Select(o => o.Value).Order(StringComparer.Ordinal));
+
     private static void Flag(List<AuditItem> items)
     {
         var now = DateTime.Now;
@@ -183,8 +188,9 @@ internal static class StoreAudit
                 item.Flags.Add("No private key");
             }
         }
-        // the same names held more than once in one store: a copy left behind after a renewal
-        foreach (var group in items.Where(i => !i.IsCa).GroupBy(i => (i.Location, i.StoreName, i.Names)).Where(g => g.Count() > 1))
+        // the same names and the same purposes held more than once in one store: a copy left behind after a
+        // renewal. A web server and a This computer certificate share the PC's name and are not copies.
+        foreach (var group in items.Where(i => !i.IsCa).GroupBy(i => (i.Location, i.StoreName, i.Names, Purposes(i.Cert))).Where(g => g.Count() > 1))
         {
             foreach (var older in group.OrderByDescending(i => i.Cert.NotAfter).Skip(1))
             {

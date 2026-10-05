@@ -225,6 +225,9 @@ def test_admin_api_requires_login(client):
     assert client.get("/api/pal/codes").status_code in (302, 401)
     assert client.post("/api/pal/codes", json={}).status_code in (302, 401)
     assert client.delete("/api/pal/devices/abc").status_code in (302, 401)
+    assert client.get("/api/pal/binds").status_code in (302, 401)
+    assert client.post("/api/pal/binds/1/approve").status_code in (302, 401)
+    assert client.post("/api/pal/binds/1/deny", json={}).status_code in (302, 401)
 
 
 @pytest.mark.parametrize("overrides, message", [
@@ -355,8 +358,8 @@ def test_approval_flow_and_renewal(paired):
     view = device.signed("GET", f"/api/pal/v1/requests/{request_id}").get_json()
     assert view["status"] == "issued"
     cert = x509.load_pem_x509_certificate(view["cert"].encode())
-    assert cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(
-        x509.RFC822Name) == ["alice@lan"]
+    san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert len(san.get_values_for_type(x509.OtherName)) == 1 and san.get_values_for_type(x509.RFC822Name) == []
     # renewal opens near expiry only
     resp, _ = device.request("user", {"upn": "alice@lan"}, renew_of=view["cert_id"])
     assert resp.status_code == 409 and resp.get_json()["error"].startswith("Too early to renew.")
@@ -619,7 +622,7 @@ def test_no_second_live_certificate(paired):
     again, _ = device.request("computer", {})
     assert again.status_code == 409 and again.get_json()["error"].startswith("Already issued.")
     # another name is another certificate
-    assert device.request("web-server", {"dns": ["pc01.lan"]})[0].status_code == 201
+    assert device.request("web-server", {"dns": ["pc01.lan", "www.lan"]})[0].status_code == 201
     assert device.request("web-server", {"dns": ["intranet.lan"]})[0].status_code == 201
     # once the admin revokes the lost one, the PC may ask again
     client.post(f"/api/certs/{first.get_json()['cert_id']}/revoke")
@@ -717,7 +720,7 @@ def test_self_hosted_covers_the_whole_chain(admin_client):
 def test_devices_page_reflects_what_the_pc_holds(paired):
     client, device, _ = paired
     computer = device.request("computer", {})[0].get_json()
-    web = device.request("web-server", {"dns": ["pc01.lan"]})[0].get_json()
+    web = device.request("web-server", {"dns": ["pc01.lan", "www.lan"]})[0].get_json()
     states = lambda: {c["use_case"]: c["state"] for c in client.get("/api/pal/devices").get_json()[0]["certs"]}
     assert states() == {"computer": "unchecked", "web-server": "unchecked"}
     device.signed("POST", "/api/pal/v1/status", {"serials": [computer["serial"], web["serial"]]})
@@ -758,7 +761,7 @@ def test_code_can_allow_several_revocation_types(admin_client):
         return cert.extensions.get_extension_for_class(x509.CRLDistributionPoints).value[0].full_name[0].value
 
     assert dp(device.request("computer", {}, crl_dp="server")[0]).startswith("http://10.0.0.252:5000/crl/")
-    assert dp(device.request("web-server", {"dns": ["pc01.lan"]})[0]).startswith("http://pki.lan/crl/")
+    assert dp(device.request("web-server", {"dns": ["pc01.lan", "www.lan"]})[0]).startswith("http://pki.lan/crl/")
     resp, _ = device.request("web-server", {"dns": ["web.lan"]}, crl_dp="cloudflare")
     assert resp.status_code == 403 and resp.get_json()["error"].startswith("Revocation type not allowed.")
 
@@ -835,7 +838,7 @@ def test_key_storage_is_recorded_as_the_pal_reports_it(admin_client):
     assert device.enroll(device.enroll_body(key_storage="tpm")).status_code == 201
     in_tpm = device.request("computer", {}, key_storage="tpm")[0].get_json()
     waiting = device.request("user", {"upn": "alice@lan"}, key_storage="software")[0].get_json()
-    old_pal = device.request("web-server", {"dns": ["pc01.lan"]}, key_storage="in a drawer")[0].get_json()
+    old_pal = device.request("web-server", {"dns": ["pc01.lan", "www.lan"]}, key_storage="in a drawer")[0].get_json()
     admin_client.post(f"/api/pal/requests/{waiting['id']}/approve")  # the storage survives the wait for approval
 
     listed = admin_client.get("/api/pal/devices").get_json()[0]
@@ -906,3 +909,312 @@ def test_activity_log_records_who_did_what(paired):
     issued = next(e for m, e in by_message.items() if m.startswith("Certificate issued to PC"))
     assert issued["actor"] == "a PC"
     assert entries == sorted(entries, key=lambda e: e["id"], reverse=True)
+
+
+# ── Remove in the Pal revokes ───────────────────────────────────────
+
+def test_a_pc_revokes_the_certificates_it_removes_and_only_its_own(paired):
+    client, device, ca_id = paired
+    mine = device.request("computer", {})[0].get_json()
+    kept = device.request("web-server", {"dns": ["pc01.lan", "www.lan"]})[0].get_json()
+    manual = client.post(f"/api/ca/{ca_id}/certs", json={"common_name": "manual.lan"}).get_json()
+    other = FakePal(client, _code(client, ca_id).get_json()["pairing_code"])
+    assert other.enroll(other.enroll_body(hostname="pc02", fqdn="pc02.lan")).status_code == 201
+    theirs = other.request("computer", {})[0].get_json()
+
+    resp = device.signed("POST", "/api/pal/v1/revoke",
+                         {"serials": [mine["serial"].upper(), manual["serial"], theirs["serial"], "zz"]})
+    assert resp.status_code == 200 and resp.get_json()["revoked"] == [mine["serial"]]
+    revoked = {c["serial"]: c["revoked"] for c in client.get(f"/api/ca/{ca_id}/certs").get_json()}
+    assert revoked[mine["serial"]] == 1
+    assert revoked[kept["serial"]] == revoked[manual["serial"]] == revoked[theirs["serial"]] == 0
+    assert any(m.startswith("PC pc01 removed its computer certificate for pc01.lan: revoked")
+               for m in [e["message"] for e in client.get("/api/activity").get_json()])
+    # Revoking again is harmless, and the name is free for a new request.
+    assert device.signed("POST", "/api/pal/v1/revoke", {"serials": [mine["serial"]]}).get_json()["revoked"] == []
+    assert device.request("computer", {})[0].status_code == 201
+
+
+def test_a_certificate_that_disappears_from_a_pc_is_flagged_not_revoked(paired):
+    client, device, ca_id = paired
+    cert = device.request("computer", {})[0].get_json()
+    device.signed("POST", "/api/pal/v1/status", {"serials": [cert["serial"]]})
+    device.signed("POST", "/api/pal/v1/status", {"serials": []})  # deleted outside the Pal
+    listed = client.get(f"/api/ca/{ca_id}/certs").get_json()[0]
+    assert listed["pal_present"] == 0 and listed["revoked"] == 0
+    messages = [e["message"] for e in client.get("/api/activity").get_json()]
+    assert "PC pc01 no longer holds its computer certificate for pc01.lan (not revoked)" in messages
+    device.signed("POST", "/api/pal/v1/status", {"serials": []})
+    assert [m for m in [e["message"] for e in client.get("/api/activity").get_json()]].count(
+        "PC pc01 no longer holds its computer certificate for pc01.lan (not revoked)") == 1  # said once
+
+
+# ── User ("Me") certificates ────────────────────────────────────────
+
+def _auto_user_device(client):
+    ca_id = _make_ca(client)
+    code = _code(client, ca_id, use_cases={"web-server": "off", "computer": "auto", "user": "auto", "code-signing": "auto"})
+    device = FakePal(client, code.get_json()["pairing_code"])
+    assert device.enroll().status_code == 201
+    return device, ca_id
+
+
+def _key_usage(pem: str) -> x509.KeyUsage:
+    return x509.load_pem_x509_certificate(pem.encode()).extensions.get_extension_for_class(x509.KeyUsage).value
+
+
+def test_user_certificate_carries_the_upn_and_no_invented_email(admin_client):
+    device, _ = _auto_user_device(admin_client)
+    resp, _ = device.request("user", {"upn": "Alice@LAN"})
+    assert resp.status_code == 201, resp.get_json()
+    cert = x509.load_pem_x509_certificate(resp.get_json()["cert"].encode())
+    san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert [n.type_id.dotted_string for n in san.get_values_for_type(x509.OtherName)] == ["1.3.6.1.4.1.311.20.2.3"]
+    assert san.get_values_for_type(x509.RFC822Name) == []  # a sign-in name is not a mailbox
+    assert cert.subject.rfc4514_string() == "CN=alice@lan"
+
+
+def test_user_certificate_takes_an_email_only_when_one_is_sent(admin_client):
+    device, _ = _auto_user_device(admin_client)
+    resp, _ = device.request("user", {"upn": "alice@lan", "email": "alice.smith@lan"})
+    cert = x509.load_pem_x509_certificate(resp.get_json()["cert"].encode())
+    san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert san.get_values_for_type(x509.RFC822Name) == ["alice.smith@lan"]
+    assert device.request("user", {"upn": "bob@lan", "email": "bob@elsewhere.test"})[0].status_code == 400
+
+
+@pytest.mark.parametrize("upn", ["alice@elsewhere.test", "alice", "", None, "a b@lan"])
+def test_user_names_outside_the_policy_are_refused(admin_client, upn):
+    device, _ = _auto_user_device(admin_client)
+    assert device.request("user", {"upn": upn})[0].status_code == 400
+
+
+def test_key_usage_fits_the_key(admin_client):
+    device, _ = _auto_user_device(admin_client)
+    ecdsa = _key_usage(device.request("user", {"upn": "alice@lan"})[0].get_json()["cert"])
+    assert ecdsa.digital_signature and not ecdsa.key_encipherment  # an ECDSA key can't encipher keys
+    rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    with_rsa = _key_usage(device.request("user", {"upn": "bob@lan"}, key=rsa_key)[0].get_json()["cert"])
+    assert with_rsa.digital_signature and with_rsa.key_encipherment
+
+
+def test_the_windows_account_that_asked_is_recorded_and_shown(paired):
+    client, device, ca_id = paired
+    resp, _ = device.request("user", {"upn": "alice@lan"}, windows_user="PC01\\alice")
+    assert resp.status_code == 202
+    pending = client.get("/api/pal/requests?status=pending").get_json()
+    assert pending[0]["windows_user"] == "PC01\\alice"
+    assert client.post(f"/api/pal/requests/{pending[0]['id']}/approve").status_code == 200
+    assert client.get(f"/api/ca/{ca_id}/certs").get_json()[0]["pal_user"] == "PC01\\alice"
+    assert client.get("/api/pal/devices").get_json()[0]["certs"][0]["asked_by"] == "PC01\\alice"
+    messages = [e["message"] for e in client.get("/api/activity").get_json()]
+    assert any("alice@lan (Windows account: PC01\\alice): waiting for approval" in m for m in messages)
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "a\nb", "x" * 105, 7, None, ["PC01\\alice"]])
+def test_an_implausible_windows_account_is_not_recorded(paired, bad):
+    client, device, _ = paired
+    assert device.request("user", {"upn": "alice@lan"}, windows_user=bad)[0].status_code == 202
+    assert client.get("/api/pal/requests?status=pending").get_json()[0]["windows_user"] is None
+
+
+def test_another_windows_account_cannot_report_a_user_certificate_missing(admin_client):
+    """Two people share a PC. Bob's check-in can't see Alice's store, so it says nothing about her certificate."""
+    device, ca_id = _auto_user_device(admin_client)
+    alice = device.request("user", {"upn": "alice@lan"}, windows_user="PC01\\alice")[0].get_json()
+    status = "/api/pal/v1/status"
+    device.signed("POST", status, {"serials": [alice["serial"]], "windows_user": "PC01\\alice"})
+    device.signed("POST", status, {"serials": [], "windows_user": "PC01\\bob"})
+    device.signed("POST", status, {"serials": []})  # an older Pal, which doesn't say who it runs as
+    assert db.get_cert_summary(alice["cert_id"])["pal_present"] == 1
+    assert not any("no longer holds" in e["message"] for e in admin_client.get("/api/activity").get_json())
+    # so a second copy for the same name is still refused, and nothing revokes hers
+    assert device.request("user", {"upn": "alice@lan"}, windows_user="PC01\\bob")[0].status_code == 409
+    assert db.get_cert_summary(alice["cert_id"])["revoked"] == 0
+
+
+def test_the_account_that_asked_can_report_its_own_certificate_missing(admin_client):
+    device, _ = _auto_user_device(admin_client)
+    first = device.request("user", {"upn": "alice@lan"}, windows_user="PC01\\alice")[0].get_json()
+    status = "/api/pal/v1/status"
+    device.signed("POST", status, {"serials": [first["serial"]], "windows_user": "PC01\\alice"})
+    device.signed("POST", status, {"serials": [], "windows_user": "pc01\\Alice"})  # Windows account names ignore case
+    assert db.get_cert_summary(first["cert_id"])["pal_present"] == 0
+    second = device.request("user", {"upn": "alice@lan"}, windows_user="PC01\\alice")[0]
+    assert second.status_code == 201
+    assert db.get_cert_summary(first["cert_id"])["revoked"] == 1  # superseded: only one live copy
+
+
+def test_a_user_certificate_from_before_accounts_were_recorded_is_adopted_when_found(admin_client):
+    device, _ = _auto_user_device(admin_client)
+    old = device.request("code-signing", {"cn": "Alice Smith"})[0].get_json()  # no windows_user: an older Pal
+    status = "/api/pal/v1/status"
+    device.signed("POST", status, {"serials": [], "windows_user": "PC01\\bob"})
+    assert db.get_cert_summary(old["cert_id"])["pal_present"] is None  # nobody has said whose it is
+    device.signed("POST", status, {"serials": [old["serial"]], "windows_user": "PC01\\alice"})
+    assert db.get_cert_summary(old["cert_id"])["pal_user"] == "PC01\\alice"
+    device.signed("POST", status, {"serials": [], "windows_user": "PC01\\bob"})
+    assert db.get_cert_summary(old["cert_id"])["pal_present"] == 1
+
+
+def test_a_machine_certificate_is_still_reported_missing_by_any_account(admin_client):
+    device, _ = _auto_user_device(admin_client)
+    cert = device.request("computer", {}, windows_user="PC01\\alice")[0].get_json()
+    status = "/api/pal/v1/status"
+    device.signed("POST", status, {"serials": [cert["serial"]], "windows_user": "PC01\\alice"})
+    device.signed("POST", status, {"serials": [], "windows_user": "PC01\\bob"})  # everyone sees the computer's store
+    assert db.get_cert_summary(cert["cert_id"])["pal_present"] == 0
+
+
+def test_a_note_typed_at_the_pc_reaches_the_admin(paired):
+    client, device, _ = paired
+    resp, _ = device.request("user", {"upn": "alice@lan"}, note="  New laptop,\n replaces  PC07 ")
+    assert resp.status_code == 202
+    assert client.get("/api/pal/requests?status=pending").get_json()[0]["note"] == "New laptop, replaces PC07"
+
+
+@pytest.mark.parametrize("note, status", [("", 202), ("   ", 202), (None, 202), ("x" * 200, 202), ("x" * 201, 400), (7, 400), (["a"], 400)])
+def test_notes_are_optional_short_and_text(paired, note, status):
+    client, device, _ = paired
+    assert device.request("user", {"upn": "alice@lan"}, note=note)[0].status_code == status
+    if status == 202 and not (note or "").strip():
+        assert client.get("/api/pal/requests?status=pending").get_json()[0]["note"] is None
+
+
+# ── Binds: putting an installed certificate to work ─────────────────
+
+def _bind_device(client, **binds):
+    ca_id = _make_ca(client)
+    code = _code(client, ca_id, binds=binds) if binds else _code(client, ca_id)
+    device = FakePal(client, code.get_json()["pairing_code"])
+    assert device.enroll().status_code == 201
+    return device, ca_id
+
+
+def _ask_bind(device, serial, *targets, **extra):
+    return device.signed("POST", "/api/pal/v1/binds",
+                         {"serial": serial, "binds": [{"target": t, "detail": f"{t} detail"} for t in targets], **extra})
+
+
+def test_a_pairing_from_before_bind_switches_may_bind_everything():
+    policy = pal.Policy.from_json('{"use_cases":{"computer":"auto"},"dns":["*.lan"],"users":[],"max_days":30,'
+                                  '"crl_dps":["none"],"crl_base_url":null}')
+    assert policy.binds == dict.fromkeys(pal.BIND_TARGETS, "auto")
+    assert policy.public()["binds"]["rdp"] == "auto"
+
+
+def test_bind_switches_are_validated_and_told_to_the_pc(admin_client):
+    ca_id = _make_ca(admin_client)
+    assert _code(admin_client, ca_id, binds={"rdp": "sometimes"}).status_code == 400
+    assert _code(admin_client, ca_id, binds="all").status_code == 400
+    device, _ = _bind_device(admin_client, rdp="approve", iis="off")
+    binds = device.signed("GET", "/api/pal/v1/device").get_json()["policy"]["binds"]
+    assert binds == {"rdp": "approve", "winrm": "auto", "iis": "off", "rd-gateway": "auto", "rd-broker": "auto"}
+
+
+def test_an_allowed_bind_is_allowed_at_once(admin_client):
+    device, _ = _bind_device(admin_client)
+    cert = device.request("computer", {})[0].get_json()
+    resp = _ask_bind(device, cert["serial"], "rdp", "winrm")
+    assert resp.status_code == 201
+    assert [(b["target"], b["status"]) for b in resp.get_json()["binds"]] == [("rdp", "approved"), ("winrm", "approved")]
+    assert admin_client.get("/api/pal/binds?status=pending").get_json() == []
+
+
+def test_a_bind_that_needs_approval_waits_for_the_admin(admin_client):
+    device, _ = _bind_device(admin_client, rdp="approve")
+    cert = device.request("computer", {})[0].get_json()
+    resp = _ask_bind(device, cert["serial"], "rdp", windows_user="PC01\\alice", note="for the helpdesk")
+    assert resp.status_code == 202
+    bind_id = resp.get_json()["binds"][0]["id"]
+    assert _ask_bind(device, cert["serial"], "rdp").get_json()["binds"][0]["id"] == bind_id  # not asked twice
+    waiting = admin_client.get("/api/pal/binds?status=pending").get_json()
+    assert [(w["id"], w["target_label"], w["cert_name"], w["windows_user"], w["note"], w["detail"]) for w in waiting] == [
+        (bind_id, "Remote Desktop", "pc01.lan", "PC01\\alice", "for the helpdesk", "rdp detail")]
+    assert admin_client.get("/api/pal/devices").get_json()[0]["pending"] == 1
+    assert device.signed("GET", f"/api/pal/v1/binds/{bind_id}").get_json()["status"] == "pending"
+    assert admin_client.post(f"/api/pal/binds/{bind_id}/approve").status_code == 200
+    assert admin_client.post(f"/api/pal/binds/{bind_id}/approve").status_code == 404  # decided once
+    assert device.signed("GET", f"/api/pal/v1/binds/{bind_id}").get_json()["status"] == "approved"
+
+
+def test_a_denied_bind_says_why(admin_client):
+    device, _ = _bind_device(admin_client, winrm="approve")
+    cert = device.request("computer", {})[0].get_json()
+    bind_id = _ask_bind(device, cert["serial"], "winrm").get_json()["binds"][0]["id"]
+    assert admin_client.post(f"/api/pal/binds/{bind_id}/deny", json={"reason": "not on servers"}).status_code == 200
+    view = device.signed("GET", f"/api/pal/v1/binds/{bind_id}").get_json()
+    assert view["status"] == "denied" and view["reason"] == "not on servers"
+
+
+def test_a_bind_the_admin_turned_off_is_refused_whole(admin_client):
+    device, _ = _bind_device(admin_client, iis="off")
+    cert = device.request("computer", {})[0].get_json()
+    resp = _ask_bind(device, cert["serial"], "rdp", "iis")
+    assert resp.status_code == 403 and "IIS site" in resp.get_json()["error"]
+    assert admin_client.get("/api/pal/binds").get_json() == []  # nothing half-recorded
+
+
+def test_only_this_cas_live_tls_certificates_can_be_bound(admin_client):
+    device, _ = _bind_device(admin_client)
+    assert _ask_bind(device, "00ff", "rdp").status_code == 404
+    client_cert = device.request("user", {"upn": "alice@lan"})[0]
+    assert client_cert.status_code == 202  # needs approval: nothing to bind yet
+    cert = device.request("computer", {})[0].get_json()
+    assert _ask_bind(device, cert["serial"]).status_code == 400  # no roles
+    assert _ask_bind(device, cert["serial"], "telnet").status_code == 400
+    db.revoke_cert(cert["cert_id"])
+    assert _ask_bind(device, cert["serial"], "rdp").status_code == 409
+
+
+def test_another_pcs_bind_cannot_be_read(admin_client):
+    device, ca_id = _bind_device(admin_client, rdp="approve")
+    cert = device.request("computer", {})[0].get_json()
+    bind_id = _ask_bind(device, cert["serial"], "rdp").get_json()["binds"][0]["id"]
+    other = FakePal(admin_client, _code(admin_client, ca_id, label="pc02").get_json()["pairing_code"])
+    assert other.enroll(other.enroll_body(hostname="pc02", fqdn="pc02.lan")).status_code == 201
+    assert other.signed("GET", f"/api/pal/v1/binds/{bind_id}").status_code == 404
+
+
+def test_disconnecting_a_pc_denies_its_waiting_binds(admin_client):
+    device, _ = _bind_device(admin_client, rdp="approve")
+    cert = device.request("computer", {})[0].get_json()
+    bind_id = _ask_bind(device, cert["serial"], "rdp").get_json()["binds"][0]["id"]
+    assert admin_client.post(f"/api/pal/devices/{device.device_id}/revoke", json={}).status_code == 200
+    assert db.get_pal_bind(bind_id)["status"] == "denied"
+    assert admin_client.post(f"/api/pal/binds/{bind_id}/approve").status_code == 409  # the PC is disconnected
+
+
+def test_what_uses_a_certificate_is_reported_and_shown(admin_client):
+    device, ca_id = _bind_device(admin_client)
+    cert = device.request("computer", {})[0].get_json()
+    status = "/api/pal/v1/status"
+    device.signed("POST", status, {"serials": [cert["serial"]], "binds": {cert["serial"]: ["Remote Desktop", "WinRM"]}})
+    assert admin_client.get("/api/pal/devices").get_json()[0]["certs"][0]["used_for"] == ["Remote Desktop", "WinRM"]
+    assert json.loads(admin_client.get(f"/api/ca/{ca_id}/certs").get_json()[0]["pal_binds"]) == ["Remote Desktop", "WinRM"]
+    device.signed("POST", status, {"serials": [cert["serial"]]})  # an older Pal says nothing: nothing changes
+    assert admin_client.get("/api/pal/devices").get_json()[0]["certs"][0]["used_for"] == ["Remote Desktop", "WinRM"]
+    device.signed("POST", status, {"serials": [cert["serial"]], "binds": {}})  # unbound
+    assert admin_client.get("/api/pal/devices").get_json()[0]["certs"][0]["used_for"] == []
+
+
+def test_a_web_server_request_the_computer_certificate_covers_is_pointed_to_bind(admin_client):
+    device, _ = _bind_device(admin_client)
+    assert device.request("web-server", {"dns": ["pc01.lan"]})[0].status_code == 201  # no This computer certificate yet
+    device2, _ = _bind_device(admin_client)
+    computer = device2.request("computer", {})[0].get_json()
+    resp = device2.request("web-server", {"dns": ["pc01.lan"]})[0]
+    assert resp.status_code == 409 and resp.get_json()["error"].startswith("Already covered.")
+    assert device2.request("web-server", {"dns": ["pc01.lan", "www.lan"]})[0].status_code == 201  # other names: its own certificate
+    # once the PC reports the This computer certificate gone, the name is free again
+    device2.signed("POST", "/api/pal/v1/status", {"serials": [computer["serial"]]})
+    device2.signed("POST", "/api/pal/v1/status", {"serials": []})
+    assert device2.request("web-server", {"dns": ["pc01.lan"]})[0].status_code == 201
+
+
+def test_binding_again_keeps_one_row_per_certificate_and_role(admin_client):
+    device, _ = _bind_device(admin_client)
+    cert = device.request("computer", {})[0].get_json()
+    for _ in range(5):
+        assert _ask_bind(device, cert["serial"], "rdp", "winrm").status_code == 201
+    assert sorted(b["target"] for b in admin_client.get("/api/pal/binds").get_json()) == ["rdp", "winrm"]

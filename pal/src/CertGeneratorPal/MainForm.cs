@@ -8,6 +8,8 @@ namespace CertGeneratorPal;
 internal sealed class MainForm : Form
 {
     private const string RepoUrl = "https://github.com/darthrater78/cert-generator";
+    private const string HelpUrl = RepoUrl + "#using-the-pal";
+    private const string TroubleshootingUrl = RepoUrl + "#troubleshooting";
     private static readonly string Version = PalClient.AppVersion;
     private static readonly string ReleaseNotesUrl = RepoUrl + "/releases/tag/v" + Version;
 
@@ -15,14 +17,15 @@ internal sealed class MainForm : Form
     private const string CrlTile = "crl";
     private static readonly Dictionary<string, string> TileSubtitles = new()
     {
-        [UseCases.Computer] = "Wi-Fi, VPN, 802.1X, RDP, WinRM",
-        [UseCases.WebServer] = "IIS, RD Gateway, your own names",
-        [UseCases.User] = "You: sign-in and smart card",
+        [UseCases.Computer] = "Wi-Fi, VPN, 802.1X, device identity",
+        [UseCases.WebServer] = "Other names: sites, aliases, gateways",
+        [UseCases.User] = "You: Wi-Fi, VPN and websites",
         [UseCases.CodeSigning] = "Scripts and programs",
         [TrustTile] = "Trust the CA for HTTPS inspection",
         [CrlTile] = "Answer revocation checks on this PC",
     };
 
+    private readonly SealControl _seal = new();
     private readonly Label _subtitle = new() { AutoSize = true, Font = Theme.SerifItalic, ForeColor = SystemColors.GrayText, Margin = new Padding(0, 2, 0, 10) };
     private readonly Panel _connectPanel = new() { Dock = DockStyle.Fill };
     private readonly TextBox _codeBox = new() { Multiline = true, Height = 90, Anchor = AnchorStyles.Left | AnchorStyles.Right, ScrollBars = ScrollBars.Vertical };
@@ -37,10 +40,24 @@ internal sealed class MainForm : Form
     private readonly ListView _list = new()
     {
         View = View.Details, FullRowSelect = true, Dock = DockStyle.Fill, MultiSelect = true, HideSelection = false,
-        OwnerDraw = true, BorderStyle = BorderStyle.FixedSingle, HeaderStyle = ColumnHeaderStyle.Nonclickable,
+        OwnerDraw = true, BorderStyle = BorderStyle.FixedSingle, HeaderStyle = ColumnHeaderStyle.Clickable,
     };
+    // Column widths at 96 DPI; Notes, the last column, takes the rest.
+    private static readonly (string Title, int Width)[] ListColumns =
+        [("Certificate", 220), ("Use", 150), ("Store", 130), ("Key", 80), ("Expires", 95), ("Renew", 95), ("Status", 80)];
+    private const int ElasticColumns = 3;  // Certificate, Use and Store give way in a narrow window; the short ones keep their width
+    private const int NotesMinWidth = 120;
+    private readonly int[] _columnWidths = ListColumns.Select(c => c.Width).ToArray();
+    private bool _fitting;
+    private bool _fitPending;
+    private const int ListMinHeight = 150;  // the heading and about five rows, at 96 DPI
+    private bool _listRoomChecked;
+    private ILookup<string, string> _waitingBinds = Enumerable.Empty<string>().ToLookup(t => t);
+    private int _sortColumn = -1;  // none: CA certificates last, then by store and name
+    private bool _sortDescending;
     private readonly Button _renew = new() { Text = "Renew", AutoSize = true, Enabled = false };
     private readonly Button _remove = new() { Text = "Remove", AutoSize = true, Enabled = false, Tag = Theme.ButtonKind.Danger };
+    private readonly Button _revoke = new() { Text = "Revoke", AutoSize = true, Enabled = false, Tag = Theme.ButtonKind.Danger };
     private readonly Button _details = new() { Text = "Details", AutoSize = true, Enabled = false };
     private readonly Button _bind = new() { Text = "Bind…", AutoSize = true, Enabled = false };
     private string? _deviceKeyStorage;  // where this PC's device key lives, once a refresh has read it
@@ -86,7 +103,7 @@ internal sealed class MainForm : Form
         Text = "Cert Generator Pal";
         Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!);
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(900, 620);
+        ClientSize = new Size(1040, 720);
         MinimumSize = new Size(720, 520);
         StartPosition = FormStartPosition.CenterScreen;
 
@@ -96,23 +113,31 @@ internal sealed class MainForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         // The app's masthead: mono eyebrow, serif title, italic subtitle, strong rule.
-        var header = new TableLayoutPanel { ColumnCount = 1, AutoSize = true, Dock = DockStyle.Fill };
+        // The CA's seal sits in the upper right, beside the first four rows; the rest span the full width.
+        var header = new TableLayoutPanel { ColumnCount = 2, RowCount = 7, AutoSize = true, Dock = DockStyle.Fill };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        header.Controls.Add(Theme.Eyebrow("Certificate authority · Windows companion"));
-        header.Controls.Add(new Label { Text = "Cert Generator Pal", AutoSize = true, Font = Theme.Display, Margin = new Padding(0) });
-        header.Controls.Add(_subtitle);
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.Controls.Add(Theme.Eyebrow("Certificate authority · Windows companion"), 0, 0);
+        header.Controls.Add(new Label { Text = "Cert Generator Pal", AutoSize = true, Font = Theme.Display, Margin = new Padding(0) }, 0, 1);
+        header.Controls.Add(_subtitle, 0, 2);
         var profileLabel = Theme.Eyebrow("CRL profile");
         profileLabel.Margin = new Padding(0, 8, 8, 0);
         _profileRow.Controls.AddRange([profileLabel, _profileBox]);
         _profileBox.SelectedIndexChanged += async (_, _) => await ProfileChosenAsync();
-        header.Controls.Add(_profileRow);
-        header.Controls.Add(_crlPanel);
+        header.Controls.Add(_profileRow, 0, 3);
+        _seal.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        header.Controls.Add(_seal, 1, 0);
+        header.SetRowSpan(_seal, 4);
+        header.Controls.Add(_crlPanel, 0, 4);
+        header.SetColumnSpan(_crlPanel, 2);
         _drift.LinkClicked += (_, _) => OpenServerDownload();
-        header.Controls.Add(_drift);
+        header.Controls.Add(_drift, 0, 5);
+        header.SetColumnSpan(_drift, 2);
         var rule = Theme.RuleLine();
         rule.Dock = DockStyle.None;
         rule.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-        header.Controls.Add(rule);
+        header.Controls.Add(rule, 0, 6);
+        header.SetColumnSpan(rule, 2);
         root.Controls.Add(header);
 
         BuildConnectPanel();
@@ -236,16 +261,15 @@ internal sealed class MainForm : Form
         _mainPanel.Controls.Add(_pendingBar, 0, 1);
 
         _mainPanel.Controls.Add(_listTitle, 0, 2);
-        _list.Columns.Add("Certificate", 230);
-        _list.Columns.Add("Use", 120);
-        _list.Columns.Add("Store", 150);
-        _list.Columns.Add("Key", 90);
-        _list.Columns.Add("Expires", 95);
-        _list.Columns.Add("Renew", 95);
-        _list.Columns.Add("Status", 80);
-        _list.Columns.Add("Notes", 260);
+        foreach (var (title, width) in ListColumns)
+        {
+            _list.Columns.Add(title, width);
+        }
+        _list.Columns.Add("Notes", NotesMinWidth);
         _list.SelectedIndexChanged += (_, _) => UpdateActions();
-        _list.Resize += (_, _) => FitColumns();
+        _list.Resize += (_, _) => FitColumnsSoon();
+        _list.ColumnWidthChanged += (_, e) => ColumnDragged(e.ColumnIndex);
+        _list.ColumnClick += (_, e) => SortBy(e.Column);
         _list.DrawColumnHeader += DrawHeader;
         _list.DrawItem += (_, e) => e.DrawDefault = false;
         _list.DrawSubItem += DrawCell;
@@ -254,27 +278,73 @@ internal sealed class MainForm : Form
 
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 6, 0, 0) };
         _renew.Click += async (_, _) => await RenewAsync();
-        _remove.Click += async (_, _) => await RemoveAsync();
+        _remove.Click += async (_, _) => await RemoveAsync(revokeOnly: false);
+        _revoke.Click += async (_, _) => await RemoveAsync(revokeOnly: true);
         _details.Click += (_, _) => ShowDetails();
         _bind.Click += async (_, _) => await BindAsync();
         _refresh.Click += async (_, _) => await RefreshAsync();
-        actions.Controls.AddRange([_renew, _bind, _remove, _details, _refresh]);
+        actions.Controls.AddRange([_renew, _bind, _revoke, _remove, _details, _refresh]);
         _mainPanel.Controls.Add(actions, 0, 4);
     }
 
-    /// <summary>The Notes column takes whatever width is left, so the list never scrolls sideways.</summary>
+    /// <summary>
+    /// The columns always add up to the list's width: Notes takes what is left, and in a narrow
+    /// window the others shrink in proportion. The list therefore never scrolls sideways, which
+    /// also keeps Windows from leaving its contents shifted after the window or a column is resized.
+    /// </summary>
     private void FitColumns()
     {
-        if (_list.Columns.Count == 0)
+        if (_fitting || _list.Columns.Count != _columnWidths.Length + 1 || _list.ClientSize.Width <= 0)
         {
             return;
         }
-        int used = 0;
-        for (int i = 0; i < _list.Columns.Count - 1; i++)
+        _fitting = true;
+        try
         {
-            used += _list.Columns[i].Width;
+            int room = _list.ClientSize.Width - SystemInformation.VerticalScrollBarWidth;
+            int rigid = _columnWidths.Skip(ElasticColumns).Sum(w => LogicalToDeviceUnits(w));
+            int elastic = _columnWidths.Take(ElasticColumns).Sum(w => LogicalToDeviceUnits(w));
+            double scale = Math.Min(1.0, (double)Math.Max(0, room - LogicalToDeviceUnits(NotesMinWidth) - rigid) / Math.Max(1, elastic));
+            int used = 0;
+            _list.BeginUpdate();
+            for (int i = 0; i < _columnWidths.Length; i++)
+            {
+                int width = Math.Max(LogicalToDeviceUnits(24), (int)(LogicalToDeviceUnits(_columnWidths[i]) * (i < ElasticColumns ? scale : 1.0)));
+                _list.Columns[i].Width = width;
+                used += width;
+            }
+            _list.Columns[^1].Width = Math.Max(LogicalToDeviceUnits(24), room - used);
+            _list.EndUpdate();
         }
-        _list.Columns[^1].Width = Math.Max(LogicalToDeviceUnits(120), _list.ClientSize.Width - used - SystemInformation.VerticalScrollBarWidth);
+        finally
+        {
+            _fitting = false;
+        }
+    }
+
+    /// <summary>Refit once the list has finished resizing: changing a column's width while Windows is still sizing the list can leave it shifted.</summary>
+    private void FitColumnsSoon()
+    {
+        if (IsHandleCreated && !_fitPending)
+        {
+            _fitPending = true;
+            BeginInvoke(() =>
+            {
+                _fitPending = false;
+                FitColumns();
+            });
+        }
+    }
+
+    /// <summary>The user dragged a column's edge: keep that width (at 96 DPI) and give Notes what is left.</summary>
+    private void ColumnDragged(int column)
+    {
+        if (_fitting || column < 0 || column >= _columnWidths.Length)
+        {
+            return;
+        }
+        _columnWidths[column] = Math.Max(24, _list.Columns[column].Width * 96 / Math.Max(96, DeviceDpi));
+        FitColumnsSoon();
     }
 
     private TableLayoutPanel BuildFooter()
@@ -282,12 +352,12 @@ internal sealed class MainForm : Form
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        var links = new LinkLabel { AutoSize = true, Text = $"v{Version}  ·  GitHub  ·  Release notes" };
-        int github = links.Text.IndexOf("GitHub", StringComparison.Ordinal);
-        int notes = links.Text.IndexOf("Release notes", StringComparison.Ordinal);
+        var links = new LinkLabel { AutoSize = true, Text = $"v{Version}  ·  Help  ·  Troubleshooting  ·  GitHub  ·  Release notes" };
         links.Links.Clear();
-        links.Links.Add(github, "GitHub".Length, RepoUrl);
-        links.Links.Add(notes, "Release notes".Length, ReleaseNotesUrl);
+        foreach (var (word, url) in new[] { ("Help", HelpUrl), ("Troubleshooting", TroubleshootingUrl), ("GitHub", RepoUrl), ("Release notes", ReleaseNotesUrl) })
+        {
+            links.Links.Add(links.Text.IndexOf(word, StringComparison.Ordinal), word.Length, url);
+        }
         links.LinkClicked += (_, e) => OpenUrl((string)e.Link!.LinkData!);
         footer.Controls.Add(links);
         _disconnect.LinkClicked += async (_, _) => await DisconnectAsync();
@@ -296,7 +366,7 @@ internal sealed class MainForm : Form
     }
 
     /// <summary>Opens https links only, via explorer.exe so a browser never inherits elevation.</summary>
-    private static void OpenUrl(string url)
+    internal static void OpenUrl(string url)
     {
         if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps && uri.Host == "github.com")
         {
@@ -344,6 +414,7 @@ internal sealed class MainForm : Form
         {
             ShowConnect();
             _subtitle.Text = _profileBox.Items.Count > 0 ? "No active CRL profile: pick one above" : "Not connected";
+            _seal.SetCa(null, null);
             await ShowPcNameAsync();
             return;
         }
@@ -351,6 +422,8 @@ internal sealed class MainForm : Form
         _mainPanel.Visible = true;
         _disconnect.Visible = true;
         _subtitle.Text = $"Connected to {_state.ServerUri.Host} · {_state.CaName} · this PC: {_state.Fqdn}";
+        _seal.SetCa(_state.CaName, SealControl.DomainOf(_state.Fqdn));
+        _listRoomChecked = false;  // another profile can mean more connectivity rows and tiles
         _listTitle.Text = $"Certificates from {_state.CaName} on this PC";
         await RefreshAsync();
     }
@@ -720,11 +793,13 @@ internal sealed class MainForm : Form
         {
             return;
         }
+        List<AuditItem> revokedByServer = [];
         try
         {
             var state = _state;
             string? serverProblem = null;
             Dictionary<string, string> status = [];
+            revokedByServer = [];
             try
             {
                 _device = null;
@@ -740,6 +815,7 @@ internal sealed class MainForm : Form
                 {
                     state.Chain = _device.Chain;  // picks up a new intermediate; saved by the next elevated step
                 }
+                await PendingRevokes.FlushAsync(client, signer, state.DeviceId);  // removals made while the server was out of reach
                 _items = await Task.Run(() => StoreAudit.Run(state));
                 // Where each key lives goes along, so the admin sees which are in the TPM.
                 var keys = new Dictionary<string, string>();
@@ -758,7 +834,9 @@ internal sealed class MainForm : Form
                     }
                 }
                 _deviceKeyStorage = signer.KeyStorage;
-                status = await client.StatusAsync(signer, _items.Select(i => i.Serial).Distinct().ToList(), _deviceKeyStorage, keys);
+                var uses = _items.Where(i => i.UsedBy.Count > 0).GroupBy(i => i.Serial)
+                    .ToDictionary(g => g.Key, g => g.SelectMany(i => i.UsedBy).Distinct().ToList());
+                status = await client.StatusAsync(signer, _items.Select(i => i.Serial).Distinct().ToList(), _deviceKeyStorage, keys, LocalIdentity.AccountName, uses);
                 _crlAnswering = await LocalCrlServer.ProbeAsync(_device.SelfHosted);
                 await CheckCrlsAsync();
             }
@@ -768,6 +846,11 @@ internal sealed class MainForm : Form
                 _items = await Task.Run(() => StoreAudit.Run(state));
             }
             StoreAudit.ApplyServer(_items, status, _device);
+            if (serverProblem is null && status.Count > 0)
+            {
+                var changed = SeenStatus.Update(state.DeviceId, status);
+                revokedByServer = _items.Where(i => !i.IsCa && changed.Contains(i.Serial)).ToList();
+            }
             FillCrlPanel();
             UpdateDrift();
             UpdateTiles();
@@ -786,6 +869,17 @@ internal sealed class MainForm : Form
         finally
         {
             EndBusy();
+        }
+        if (revokedByServer.Count > 0)
+        {
+            // Something the server did since this PC last looked: say so, once.
+            string it = revokedByServer.Count == 1 ? "it" : "them";
+            MessageBox.Show(this,
+                (revokedByServer.Count == 1 ? "Your admin revoked a certificate on this PC:" : $"Your admin revoked {revokedByServer.Count} certificates on this PC:") +
+                "\n\n" + string.Join("\n", revokedByServer.Take(12).Select(i => $"• {i.Names}  ({i.UseLabel})")) +
+                $"\n\nNothing that checks revocation trusts {it} any more. Select {it} and choose Remove to take {it} off this PC, " +
+                "then request a new certificate if you still need one.",
+                Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
@@ -832,20 +926,84 @@ internal sealed class MainForm : Form
         }
     }
 
+    /// <summary>
+    /// The list gets whatever height the masthead and the tiles leave, which at the default size can
+    /// be next to nothing (a long connectivity block, two rows of tiles). Once per load, grow the
+    /// window until about five rows show, as far as the screen allows. Later the size is the user's.
+    /// </summary>
+    private void EnsureListRoom()
+    {
+        if (_listRoomChecked || !_mainPanel.Visible || WindowState != FormWindowState.Normal || !IsHandleCreated)
+        {
+            return;
+        }
+        _listRoomChecked = true;
+        PerformLayout();
+        int missing = LogicalToDeviceUnits(ListMinHeight) - _list.Height;
+        if (missing > 0)
+        {
+            var area = Screen.FromControl(this).WorkingArea;
+            Height = Math.Min(area.Height, Height + missing);
+            Top = Math.Max(area.Top, Math.Min(Top, area.Bottom - Height));
+        }
+    }
+
+    private static string UseText(AuditItem item) => item.UseLabel + (item.FromPal is not null ? " (Pal)" : "");
+
+    private static string KeyText(AuditItem item) =>
+        item.IsCa ? "" : item.KeyStorage switch { "tpm" => "TPM", "software" => "Software", _ => item.Cert.HasPrivateKey ? "Unknown" : "" };
+
+    /// <summary>What needs a look, then everything that uses the certificate, then binds still waiting for the admin.</summary>
+    private string NotesText(AuditItem item) => string.Join("; ", item.Flags
+        .Concat(item.UsedBy.Select(u => "Used by " + u))
+        .Concat(_waitingBinds[item.Cert.Thumbprint].Select(t => "Waiting for approval: " + BindKeys.Label(t))));
+
+    /// <summary>A click on a column header sorts by it; a second click on the same one reverses the order.</summary>
+    private void SortBy(int column)
+    {
+        _sortDescending = column == _sortColumn && !_sortDescending;
+        _sortColumn = column;
+        _list.Invalidate();  // the header's arrow moves
+        FillList();
+    }
+
+    /// <summary>The rows in the chosen order. Dates sort as dates, and what can't be renewed sorts after what can.</summary>
+    private IEnumerable<AuditItem> Sorted()
+    {
+        var text = StringComparer.CurrentCultureIgnoreCase;
+        IOrderedEnumerable<AuditItem> By<T>(Func<AuditItem, T> key, IComparer<T>? comparer = null) =>
+            _sortDescending ? _items.OrderByDescending(key, comparer) : _items.OrderBy(key, comparer);
+        var sorted = _sortColumn switch
+        {
+            0 => By(i => i.Names, text),
+            1 => By(UseText, text),
+            2 => By(i => i.StoreLabel, text),
+            3 => By(KeyText, text),
+            4 => By(i => i.Cert.NotAfter),
+            5 => By(i => i.FromPal?.RenewFromTime ?? DateTimeOffset.MaxValue),
+            6 => By(i => i.ServerStatus, text),
+            7 => By(NotesText, text),
+            _ => _items.OrderBy(i => i.IsCa).ThenBy(i => i.Location),
+        };
+        return sorted.ThenBy(i => i.Names, text);
+    }
+
     private void FillList()
     {
+        var selected = SelectedAll;
+        _waitingBinds = _state is null ? Enumerable.Empty<string>().ToLookup(t => t) : Operations.WaitingBinds(_state.DeviceId);
         _list.BeginUpdate();
         _list.Items.Clear();
-        foreach (var item in _items.OrderBy(i => i.IsCa).ThenBy(i => i.Location).ThenBy(i => i.Names, StringComparer.OrdinalIgnoreCase))
+        foreach (var item in Sorted())
         {
-            var row = new ListViewItem(item.Names) { Tag = item };
-            row.SubItems.Add(item.UseLabel + (item.FromPal is not null ? " (Pal)" : ""));
+            var row = new ListViewItem(item.Names) { Tag = item, Selected = selected.Contains(item) };
+            row.SubItems.Add(UseText(item));
             row.SubItems.Add(item.StoreLabel);
-            row.SubItems.Add(item.IsCa ? "" : item.KeyStorage switch { "tpm" => "TPM", "software" => "Software", _ => item.Cert.HasPrivateKey ? "Unknown" : "" });
+            row.SubItems.Add(KeyText(item));
             row.SubItems.Add(item.Cert.NotAfter.ToString("d MMM yyyy", CultureInfo.CurrentCulture));
             row.SubItems.Add(RenewText(item));
             row.SubItems.Add(item.ServerStatus);
-            row.SubItems.Add(string.Join("; ", item.Flags.Concat(item.UsedBy.Select(u => "Used by " + u))));
+            row.SubItems.Add(NotesText(item));
             if (item.ServerStatus == "revoked" || item.Flags.Any(f => f.StartsWith("Expired", StringComparison.Ordinal)))
             {
                 row.ForeColor = Theme.Danger;
@@ -859,6 +1017,7 @@ internal sealed class MainForm : Form
         _list.EndUpdate();
         FitColumns();
         UpdateActions();
+        EnsureListRoom();
     }
 
     private void UpdatePending()
@@ -866,8 +1025,14 @@ internal sealed class MainForm : Form
         int local = Operations.PendingCount();
         int server = _device?.Requests.Count(r => r.Status == "pending") ?? 0;
         int count = Math.Max(local, server);
-        _pendingBar.Visible = count > 0;
-        _pendingLabel.Text = count == 1 ? "1 request is waiting for your admin." : $"{count} requests are waiting for your admin.";
+        int binds = Operations.PendingBindCount();
+        _pendingBar.Visible = count + binds > 0;
+        string what = string.Join(" and ", new[]
+        {
+            count == 0 ? null : count == 1 ? "1 request" : $"{count} requests",
+            binds == 0 ? null : binds == 1 ? "1 bind" : $"{binds} binds",
+        }.OfType<string>());
+        _pendingLabel.Text = $"{what} {(count + binds == 1 ? "is" : "are")} waiting for your admin.";
     }
 
     /// <summary>The root is already trusted where this request installs (machine certs: the computer's store).</summary>
@@ -891,9 +1056,14 @@ internal sealed class MainForm : Form
         int count = _list.SelectedItems.Count;
         _remove.Enabled = !_busy && count > 0;
         _remove.Text = count > 1 ? $"REMOVE {count}" : "REMOVE";
+        int revocable = _list.SelectedItems.Cast<ListViewItem>().Count(r => r.Tag is AuditItem { IsCa: false, FromPal.Revoked: 0 });
+        _revoke.Enabled = !_busy && revocable > 0;
+        _revoke.Text = revocable > 1 ? $"REVOKE {revocable}" : "REVOKE";
+        _crlTip.SetToolTip(_revoke, "Have the server revoke a certificate this PC was issued. It stays on this PC, marked revoked, until you remove it.");
+        _crlTip.SetToolTip(_remove, "Remove from this PC. A certificate this PC was issued is revoked on the server in the same step.");
         _details.Enabled = item is not null;
         _bind.Enabled = !_busy && item is { CanBind: true };
-        _crlTip.SetToolTip(_bind, "Choose what uses this certificate: Remote Desktop, WinRM, an IIS site or a Remote Desktop Services role. Renewing it moves them to the new certificate.");
+        _crlTip.SetToolTip(_bind, "Choose what uses this certificate, or take it out of use: Remote Desktop, WinRM, an IIS site or a Remote Desktop Services role. Your admin decides which are allowed. Renewing it moves them to the new certificate.");
     }
 
     /// <summary>When a certificate this PC was issued can be renewed: "now", "in 245 days", or "" for others.</summary>
@@ -959,7 +1129,7 @@ internal sealed class MainForm : Form
         {
             return;
         }
-        await RunRequestAsync(useCase, dialog.Names, dialog.LifetimeDays, renewOf: null, replace: null, dialog.Bind);
+        await RunRequestAsync(useCase, dialog.Names, dialog.LifetimeDays, renewOf: null, replace: null, dialog.Note);
     }
 
     private async Task RenewAsync()
@@ -984,15 +1154,16 @@ internal sealed class MainForm : Form
     }
 
     private async Task RunRequestAsync(string useCase, Dictionary<string, object> names, int? lifetime, int? renewOf, string? replace,
-        BindRequest? bind = null)
+        string? note = null)
     {
         if (_state is null || !BeginBusy($"Requesting {UseCases.Label(useCase)}…"))
         {
             return;
         }
+        string? bindNext = null;  // the kind of certificate to open Bind… on once the list is fresh
         try
         {
-            var op = new HelperOp { Op = "request", UseCase = useCase, Names = names, LifetimeDays = lifetime, RenewOf = renewOf, ReplaceThumbprint = replace, Bind = bind };
+            var op = new HelperOp { Op = "request", UseCase = useCase, Names = names, LifetimeDays = lifetime, RenewOf = renewOf, ReplaceThumbprint = replace, Note = note };
             OpResult result;
             if (UseCases.IsMachine(useCase))
             {
@@ -1002,14 +1173,14 @@ internal sealed class MainForm : Form
             {
                 try
                 {
-                    result = await Operations.RequestAsync(_state, useCase, names, lifetime, renewOf, replace);
+                    result = await Operations.RequestAsync(_state, useCase, names, lifetime, renewOf, replace, note: note);
                 }
                 catch (DeviceKeyUnavailableException)
                 {
                     result = await Elevation.RunAsync(op);  // this PC's key can't be shared with users: do it elevated
                 }
             }
-            Report(result);
+            bindNext = ReportAndOfferBind(result, useCase, renewOf is not null);
         }
         catch (Exception e) when (e is not OutOfMemoryException)
         {
@@ -1020,6 +1191,46 @@ internal sealed class MainForm : Form
             EndBusy();
         }
         await RefreshAsync();
+        if (bindNext is not null && _items.Where(i => i.CanBind && i.FromPal is { Revoked: 0 } pal && UseCases.FromTemplate(pal.Template) == bindNext)
+                .OrderByDescending(i => i.Cert.NotBefore).FirstOrDefault() is { } installed)
+        {
+            await BindAsync(installed);
+        }
+    }
+
+    /// <summary>
+    /// Say how a request went. A new machine certificate also says what it already does and what
+    /// needs a bind, and offers Bind…; a web server request the This computer certificate already
+    /// covers offers Bind… on that one. Returns the kind of certificate to bind next, or null.
+    /// </summary>
+    private string? ReportAndOfferBind(OpResult result, string useCase, bool renewal)
+    {
+        const string covered = "Already covered. ";
+        if (!result.Ok && result.Message.StartsWith(covered, StringComparison.Ordinal))
+        {
+            SetStatus(result.Message);
+            return MessageBox.Show(this, result.Message[covered.Length..] + "\n\nOpen Bind… for that certificate now?", "Already covered",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes ? UseCases.Computer : null;
+        }
+        if (!result.Ok || result.Status != "issued" || renewal || !UseCases.IsMachine(useCase))
+        {
+            Report(result);  // a renewal keeps the old certificate's binds, so there is nothing to offer
+            return null;
+        }
+        var policy = _device?.Policy ?? new Policy();
+        var roles = BindKeys.All.Where(k => policy.BindMode(k) != "off").Select(BindKeys.Label).ToList();
+        string ready = useCase == UseCases.Computer
+            ? "Works now, with no bind: Wi-Fi, VPN and 802.1X sign-in, and identifying this computer (for example device posture checks)."
+            : "A web server certificate does nothing until it is bound.";
+        SetStatus(result.Message);
+        if (roles.Count == 0)
+        {
+            MessageBox.Show(this, $"{result.Message}\n\n{ready}\n\nYour admin hasn't allowed binding it to anything on this PC.", Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return null;
+        }
+        return MessageBox.Show(this, $"{result.Message}\n\n{ready}\nNeeds a bind first: {string.Join(", ", roles)}.\n\nBind it to one of those now?", Text,
+            MessageBoxButtons.YesNo, MessageBoxIcon.Information, MessageBoxDefaultButton.Button2) == DialogResult.Yes ? useCase : null;
     }
 
     private async Task CollectAsync()
@@ -1046,6 +1257,10 @@ internal sealed class MainForm : Form
                     messages.Add((await Elevation.RunAsync(new HelperOp { Op = "collect", Machine = false })).Message);
                 }
             }
+            if (Operations.PendingBindCount() > 0)
+            {
+                messages.Add((await Elevation.RunAsync(new HelperOp { Op = "collect-binds" })).Message);
+            }
             if (messages.Count == 0)
             {
                 messages.Add("Nothing waiting on this PC.");
@@ -1064,9 +1279,14 @@ internal sealed class MainForm : Form
     }
 
     /// <summary>Remove every selected certificate: the computer's in one elevated pass (one UAC prompt), the user's directly.</summary>
-    private async Task RemoveAsync()
+    /// <summary>
+    /// Remove takes the selected certificates off this PC and, in the same pass, has the server revoke
+    /// the ones this PC was issued: a removed certificate must not stay valid. Revoke
+    /// (<paramref name="revokeOnly"/>) has the server revoke them and leaves them here, marked revoked.
+    /// </summary>
+    private async Task RemoveAsync(bool revokeOnly)
     {
-        var items = SelectedAll;
+        var items = revokeOnly ? SelectedAll.Where(i => !i.IsCa && i.FromPal is { Revoked: 0 }).ToList() : SelectedAll;
         if (items.Count == 0)
         {
             return;
@@ -1076,54 +1296,111 @@ internal sealed class MainForm : Form
         {
             lines.Add($"• …and {items.Count - 12} more");
         }
-        string warning = items.Any(i => i.IsRoot)
-            ? "\n\nThis includes the root CA: this PC will stop trusting every certificate from it." : "";
-        var inUse = items.Where(i => i.UsedBy.Count > 0).ToList();
-        if (inUse.Count > 0)
+        var issuedHere = items.Where(i => !i.IsCa && i.FromPal is { Revoked: 0 }).ToList();
+        string one = items.Count == 1 ? "it" : "them";
+        string question;
+        string warning = "";
+        if (revokeOnly)
         {
-            warning += "\n\nIn use: " + string.Join("; ", inUse.Select(i => $"{i.Names} by {string.Join(", ", i.UsedBy)}")) +
-                ". Without it, whatever uses it has no certificate, and Remote Desktop goes back to its own.";
+            question = items.Count == 1 ? "Revoke this certificate?" : $"Revoke these {items.Count} certificates?";
+            warning = $"\n\nThe server revokes {one}, and nothing that checks revocation trusts {one} again. " +
+                      (items.Count == 1 ? "It stays" : "They stay") + $" on this PC, marked revoked, until you remove {one}. This can't be undone.";
         }
-        string question = items.Count == 1 ? "Remove this certificate?" : $"Remove these {items.Count} certificates?";
+        else
+        {
+            question = items.Count == 1 ? "Remove this certificate?" : $"Remove these {items.Count} certificates?";
+            if (items.Any(i => i.IsRoot))
+            {
+                warning += "\n\nThis includes the root CA: this PC will stop trusting every certificate from it.";
+            }
+            var inUse = items.Where(i => i.UsedBy.Count > 0).ToList();
+            if (inUse.Count > 0)
+            {
+                warning += "\n\nIn use: " + string.Join("; ", inUse.Select(i => $"{i.Names} by {string.Join(", ", i.UsedBy)}")) +
+                    ". Without it, whatever uses it has no certificate, and Remote Desktop goes back to its own.";
+            }
+            if (issuedHere.Count > 0)
+            {
+                warning += "\n\nALSO REVOKED: " + (issuedHere.Count == items.Count
+                        ? (items.Count == 1 ? "this PC was issued this certificate, so it is" : "this PC was issued these certificates, so they are")
+                        : $"{issuedHere.Count} of them were issued to this PC and are") +
+                    " revoked on the server in the same step. This can't be undone: request a new one if you need it again.";
+            }
+        }
         if (MessageBox.Show(this, question + "\n\n" + string.Join("\n", lines) + warning, Text, MessageBoxButtons.OKCancel,
-                MessageBoxIcon.Warning) != DialogResult.OK || !BeginBusy("Removing…"))
+                MessageBoxIcon.Warning) != DialogResult.OK || !BeginBusy(revokeOnly ? "Revoking…" : "Removing…"))
         {
             return;
         }
         try
         {
             var problems = new List<string>();
-            var machine = items.Where(i => i.Location == StoreLocation.LocalMachine).ToList();
-            if (machine.Count > 0)
+            if (!revokeOnly)
             {
-                var result = await Elevation.RunAsync(new HelperOp
+                var machine = items.Where(i => i.Location == StoreLocation.LocalMachine).ToList();
+                if (machine.Count > 0)
                 {
-                    Op = "remove",
-                    Targets = machine.Select(i => new RemoveTarget { Store = i.StoreName, Thumbprint = i.Cert.Thumbprint }).ToList(),
-                });
-                if (!result.Ok)
+                    var result = await Elevation.RunAsync(new HelperOp
+                    {
+                        Op = "remove",
+                        Targets = machine.Select(i => new RemoveTarget { Store = i.StoreName, Thumbprint = i.Cert.Thumbprint }).ToList(),
+                    });
+                    if (!result.Ok)
+                    {
+                        problems.Add(result.Message);
+                    }
+                }
+                foreach (var item in items.Where(i => i.Location == StoreLocation.CurrentUser))
                 {
-                    problems.Add(result.Message);
+                    try
+                    {
+                        Operations.Remove(StoreLocation.CurrentUser, item.StoreName, item.Cert.Thumbprint);
+                    }
+                    catch (Exception e) when (e is System.Security.Cryptography.CryptographicException or UnauthorizedAccessException)
+                    {
+                        problems.Add($"{item.Names}: {Operations.FriendlyMessage(e)}");
+                    }
                 }
             }
-            foreach (var item in items.Where(i => i.Location == StoreLocation.CurrentUser))
+            string did = revokeOnly ? "" : items.Count == 1 ? "Removed from this PC." : $"Removed {items.Count} certificates from this PC.";
+            string revoked = "";
+            string? waiting = null;
+            if (problems.Count == 0 && issuedHere.Count > 0 && _state is not null)
             {
+                // Saved first, so one made while the server can't be reached is still revoked later.
+                PendingRevokes.Add(_state.DeviceId, issuedHere.Select(i => i.Serial));
+                SeenStatus.MarkRevoked(_state.DeviceId, issuedHere.Select(i => i.Serial));  // our own doing: no notice about it later
                 try
                 {
-                    Operations.Remove(StoreLocation.CurrentUser, item.StoreName, item.Cert.Thumbprint);
+                    using var signer = new DeviceSigner(_state);
+                    using var client = _state.Client();  // the LAN first, then the relay if this PC has one
+                    if (await PendingRevokes.FlushAsync(client, signer, _state.DeviceId))
+                    {
+                        revoked = issuedHere.Count == 1 ? " Revoked on the server." : $" {issuedHere.Count} revoked on the server.";
+                    }
+                    else
+                    {
+                        waiting = (did + " The server can't be reached right now, so the revocation is saved and sent the next time " +
+                                   "the Pal reaches it (Refresh, or the next time it opens).").Trim();
+                    }
                 }
-                catch (Exception e) when (e is System.Security.Cryptography.CryptographicException or UnauthorizedAccessException)
+                catch (DeviceKeyUnavailableException e)
                 {
-                    problems.Add($"{item.Names}: {Operations.FriendlyMessage(e)}");
+                    AppLog.Error("Couldn't sign the revocation", e);
+                    waiting = (did + " " + Operations.FriendlyMessage(e) + " The revocation is saved and sent at the next check-in.").Trim();
                 }
             }
             if (problems.Count > 0)
             {
-                Report(OpResult.Failure("Not all removed. " + string.Join("\n", problems)));
+                Report(OpResult.Failure("Not all removed" + (issuedHere.Count > 0 ? ", and nothing was revoked on the server. " : ". ") + string.Join("\n", problems)));
+            }
+            else if (waiting is not null)
+            {
+                Report(OpResult.Failure(waiting));
             }
             else
             {
-                SetStatus(items.Count == 1 ? "Removed." : $"Removed {items.Count} certificates.");
+                SetStatus((did + revoked).Trim());
             }
         }
         catch (Exception e) when (e is not OutOfMemoryException)
@@ -1137,20 +1414,31 @@ internal sealed class MainForm : Form
         await RefreshAsync();
     }
 
-    private async Task BindAsync()
+    /// <summary>Bind… on <paramref name="item"/> (the selected certificate when null): bind it to more roles, or take it out of one.</summary>
+    private async Task BindAsync(AuditItem? item = null)
     {
-        if (Selected is not { CanBind: true } item)
+        item ??= Selected;
+        if (_state is null || item is not { CanBind: true })
         {
             return;
         }
-        using var dialog = new BindDialog(item);
-        if (dialog.ShowDialog(this) != DialogResult.OK || !BeginBusy("Binding…"))
+        // Unreachable server: show every role; the bind itself still asks the server and says so if it can't.
+        using var dialog = new BindDialog(item, _device?.Policy ?? new Policy(), _state.Fqdn,
+            Operations.WaitingBinds(_state.DeviceId)[item.Cert.Thumbprint].ToList());
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+        var op = dialog.RemoveTarget is { } target
+            ? new HelperOp { Op = "unbind", Thumbprint = item.Cert.Thumbprint, Target = target }
+            : new HelperOp { Op = "bind", Thumbprint = item.Cert.Thumbprint, Bind = dialog.Request, Note = dialog.Note };
+        if (!BeginBusy(op.Op == "unbind" ? "Removing the bind… approve the Windows prompt." : "Binding… approve the Windows prompt."))
         {
             return;
         }
         try
         {
-            Report(await Elevation.RunAsync(new HelperOp { Op = "bind", Thumbprint = item.Cert.Thumbprint, Bind = dialog.Request }));
+            Report(await Elevation.RunAsync(op));
         }
         catch (Exception e) when (e is not OutOfMemoryException)
         {
@@ -1312,7 +1600,8 @@ internal sealed class MainForm : Form
         using var rule = new Pen(Theme.Rule);
         e.Graphics.DrawLine(rule, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
         var text = Rectangle.Inflate(e.Bounds, -LogicalToDeviceUnits(6), 0);
-        TextRenderer.DrawText(e.Graphics, e.Header?.Text.ToUpperInvariant(), Theme.MonoSmall, text, Theme.TextDim,
+        string arrow = e.ColumnIndex == _sortColumn ? (_sortDescending ? " \u25BC" : " \u25B2") : "";
+        TextRenderer.DrawText(e.Graphics, e.Header?.Text.ToUpperInvariant() + arrow, Theme.MonoSmall, text, Theme.TextDim,
             TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
     }
 
