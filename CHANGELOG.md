@@ -6,6 +6,22 @@ What changed in each release of Cert Generator and Cert Generator Pal. The [READ
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
 
+### v2.10.0-dev.2 — 2026-10-06
+
+Second pre-release of 2.10: the Pal's **Connectivity panel is split into sections**, the Pal shows **what Windows has cached of a CRL** and can make Windows fetch it again, and each CA's **published CRL lifetime can be shortened**. Also a fix for the Pal **freezing while removing a certificate**. Not for production: none of the Pal's changes have run on a real Windows PC yet.
+
+#### Docker
+- **Published CRL lifetime, per CA.** On the CA page, **Published CRL valid** sets how long each CRL this server publishes is valid: 1, 2, 3, 7 (the default) or 14 days. It applies to the CRL served here and to the CA's Cloudflare Worker, and the CRL is re-signed and republished at once. Clients keep a CRL until it runs out, so this is the longest a revocation can take to reach them. A shorter CRL is re-signed more often (at half its life) and leaves clients without a usable CRL sooner when the server is down. The revoke confirmation states the CA's own lifetime
+- **Pal — Connectivity in sections.** The cert server and the CRL no longer share one list: **Cert server**, **CRL**, **Windows cache** and **This PC** are ruled sections, each with its own links. The profile's CRL is marked **IN USE**
+- **Pal — Windows cache.** One row per CRL address of this CA shows the copy Windows holds for your account: when it was issued, how many certificates it revokes and until when Windows uses it, marked **BEHIND** when the server has published a newer one. **Clear cached CRLs** deletes your account's copies of this CA's CRLs; **Force re-check now** makes every account, service and running program fetch again what it cached before now, and asks for administrator approval
+- **Pal — How Windows checks.** A guide window: when Windows looks at a CRL, how long it keeps a copy, what happens to a revoked certificate once the copy runs out, and whether a program can ask early. Its timings use the CA's own CRL lifetime
+- **Changed:** the **No revocation checks** profile is **No CRL**, and the profile list reads **CRL: Cloudflare Worker** and so on, so a CRL profile no longer reads as a server
+- **Fix:** removing a certificate could freeze the Pal until it was force closed. Deleting the certificate and its key, signing the revocation and waiting for the Windows administrator prompt all ran on the window's own thread; they now run in the background, and the status line says when a Windows prompt is waiting
+
+#### Internal
+- `POST /api/ca/<id>/crl/lifetime` (`days`: 1, 2, 3, 7 or 14; 423 while locked); `crl_days`, `crl_maintained` and `crl_days_choices` on `GET /api/ca/<id>`; a `crl_days` column that backups carry. A CRL is renewed at half of its own validity
+- Pal: `WindowsCrlCache` reads the cache with `CryptRetrieveObjectByUrl` (cache only), clears with `certutil -urlcache <address> delete`, and the elevated helper gains `crl-resync` (`certutil -setreg chain\ChainCacheResyncFiletime @now`). `Elevation.RunAsync` never runs on the caller's thread
+
 ### v2.10.0-dev.1 — 2026-10-06
 
 First pre-release of 2.10: **a certificate with no CRL can't be revoked**, CRL profiles can be **changed on a connected PC**, and the Pal can **show a CRL** and ask the server to **publish it now**. Not for production: none of the Pal's changes have run on a real Windows PC yet.

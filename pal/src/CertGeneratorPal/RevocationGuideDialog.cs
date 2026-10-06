@@ -21,17 +21,6 @@ internal sealed class RevocationGuideDialog : Form
     /// <param name="crlDays">How long this CA's published CRL is valid (read from the CRL itself); 7, the server's default, when unknown.</param>
     public RevocationGuideDialog(int crlDays = 7)
     {
-        string life = Days(crlDays);
-        (string What, string When)[] timings =
-        [
-            ("You revoke a certificate", "new CRL published at once"),
-            ("How long one CRL is good for", $"{life} (Issued → Next update)"),
-            ("Server re-signs with nothing revoked", $"when {Half(crlDays)} are left".Replace("1 day are", "1 day is", StringComparison.Ordinal)),
-            ("PC with a cached CRL notices", $"when its copy runs out: up to {life}"),
-            ("PC with nothing cached notices", "at the next check"),
-            ("Windows waits for a CRL address", "15 seconds"),
-            ("Copy ran out and no new CRL can be fetched", "the program decides: many carry on, some warn or refuse"),
-        ];
         SuspendLayout();
         AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -43,6 +32,28 @@ internal sealed class RevocationGuideDialog : Form
         MinimizeBox = false;
         SizeGripStyle = SizeGripStyle.Show;
 
+        AddOverview(Days(crlDays));
+        AddHowWindowsChecks();
+        AddTimings(crlDays);
+        AddTesting();
+
+        _scroll.Controls.Add(_layout);
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(12, 8, 12, 12) };
+        var close = new Button { Text = "Close", AutoSize = true };
+        close.Click += (_, _) => Close();
+        buttons.Controls.Add(close);
+        Controls.Add(_scroll);
+        Controls.Add(buttons);
+        CancelButton = close;
+        Theme.Apply(this);
+        Resize += (_, _) => FitWidth();
+        ResumeLayout(false);
+        PerformLayout();
+        FitWidth();
+    }
+
+    private void AddOverview(string life)
+    {
         _layout.Controls.Add(new Label { Text = "How Windows checks revocation", AutoSize = true, Font = Theme.Heading, Margin = new Padding(0, 0, 0, 6) });
         Wide(new Panel { Height = 2, BackColor = Theme.Rule, Margin = new Padding(0, 0, 0, 12) });
 
@@ -64,7 +75,10 @@ internal sealed class RevocationGuideDialog : Form
              "it, so a revoked certificate keeps working wherever the CRL can't be fetched.");
         Para("The wait happens on the machine doing the checking. For a certificate this PC presents to a server, it is the " +
              "server's cached copy that has to run out, not this PC's.");
+    }
 
+    private void AddHowWindowsChecks()
+    {
         Section("When Windows looks at a CRL");
         Para("Only when a program asks Windows to verify a certificate with revocation checking. Nothing checks in the background.");
         Para("•  Checks: Remote Desktop, a web or VPN server checking this PC's certificate, smart card sign-in, certutil -verify -urlfetch.");
@@ -73,7 +87,22 @@ internal sealed class RevocationGuideDialog : Form
         Section("Where it gets the CRL");
         Para("From the address written into the certificate when it was issued. That address comes from the CRL profile in use at the " +
              "time; switching profile later doesn't change certificates already issued.");
+    }
 
+    /// <summary>The timings ledger. The lifetime is the CA's own: the server re-signs at half of it (app/crl_publisher.py).</summary>
+    private void AddTimings(int crlDays)
+    {
+        string life = Days(crlDays);
+        (string What, string When)[] timings =
+        [
+            ("You revoke a certificate", "new CRL published at once"),
+            ("How long one CRL is good for", $"{life} (Issued → Next update)"),
+            ("Server re-signs with nothing revoked", $"when {Half(crlDays)} are left".Replace("1 day are", "1 day is", StringComparison.Ordinal)),
+            ("PC with a cached CRL notices", $"when its copy runs out: up to {life}"),
+            ("PC with nothing cached notices", "at the next check"),
+            ("Windows waits for a CRL address", "15 seconds"),
+            ("Copy ran out and no new CRL can be fetched", "the program decides: many carry on, some warn or refuse"),
+        ];
         Section("Timings");
         var ledger = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Margin = new Padding(0, 0, 0, 4) };
         foreach (var (what, when) in timings)
@@ -86,7 +115,10 @@ internal sealed class RevocationGuideDialog : Form
             _half.Add(value);
         }
         _layout.Controls.Add(ledger);
+    }
 
+    private void AddTesting()
+    {
         Section("Can a program ask early?");
         Para("Yes, if it was written to. When a program asks Windows to verify a certificate it can set a maximum age for the CRL, " +
              "and Windows then fetches a newer one even though the cached copy hasn't run out. It can also download the CRL itself.");
@@ -102,20 +134,6 @@ internal sealed class RevocationGuideDialog : Form
         Para("•  Clear cached CRLs deletes your account's copies of this CA's CRLs.");
         Para("•  Force re-check now tells every account, service and running program to stop trusting anything cached before this moment.");
         Para("•  Then check a certificate: certutil -verify -urlfetch cert.cer says REVOKED once Windows has the new CRL.");
-
-        _scroll.Controls.Add(_layout);
-        var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(12, 8, 12, 12) };
-        var close = new Button { Text = "Close", AutoSize = true };
-        close.Click += (_, _) => Close();
-        buttons.Controls.Add(close);
-        Controls.Add(_scroll);
-        Controls.Add(buttons);
-        CancelButton = close;
-        Theme.Apply(this);
-        Resize += (_, _) => FitWidth();
-        ResumeLayout(false);
-        PerformLayout();
-        FitWidth();
     }
 
     private void Section(string title)
