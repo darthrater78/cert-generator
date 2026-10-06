@@ -687,6 +687,12 @@ def generate_crl(
     return crl.public_bytes(serialization.Encoding.DER)
 
 
+def crl_validity(crl_der: bytes) -> tuple[datetime, datetime]:
+    """When a DER CRL was issued and when it runs out (UTC)."""
+    crl = x509.load_der_x509_crl(crl_der)
+    return crl.last_update_utc, crl.next_update_utc
+
+
 def crl_next_update(crl_der: bytes) -> str:
     """The CRL's nextUpdate as an ISO 8601 UTC timestamp."""
     crl = x509.load_der_x509_crl(crl_der)

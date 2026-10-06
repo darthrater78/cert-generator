@@ -51,4 +51,14 @@ public class CrlListTests
         Assert.Null(CrlList.Parse("<html>not found</html>"u8.ToArray()));
         Assert.Null(CrlList.Parse([]));
     }
+
+    [Fact]
+    public void ACopyIsBehindOnlyWhenTheLiveCrlIsNewer()
+    {
+        var at = new DateTimeOffset(2026, 10, 6, 9, 12, 0, TimeSpan.Zero);
+        var cached = new CrlList("CN=Test CA", at, at.AddDays(7), []);
+        Assert.True(cached.IsBehind(cached with { ThisUpdate = at.AddHours(6) }));
+        Assert.False(cached.IsBehind(cached));
+        Assert.False(cached.IsBehind(cached with { ThisUpdate = at.AddHours(-1) }));
+    }
 }

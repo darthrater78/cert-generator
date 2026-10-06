@@ -342,6 +342,11 @@ async function selectCA(caId) {
       ? '<span class="badge badge-expired">Expired</span>'
       : '<span class="badge badge-active">Active</span>');
 
+  const publishedDays = document.getElementById('publishedCrlDays');
+  publishedDays.innerHTML = (ca.crl_days_choices || []).map(d =>
+    '<option value="' + d + '"' + (d === ca.crl_days ? ' selected' : '') + '>Published CRL valid ' + d + (d === 1 ? ' day' : ' days') + '</option>').join('');
+  document.getElementById('publishedCrlRow').classList.toggle('hidden', !(SERVER_MODE && ca.crl_maintained));
+
   updateCaPasswordVisibility();
   renderCloudflarePanel(ca);
   loadCerts(caId);
@@ -888,6 +893,13 @@ async function revokeCert(certId) {
   } else if (confirm('Certificate revoked. ' + result.note + '\n\nDownload the updated CRL now?')) {
     await exportCRL();
   }
+}
+
+async function setPublishedCrlDays(_arg, el) {
+  const days = Number(el.value);
+  const res = await api('/api/ca/' + currentCAId + '/crl/lifetime', { method: 'POST', body: JSON.stringify({ days }) });
+  if (res.ok) toast('Published CRL re-signed: valid ' + days + (days === 1 ? ' day' : ' days'));
+  await selectCA(currentCAId);
 }
 
 function servedCrlBadge(nextUpdate) {
@@ -3561,6 +3573,7 @@ const UI_ACTIONS = new Set([
   'showSSHGuideTab',
   'setImportOs',
   'setImportTrusted',
+  'setPublishedCrlDays',
   'showUnlockRecovery',
   'submitReauth',
   'setAccent',

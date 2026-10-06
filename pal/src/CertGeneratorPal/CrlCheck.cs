@@ -8,7 +8,8 @@ namespace CertGeneratorPal;
 /// <summary>Does a revocation (CRL) address answer, and with what? For the status rows and their Test links.</summary>
 internal static class CrlCheck
 {
-    public sealed record Result(bool Ok, string Summary, string Detail);
+    /// <param name="Crl">The CRL the address answered with, when it did.</param>
+    public sealed record Result(bool Ok, string Summary, string Detail, CrlList? Crl = null);
 
     /// <param name="onThisPc">The endpoint-hosted address: it must be answered by this PC's own listener, not the network.</param>
     public static async Task<Result> TestAsync(string url, bool onThisPc)
@@ -46,10 +47,11 @@ internal static class CrlCheck
                     : $"The address answered {code} {response.ReasonPhrase}.";
                 return new(false, summary, $"{url}\n\n{why}\nTime: {timing}");
             }
-            string? about = Describe(body);
+            var crl = CrlList.Parse(body);
+            string? about = crl is null ? null : Describe(crl);
             return new(about is not null, about is not null ? $"Reachable · {timing}" : "Answers, but not with a CRL",
                 $"{url}\n\nHTTP {(int)response.StatusCode} · {body.Length.ToString("N0", CultureInfo.CurrentCulture)} bytes · {timing}\n" +
-                (about ?? "The reply isn't a CRL Windows can read."));
+                (about ?? "The reply isn't a CRL Windows can read."), crl);
         }
         catch (TaskCanceledException)
         {
@@ -76,13 +78,9 @@ internal static class CrlCheck
 
     public static string Date(DateTimeOffset t) => t.ToLocalTime().ToString("d MMM yyyy HH:mm", CultureInfo.CurrentCulture);
 
-    /// <summary>This update, next update and the number of revoked serials, read from a DER CRL.</summary>
-    private static string? Describe(byte[] der)
+    /// <summary>This update, next update and the number of revoked serials.</summary>
+    private static string Describe(CrlList crl)
     {
-        if (CrlList.Parse(der) is not { } crl)
-        {
-            return null;
-        }
         string next = crl.NextUpdate is { } n ? $"Next update: {Date(n)}{(crl.Stale ? "  (STALE: Windows rejects it)" : "")}" : "Next update: none";
         return $"Valid CRL. Issued {Date(crl.ThisUpdate)}\n{next}\nRevoked certificates: {crl.Revoked.Count.ToString(CultureInfo.CurrentCulture)}";
     }

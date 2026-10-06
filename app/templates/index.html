@@ -199,6 +199,10 @@
           <h3>Particulars</h3>
           <div class="ca-info-grid" id="caInfo"></div>
           <h4 class="card-subhead">Revocation list (CRL)</h4>
+          <div class="export-section hidden" id="publishedCrlRow">
+            <select id="publishedCrlDays" data-change="setPublishedCrlDays" title="How long each CRL this server publishes for this CA is valid. Clients keep a CRL until it runs out, so this is the longest a revocation can take to reach them. A shorter one is re-signed more often, and leaves clients without a usable CRL sooner if this server is down."></select>
+            <span class="dim">A revocation reaches clients within this time. Re-signed at half of it.</span>
+          </div>
           <div class="export-section">
             <select id="crlLifetime" title="How long the CRL stays valid. Endpoints treat revocation data as stale after this, so re-export and re-import before it expires.">
               <option value="7">CRL valid 7 days</option>

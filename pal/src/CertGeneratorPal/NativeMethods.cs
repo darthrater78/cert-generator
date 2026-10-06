@@ -22,6 +22,15 @@ internal static partial class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool CertGetCertificateContextProperty(IntPtr pCertContext, uint dwPropId, IntPtr pvData, ref uint pcbData);
 
+    [LibraryImport("cryptnet.dll", EntryPoint = "CryptRetrieveObjectByUrlW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool CryptRetrieveObjectByUrl(string pszUrl, IntPtr pszObjectOid, uint dwRetrievalFlags, uint dwTimeout,
+        out IntPtr ppvObject, IntPtr hAsyncRetrieve, IntPtr pCredentials, IntPtr pvVerify, IntPtr pAuxInfo);
+
+    [LibraryImport("crypt32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool CertFreeCRLContext(IntPtr pCrlContext);
+
     [LibraryImport("secur32.dll", EntryPoint = "GetUserNameExW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool GetUserNameEx(int nameFormat, [Out] char[] lpNameBuffer, ref uint nSize);

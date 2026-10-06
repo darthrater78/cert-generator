@@ -102,9 +102,16 @@ Disconnect, Delete) and the pairing codes (unused / used / expired / revoked).
    server), and *Installed by Pal* or *Found*. Actions: **Renew** (Pal-issued; the
    button counts down to when renewal opens), **Details** (full certificate view),
    **Remove**. (*Replace* for found certificates is not built.) See §4 "Store audit".
-5. **Connectivity:** the cert server over the LAN and through the relay, and the
-   CRL of the profile in use, each with a status and **Test**; **Refresh**, and
-   **Log** with a debug-logging switch. The CRL profile locks while the server
+5. **Connectivity**, in four ruled sections: **Cert server** (Direct, and Remote
+   through the relay), **CRL** (the profile's CRL marked IN USE, then the other
+   published ones), **Windows cache** (the copy of each CRL this account's Windows
+   cache holds, read with `CryptRetrieveObjectByUrl` cache-only, BEHIND or CURRENT
+   against the live CRL, and `ChainCacheResyncFiletime`) and **This PC** (key
+   storage). Each section carries its own links: **Connect to remote**;
+   **Publish CRL now**; **Clear cached CRLs** (`certutil -urlcache <address> delete`
+   for this CA's addresses only, unelevated), **Force re-check now** (helper op
+   `crl-resync`: `certutil -setreg chain\ChainCacheResyncFiletime @now`) and
+   **How Windows checks** (a non-modal guide); **Refresh all** and **Log**. The CRL profile locks while the server
    can't be reached.
 
 Footer on every screen: version · GitHub · release notes.
@@ -598,7 +605,7 @@ outer signature; a time outside ±5 min; an inner path outside `/api/pal/v1/`; a
   retried); **Connect to remote** forces the relay for the session. Relay details
   come from the MACed enroll reply or a LAN `GET device` (kept per user in
   `%LOCALAPPDATA%\CertGeneratorPal\relay-<device>.json`), never from an answer
-  that came through the relay. Connectivity shows Cert server · Direct and · Remote.
+  that came through the relay. Connectivity shows Direct and Remote under Cert server.
 
 ### Server side
 

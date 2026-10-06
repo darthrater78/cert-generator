@@ -129,7 +129,7 @@ Everything in the release: **[CHANGELOG.md](CHANGELOG.md)**.
 
 - **Revoke certificates** to mark them as no longer trusted
 - **CRL distribution point**, chosen per certificate. Details in [Revocation lists (CRL)](#revocation-lists-crl):
-  - **this server** (`<address>/crl/<CA id>.crl`, answered without sign-in): a 7-day CRL, re-signed on every revocation and renewed before it runs out
+  - **this server** (`<address>/crl/<CA id>.crl`, answered without sign-in): a 7-day CRL (1 to 14 days, set per CA), re-signed on every revocation and renewed before it runs out
   - a **Cloudflare Worker** per CA, set up from the app: **Deploy**, **Test**, **Publish now**, **View live CRL**, **Delete Worker**
   - **endpoint-hosted** (`http://pki.<domain>/crl/<CA>.crl`, which no server answers): each machine gets the CRL from the install .zip or an import
 - **Exported CRLs** stay valid as long as you choose (7 days to 10 years); the CA page shows the published CRL and the exported one separately
@@ -393,6 +393,9 @@ Only what the pairing code allows appears. The CA chain is checked before every 
 | **Revoke** | Has the server revoke it and leaves it on the PC, marked revoked. Unavailable for a certificate that names no CRL |
 | **View** (on a CRL row) | Shows the CRL that address serves now: issuer, dates and every revoked serial, marking the ones on this PC |
 | **Publish CRL now** | Asks the server to sign its CRL again and publish it, here and to its Cloudflare Worker |
+| **Clear cached CRLs** | Deletes your Windows account's cached copies of this CA's CRLs, so Windows fetches them again at the next check. For testing a revocation |
+| **Force re-check now** | Makes every account, service and running program fetch again what it cached before now (`ChainCacheResyncFiletime`). Asks for administrator approval |
+| **How Windows checks** | A guide to how Windows handles a CRL: when it looks, how long it keeps a copy, and what happens when the copy runs out |
 | **Details** | The full certificate: every field and extension, the chain, and where the key lives |
 | **Refresh** | Re-checks the server, the CRL and the list |
 | **Disconnect this PC** | Removes the pairing and every certificate it installed |
@@ -416,7 +419,7 @@ Only what the pairing code allows appears. The CA chain is checked before every 
 <summary><b>CRL profiles, connectivity and the log</b></summary>
 
 - **CRL profiles:** switching profile backs out the current one first (its certificates leave the PC); the root CA stays trusted. **Endpoint-hosted** adds a small listener on the PC that answers its own revocation checks, for laptops away from the LAN. The profile is locked while the server can't be reached.
-- **Connectivity** shows the cert server (**Direct**, and **Remote** through the relay when the PC has one) and the CRL of the profile in use, each with a coloured status and **Test**; CRL rows also have **View**.
+- **Connectivity** is four ruled sections. **Cert server** shows **Direct**, and **Remote** through the relay when the PC has one. **CRL** shows the profile's CRL, marked **IN USE**, and the other CRLs the server publishes (a **No CRL** profile says its certificates can't be revoked). **Windows cache** shows the copy of each CRL that Windows itself holds for your account (**BEHIND** when the server has published a newer one, **CURRENT** when it matches) and when a re-check was last forced. **This PC** shows where keys are stored. Each row has a coloured status and **Test**; CRL rows also have **View**.
 - **Key storage** says whether the keys the Pal makes on this PC live in its **TPM** or in Windows' software key store. The list's **Key** column says the same for each certificate.
 - **Log** shows the Pal's log, with a **Debug logging** switch (every request and check; never keys or pairing codes).
 - **Files:** pairings in `C:\ProgramData\CertGeneratorPal` (written only with administrator approval); the log in `%LOCALAPPDATA%\CertGeneratorPal\pal.log`.
@@ -458,7 +461,7 @@ A PC allowed remote access keeps requesting and renewing when it isn't on your L
 1. Turn on **database encryption** and connect **Cloudflare** (**Tools › Cloudflare**) if you haven't: the relay's keys are only ever stored encrypted.
 2. On **Windows PCs › Remote connection**, choose **Set up remote connection**. It deploys a relay Worker on your `workers.dev` subdomain and the server starts collecting from it. **Check now** shows the server collecting within a minute.
 3. **Allow** remote access for a PC on its card (or tick **Allow remote connection** when you make its pairing code).
-4. The PC learns the relay the next time it checks in **on the LAN**. From then on, when the LAN can't be reached, each request goes through the relay instead. In the Pal, **Cert server · Remote** shows the relay, and **Connect to remote** uses only the relay for the session (to test it).
+4. The PC learns the relay the next time it checks in **on the LAN**. From then on, when the LAN can't be reached, each request goes through the relay instead. In the Pal, **Remote** under **Cert server** shows the relay, and **Connect to remote** uses only the relay for the session (to test it).
 
 **What Cloudflare can and can't see**
 
@@ -501,6 +504,7 @@ Certificates issued with the **Cert Generator (Direct)** distribution point name
 - **The app signs the CRL itself**, the first time a certificate names this server. Nothing is signed per request.
 - **It stays current:** each served CRL is valid for 7 days, is re-signed on every revocation, and an hourly check renews it when less than half its life is left.
 - **A revocation reaches clients within 7 days**, because they cache a CRL until its next update.
+- **To shorten that,** set **Published CRL valid** on the CA page to 1, 2, 3, 7 or 14 days. It applies to the CRL this server serves and to the CA's Cloudflare Worker, and the CRL is re-signed at once. A shorter CRL is the only thing that shortens the wait for every client; the cost is that clients have no usable CRL sooner when the server or Worker is down (after about half the lifetime).
 
 With an encrypted database, signing needs the CA key, so revoking a certificate of a CA served here is refused while the database is locked, and renewals wait until it is unlocked (the served CRL keeps answering meanwhile). **Export CRL** is for the endpoint-hosted distribution point and offline import: it downloads a CRL with the lifetime you choose and never replaces the one this server serves. After you revoke a certificate whose CRL is endpoint-hosted, the app offers that updated CRL for download. A certificate issued with no CRL distribution point can't be revoked: nothing would check, so **Revoke** is unavailable for it and a disconnected PC's copies are left as they are.
 
@@ -550,7 +554,7 @@ For clients that can't reach this server, each CA can publish its CRL from its o
 
 **3. Test.** **Test** fetches the CRL from the Worker over plain HTTP and HTTPS, from this server, and checks that it parses, is signed by the CA, is current and matches what the app last pushed. It recommends the address to put in certificates: plain HTTP with no redirect where that works, since Windows and most clients fetch CRLs over HTTP. **View live CRL** opens the CRL the Worker is serving in the CRL viewer, and **Copy** gives the address for your own testing (`certutil -url`, `openssl crl`).
 
-**Keeping it current.** The CRL is built into the Worker, so publishing is a redeploy. Revoking a certificate asks to confirm and pushes the new CRL; the hourly renewal re-signs and pushes it before it runs out (7-day CRLs, renewed at half-life); **Publish now** does it by hand. A failed push shows **not published** on the CA page and in the log, and is retried hourly. **Refresh** re-reads the Worker and checks it still exists in Cloudflare.
+**Keeping it current.** The CRL is built into the Worker, so publishing is a redeploy. Revoking a certificate asks to confirm and pushes the new CRL; the hourly renewal re-signs and pushes it before it runs out (7-day CRLs unless the CA is set otherwise, renewed at half-life); **Publish now** does it by hand. A failed push shows **not published** on the CA page and in the log, and is retried hourly. **Refresh** re-reads the Worker and checks it still exists in Cloudflare.
 
 **Cleaning up**
 

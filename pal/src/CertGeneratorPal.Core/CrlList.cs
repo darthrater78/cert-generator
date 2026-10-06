@@ -11,6 +11,9 @@ public sealed record CrlList(string Issuer, DateTimeOffset ThisUpdate, DateTimeO
 {
     public bool Stale => NextUpdate is { } next && next < DateTimeOffset.UtcNow;
 
+    /// <summary>Is this copy older than <paramref name="live"/>, the CRL its address serves now?</summary>
+    public bool IsBehind(CrlList live) => live is not null && live.ThisUpdate > ThisUpdate;
+
     /// <summary>The CRL, or null when the bytes aren't one.</summary>
     public static CrlList? Parse(byte[] der)
     {

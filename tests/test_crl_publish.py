@@ -355,3 +355,29 @@ def test_crl_viewer_needs_sign_in_and_a_real_ca(admin_client, fresh_app):
     ca_id, _ = _served_ca(admin_client)
     assert fresh_app.test_client().get(f"/api/ca/{ca_id}/crl/view").status_code == 401
     assert admin_client.get("/api/ca/9999/crl/view").status_code == 404
+
+
+def test_published_crl_lifetime_is_set_per_ca_and_resigns_at_once(admin_client, fresh_app):
+    ca_id, _ = _served_ca(admin_client)
+    anon = fresh_app.test_client()
+    ca = admin_client.get(f"/api/ca/{ca_id}").get_json()
+    assert ca["crl_days"] == crl_publisher.PUBLISHED_CRL_DAYS and ca["crl_maintained"] is True
+    assert ca["crl_days_choices"] == list(crl_publisher.CRL_DAYS_CHOICES)
+
+    resp = admin_client.post(f"/api/ca/{ca_id}/crl/lifetime", json={"days": 1})
+    assert resp.status_code == 200 and resp.get_json()["days"] == 1
+    crl = _served(anon, ca_id)
+    assert crl.next_update_utc - crl.last_update_utc == timedelta(days=1)
+    assert admin_client.get(f"/api/ca/{ca_id}").get_json()["crl_days"] == 1
+
+    # renewed at half of its own life: 12 hours for a 1-day CRL
+    assert crl_publisher.renew_due(crl.last_update_utc + timedelta(hours=11)) == []
+    assert crl_publisher.renew_due(crl.last_update_utc + timedelta(hours=12, minutes=1)) == [ca_id]
+
+
+def test_published_crl_lifetime_refuses_other_values(admin_client):
+    ca_id, _ = _served_ca(admin_client)
+    for days in (0, 5, 30, -1, "7", 7.0, True, None):
+        assert admin_client.post(f"/api/ca/{ca_id}/crl/lifetime", json={"days": days}).status_code == 400
+    assert admin_client.post("/api/ca/9999/crl/lifetime", json={"days": 2}).status_code == 404
+    assert admin_client.get(f"/api/ca/{ca_id}").get_json()["crl_days"] == crl_publisher.PUBLISHED_CRL_DAYS

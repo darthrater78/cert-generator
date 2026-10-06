@@ -177,6 +177,8 @@ def get_ca(ca_id: int):
     safe["cloudflare"] = None if state.desktop_mode() else crl_worker.status(ca_id)
     safe["crl_published"] = ca.get("crl_der") is not None
     safe["crl_served"] = _crl_served(ca)
+    safe["crl_maintained"] = bool(ca.get("crl_public") or ca.get("cf_worker"))
+    safe["crl_days_choices"] = list(crl_publisher.CRL_DAYS_CHOICES)
     safe["crl_served_next_update"] = crypto_engine.crl_next_update(ca["crl_der"]) if safe["crl_served"] else None
     safe["child_cas"] = db.list_child_cas(ca_id)
     safe["is_root"] = ca.get("parent_ca_id") is None
@@ -191,6 +193,26 @@ def _descendant_ids(ca_id: int) -> list[int]:
         ids.append(current)
         pending.extend(child["id"] for child in db.list_child_cas(current) if child["id"] not in ids)
     return ids
+
+
+@bp.post("/api/ca/<int:ca_id>/crl/lifetime")
+def set_published_crl_lifetime(ca_id: int):
+    """How long each CRL the app publishes for this CA is valid. Takes effect at once: the
+    CRL is re-signed (and pushed to the CA's Worker); clients finish out the copy they hold."""
+    days = json_body().get("days")
+    if not isinstance(days, int) or isinstance(days, bool) or days not in crl_publisher.CRL_DAYS_CHOICES:
+        return error("Choose " + ", ".join(str(d) for d in crl_publisher.CRL_DAYS_CHOICES[:-1])
+                     + f" or {crl_publisher.CRL_DAYS_CHOICES[-1]} days", 400)
+    ca = db.get_ca_summary(ca_id)
+    if not ca:
+        return error("CA not found", 404)
+    maintained = bool(ca.get("crl_public") or ca.get("cf_worker"))
+    if maintained:
+        db.require_unlocked()  # re-signing needs the CA key: fail before changing the setting
+    db.set_crl_days(ca_id, days)
+    log.info("Published CRL lifetime for CA %s set to %d day(s)", ca["name"], days)
+    next_update = crl_publisher.publish(ca_id) if maintained else None
+    return jsonify({"ok": True, "days": days, "next_update": next_update})
 
 
 @bp.delete("/api/ca/<int:ca_id>")
@@ -461,15 +483,17 @@ def get_cert_crl_status(cert_id: int):
     })
 
 
-_REVOKE_NOTES = {
-    "server": "This server now serves an updated CRL. Clients see the revocation when their cached "
-              f"copy expires, within {crl_publisher.PUBLISHED_CRL_DAYS} days.",
-    "cloudflare": "The updated CRL was published to this CA's Cloudflare Worker. Clients see the revocation "
-                  f"when their cached copy expires, within {crl_publisher.PUBLISHED_CRL_DAYS} days.",
-    "placeholder": "Its CRL is endpoint-hosted, so a machine only sees the revocation once it gets the updated CRL: "
-                   "run a new install .zip from Export / install, or import the CRL by hand.",
-    "other": "Its CRL distribution point is an address this app doesn't manage. Publish an updated CRL there.",
-}
+def _revoke_note(kind: str, days: int) -> str:
+    within = "within a day" if days == 1 else f"within {days} days"
+    return {
+        "server": "This server now serves an updated CRL. Clients see the revocation when their cached "
+                  f"copy expires, {within}.",
+        "cloudflare": "The updated CRL was published to this CA's Cloudflare Worker. Clients see the revocation "
+                      f"when their cached copy expires, {within}.",
+        "placeholder": "Its CRL is endpoint-hosted, so a machine only sees the revocation once it gets the updated CRL: "
+                       "run a new install .zip from Export / install, or import the CRL by hand.",
+        "other": "Its CRL distribution point is an address this app doesn't manage. Publish an updated CRL there.",
+    }[kind]
 
 
 @bp.get("/api/ca/<int:ca_id>/crl/view")
@@ -532,7 +556,7 @@ def revoke_cert(cert_id: int):
     crl_publisher.publish(ca["id"])  # also pushes to the CA's Worker, if it has one
     kind = crl_dp_kind(cert.get("crl_dp_url"), ca)
     worker = db.get_ca_worker(ca["id"])
-    result: dict[str, Any] = {"ok": True, "crl_dp": kind, "note": _REVOKE_NOTES[kind],
+    result: dict[str, Any] = {"ok": True, "crl_dp": kind, "note": _revoke_note(kind, ca.get("crl_days") or crl_publisher.PUBLISHED_CRL_DAYS),
                               "download_crl": kind not in ("server", "cloudflare")}
     if worker is not None:
         result["cloudflare"] = {"pushed": not worker["cf_push_error"], "error": worker["cf_push_error"]}

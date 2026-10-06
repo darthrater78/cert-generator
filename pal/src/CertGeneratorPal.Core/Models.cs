@@ -54,7 +54,7 @@ public static class CrlTypes
         "server" => "Cert Generator (Direct)",
         "cloudflare" => "Cloudflare Worker",
         "placeholder" => "Endpoint-hosted (on this PC)",
-        "none" => "No revocation checks",
+        "none" => "No CRL",
         _ => crlDp,
     };
 }

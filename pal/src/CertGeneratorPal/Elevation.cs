@@ -51,7 +51,13 @@ internal static class Elevation
         }
     }
 
-    public static async Task<OpResult> RunAsync(HelperOp op)
+    /// <summary>
+    /// Run <paramref name="op"/> with administrator rights. Never on the caller's thread: Windows holds the
+    /// thread that asks for elevation until the prompt is answered, and store or TPM work can take a while.
+    /// </summary>
+    public static Task<OpResult> RunAsync(HelperOp op) => Task.Run(() => RunOffThreadAsync(op));
+
+    private static async Task<OpResult> RunOffThreadAsync(HelperOp op)
     {
         if (IsElevated)
         {
@@ -146,6 +152,8 @@ internal static class Elevation
                     return await Operations.InstallLocalCrlAsync(RequireState()).ConfigureAwait(false);
                 case "crl-remove":
                     return LocalCrlServer.Remove();
+                case "crl-resync":
+                    return WindowsCrlCache.ForceResync();
                 case "switch" when op.DeviceId is { Length: 32 } && op.CrlDp is not null:
                     return await Operations.SwitchAsync(op.DeviceId, op.CrlDp).ConfigureAwait(false);
                 case "remove-profile" when op.DeviceId is { Length: 32 }:
