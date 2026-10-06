@@ -598,6 +598,28 @@ internal sealed class MainForm : Form
         {
             AddStatusRow(row++, "Cert server · Remote", relayInfo.Url, _remoteCheck, async () => await TestServerAsync(PalRoute.Relay));
         }
+        row = AddCrlRows(row);
+        if (_deviceKeyStorage is { } keyStorage)
+        {
+            bool tpm = keyStorage == "tpm";
+            AddStatusRow(row++, "Key storage", null, new CrlCheck.Result(tpm,
+                tpm ? "TPM  ·  keys the Pal makes can't be exported or copied off this PC"
+                    : "Software key store  ·  this PC has no usable TPM; keys are non-exportable, but an administrator here can extract them", ""),
+                null, neutral: !tpm);
+        }
+        _crlPanel.RowCount = row;
+        _crlPanel.Visible = true;
+        _crlPanel.ResumeLayout();
+        UpdateProfileLock();
+    }
+
+    /// <summary>The CRL profile in use, then the CRLs this server and its Cloudflare Worker publish; the next free row.</summary>
+    private int AddCrlRows(int row)
+    {
+        if (_state is null)
+        {
+            return row;
+        }
         if (_state.CrlDp.Length > 0)
         {
             string type = _state.CrlDp;
@@ -636,18 +658,7 @@ internal sealed class MainForm : Form
                 AddViewLink(row++, type, url);
             }
         }
-        if (_deviceKeyStorage is { } keyStorage)
-        {
-            bool tpm = keyStorage == "tpm";
-            AddStatusRow(row++, "Key storage", null, new CrlCheck.Result(tpm,
-                tpm ? "TPM  ·  keys the Pal makes can't be exported or copied off this PC"
-                    : "Software key store  ·  this PC has no usable TPM; keys are non-exportable, but an administrator here can extract them", ""),
-                null, neutral: !tpm);
-        }
-        _crlPanel.RowCount = row;
-        _crlPanel.Visible = true;
-        _crlPanel.ResumeLayout();
-        UpdateProfileLock();
+        return row;
     }
 
     private void AddStatusRow(int row, string label, string? url, CrlCheck.Result? result, Func<Task>? test, bool neutral = false)
@@ -1390,21 +1401,14 @@ internal sealed class MainForm : Form
     /// the ones this PC was issued: a removed certificate must not stay valid. Revoke
     /// (<paramref name="revokeOnly"/>) has the server revoke them and leaves them here, marked revoked.
     /// </summary>
-    private async Task RemoveAsync(bool revokeOnly)
+    /// <summary>The confirmation for Remove or Revoke: what goes, what still uses it, and what the server revokes (or can't).</summary>
+    private static string RemoveQuestion(List<AuditItem> items, List<AuditItem> revocable, int noCrl, bool revokeOnly)
     {
-        var items = revokeOnly ? SelectedAll.Where(i => !i.IsCa && i.HasCrl && i.FromPal is { Revoked: 0 }).ToList() : SelectedAll;
-        if (items.Count == 0)
-        {
-            return;
-        }
         var lines = items.Take(12).Select(i => $"• {i.Names}  ({i.StoreLabel})").ToList();
         if (items.Count > 12)
         {
             lines.Add($"• …and {items.Count - 12} more");
         }
-        var issuedHere = items.Where(i => !i.IsCa && i.FromPal is { Revoked: 0 }).ToList();
-        var revocable = issuedHere.Where(i => i.HasCrl).ToList();  // one that names no CRL is only reported as removed
-        int noCrl = issuedHere.Count - revocable.Count;
         string one = items.Count == 1 ? "it" : "them";
         string question;
         string warning = "";
@@ -1442,7 +1446,20 @@ internal sealed class MainForm : Form
                     " no CRL, so the server can't revoke " + (noCrl == 1 ? "it" : "them") + ". A copy made elsewhere stays trusted until it expires.";
             }
         }
-        if (MessageBox.Show(this, question + "\n\n" + string.Join("\n", lines) + warning, Text, MessageBoxButtons.OKCancel,
+        return question + "\n\n" + string.Join("\n", lines) + warning;
+    }
+
+    private async Task RemoveAsync(bool revokeOnly)
+    {
+        var items = revokeOnly ? SelectedAll.Where(i => !i.IsCa && i.HasCrl && i.FromPal is { Revoked: 0 }).ToList() : SelectedAll;
+        if (items.Count == 0)
+        {
+            return;
+        }
+        var issuedHere = items.Where(i => !i.IsCa && i.FromPal is { Revoked: 0 }).ToList();
+        var revocable = issuedHere.Where(i => i.HasCrl).ToList();  // one that names no CRL is only reported as removed
+        int noCrl = issuedHere.Count - revocable.Count;
+        if (MessageBox.Show(this, RemoveQuestion(items, revocable, noCrl, revokeOnly), Text, MessageBoxButtons.OKCancel,
                 MessageBoxIcon.Warning) != DialogResult.OK || !BeginBusy(revokeOnly ? "Revoking…" : "Removing…"))
         {
             return;

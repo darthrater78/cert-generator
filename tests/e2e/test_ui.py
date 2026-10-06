@@ -93,9 +93,9 @@ def test_certificate_exports_download(signed_in: Page):
     assert name == "host.e2e.test-fullchain.pem" and data.count(b"BEGIN CERTIFICATE") == 2
 
     page.keyboard.press("Escape")
-    # no distribution point on this server: revoking offers the updated CRL for import
-    name, _ = _download(page, "#certTableContainer [data-action=revokeCert]")
-    assert name.endswith(".crl")
+    # no distribution point: nothing would check a revocation, so Revoke is unavailable
+    expect(page.locator("#certTableContainer button", has_text="Revoke")).to_be_disabled()
+    expect(page.locator("#certTableContainer [data-action=revokeCert]")).to_have_count(0)
 
 
 def test_crl_lifetime_and_next_update(signed_in: Page):
@@ -304,9 +304,12 @@ def test_certificate_viewer_crl_section(signed_in: Page):
     _create_ca(page, "crlview.test")
     page.click("[data-action=showIssueCert]")
     page.fill("#certCN", "www.crlview.test")
+    page.check("#certIncludeCRL")
+    page.select_option("#certCrlDp", "placeholder")  # endpoint-hosted: revoking offers the updated CRL for import
     page.click("[data-action=issueCert]")
     _toast(page, "issued")
-    _download(page, "#certTableContainer [data-action=revokeCert]")
+    name, _ = _download(page, "#certTableContainer [data-action=revokeCert]")
+    assert name.endswith(".crl")
 
     page.click("#certTableContainer .cert-link")
     crl = page.locator("#certViewCrl")
@@ -522,7 +525,7 @@ def test_endpoint_hosted_certificate_install_panel(signed_in: Page):
       await api('/api/ca/' + currentCAId + '/certs', {method: 'POST', body: JSON.stringify(
         {common_name: 'eh.host', algorithm: 'ecdsa-p256', template: 'user', crl_dp: 'placeholder'})});
       const old = await (await api('/api/ca/' + currentCAId + '/certs', {method: 'POST', body: JSON.stringify(
-        {common_name: 'old.eh.host', algorithm: 'ecdsa-p256'})})).json();
+        {common_name: 'old.eh.host', algorithm: 'ecdsa-p256', crl_dp: 'placeholder'})})).json();
       await api('/api/certs/' + old.id + '/revoke', {method: 'POST'});
       await selectCA(currentCAId); }""")
     row = page.locator("#certTableContainer tr", has_text="eh.host").filter(has_not_text="old.eh.host")

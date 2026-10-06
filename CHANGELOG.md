@@ -6,6 +6,24 @@ What changed in each release of Cert Generator and Cert Generator Pal. The [READ
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
 
+### v2.10.0-dev.1 — 2026-10-06
+
+First pre-release of 2.10: **a certificate with no CRL can't be revoked**, CRL profiles can be **changed on a connected PC**, and the Pal can **show a CRL** and ask the server to **publish it now**. Not for production: none of the Pal's changes have run on a real Windows PC yet.
+
+#### Docker
+- **No CRL, no revocation.** A certificate issued without a CRL distribution point can't be revoked, because nothing would ever check. **Revoke** is unavailable for it on the CA page; removing it in the Pal or disconnecting its PC records it as gone and leaves it unrevoked, and both say so. Delete it, or issue its replacement with a CRL distribution point
+- **CRL profiles can be edited on a connected PC.** **Windows PCs › Edit** now shows the revocation checkboxes, so a profile such as **None** can be added without a new pairing code. The Pal offers the new list after its next check-in. A profile that is unticked while in use stays selected in the Pal, and the server refuses new requests with it
+- **Pal — View a CRL.** The CRL rows under Connectivity have a **View** link: issuer, issued and next update, and every revoked serial with its date, marking the ones installed on this PC. The CRLs this server and its Cloudflare Worker publish are listed even when another profile is in use
+- **Pal — Publish CRL now.** A link under Connectivity asks the server to sign the CA's CRL again and publish it, here and to its Cloudflare Worker, and reports how many certificates it lists. At most twice a minute per CA; each use is in the activity log
+- **Changed:** the Pal's **Cert server · LAN** row is **Cert server · Direct**, and the **Cert Generator (LAN)** CRL profile is **Cert Generator (Direct)** everywhere: a PC on a private overlay reaches the server directly without being on its LAN
+- **Fix:** the Windows install .zip put the CA into **Personal** next to the certificate, whether or not the root was included. Its .pfx now holds only the certificate and key; the CAs go only to their own stores, and only when you choose to include them. A CA already left in Personal by an older .zip has to be deleted by hand (`certlm.msc`)
+- **Fix:** the Pal's **Key** column said **Unknown** for a certificate installed by hand in the computer's store (an install .zip, a .pfx), and for any RSA key. It now reads where the key lives from the certificate itself
+
+#### Internal
+- `POST /api/pal/v1/crl/publish` (signed device, its own CA, 429 after two a minute); `revocable` on each certificate in `GET /api/pal/devices`; `POST /api/certs/<id>/revoke` answers 409 for a certificate with no `crl_dp_url`
+- `PUT /api/pal/devices/<id>/policy` is now sent the edited `crl_dps`; the Pal keeps the list it was last given in `crl-<device id>.json` in its per-user folder
+- `CrlList` in the Pal's core library parses a DER CRL (tested on Linux); the Pal reads `CERT_KEY_PROV_INFO_PROP_ID` when a key can't be opened
+
 ### v2.9.0 — 2026-10-05
 
 **Binding is its own step, with your approval per role**: a certificate is requested first and put to work second, for Remote Desktop, WinRM, IIS, RD Gateway and the RD Connection Broker. Also in this release: **edit what a connected PC may request**, an **activity log**, user certificates that behave on **shared PCs**, and a **standards pass** over every certificate and CRL the app signs. It gathers the three `2.9.0-dev` pre-releases listed below.

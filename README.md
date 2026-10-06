@@ -5,7 +5,7 @@
 
 **Your own certificate authority for the lab, the office and security demos.** Create root and intermediate CAs, issue certificates that match Windows CA templates, revoke them with a CRL clients can actually reach, and get every certificate onto the machine that needs it. Runs as a **Docker web app**.
 
-[GitHub](https://github.com/darthrater78/cert-generator) · [v2.9.0 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.9.0) · [What's new](CHANGELOG.md) · [Quick start](#quick-start) · [Cert Generator Pal](#cert-generator-pal-windows-pcs)
+[GitHub](https://github.com/darthrater78/cert-generator) · [v2.10.0-dev.1 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.10.0-dev.1) · [What's new](CHANGELOG.md) · [Quick start](#quick-start) · [Cert Generator Pal](#cert-generator-pal-windows-pcs)
 
 > [!IMPORTANT]
 > **The standalone Windows EXE is deprecated.** Releases from v2.9.0 on are **Docker only**. [v2.8.0](https://github.com/darthrater78/cert-generator/releases/tag/v2.8.0) is the last EXE build: it stays available, keeps working and gets security patches only. To move to Docker, use **Backup** in the EXE and **Restore** in Docker. Details: [Standalone EXE](#standalone-exe-windows-desktop).
@@ -210,7 +210,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.9.0
+    image: ghcr.io/darthrater78/cert-generator:2.10.0-dev.1
     container_name: cert-generator
     restart: unless-stopped
     security_opt:
@@ -389,8 +389,10 @@ Only what the pairing code allows appears. The CA chain is checked before every 
 | **A tile** | Requests that kind of certificate. *Issue right away* installs it in seconds; *Needs approval* waits for you, and **Check again** installs it once approved |
 | **Bind…** | Tells a Windows service to use the selected certificate, or takes it out of use. See [Binding a certificate](#binding-a-certificate) |
 | **Renew** | Opens in a certificate's last 30 days (the last third for short-lived ones). Makes a new key, moves every bind to the new certificate, then revokes the old one |
-| **Remove** | Takes one or several certificates off this PC and has the server revoke them, if this PC was issued them. The confirmation says so (**ALSO REVOKED**), and warns first when something still uses one |
-| **Revoke** | Has the server revoke it and leaves it on the PC, marked revoked |
+| **Remove** | Takes one or several certificates off this PC and has the server revoke them, if this PC was issued them. The confirmation says so (**ALSO REVOKED**), and warns first when something still uses one. A certificate that names no CRL can't be revoked: it is removed and reported as gone (**NOT REVOKED**) |
+| **Revoke** | Has the server revoke it and leaves it on the PC, marked revoked. Unavailable for a certificate that names no CRL |
+| **View** (on a CRL row) | Shows the CRL that address serves now: issuer, dates and every revoked serial, marking the ones on this PC |
+| **Publish CRL now** | Asks the server to sign its CRL again and publish it, here and to its Cloudflare Worker |
 | **Details** | The full certificate: every field and extension, the chain, and where the key lives |
 | **Refresh** | Re-checks the server, the CRL and the list |
 | **Disconnect this PC** | Removes the pairing and every certificate it installed |
@@ -414,7 +416,7 @@ Only what the pairing code allows appears. The CA chain is checked before every 
 <summary><b>CRL profiles, connectivity and the log</b></summary>
 
 - **CRL profiles:** switching profile backs out the current one first (its certificates leave the PC); the root CA stays trusted. **Endpoint-hosted** adds a small listener on the PC that answers its own revocation checks, for laptops away from the LAN. The profile is locked while the server can't be reached.
-- **Connectivity** shows the cert server (over the LAN, and through the relay when the PC has one) and the CRL of the profile in use, each with a coloured status and **Test**.
+- **Connectivity** shows the cert server (**Direct**, and **Remote** through the relay when the PC has one) and the CRL of the profile in use, each with a coloured status and **Test**; CRL rows also have **View**.
 - **Key storage** says whether the keys the Pal makes on this PC live in its **TPM** or in Windows' software key store. The list's **Key** column says the same for each certificate.
 - **Log** shows the Pal's log, with a **Debug logging** switch (every request and check; never keys or pairing codes).
 - **Files:** pairings in `C:\ProgramData\CertGeneratorPal` (written only with administrator approval); the log in `%LOCALAPPDATA%\CertGeneratorPal\pal.log`.
@@ -428,9 +430,9 @@ The **Windows PCs** page ([pictured above](#meet-cert-generator-pal)) lists each
 | On a PC's card | What it does |
 |---|---|
 | **Approve** / **Deny** | Answers a certificate request or a bind waiting in the list |
-| **Edit** | Changes the certificate kinds and their approval, the bind switches, allowed names and longest lifetime. The PC picks it up at its next check-in; no new pairing code. CRL profiles are fixed when a PC pairs |
+| **Edit** | Changes the certificate kinds and their approval, the bind switches, allowed names and longest lifetime. The PC picks it up at its next check-in; no new pairing code. CRL profiles can be changed here too |
 | **Allow** / **Turn off** | Remote access through the relay |
-| **Disconnect** | The PC can't request again, and its certificates are revoked |
+| **Disconnect** | The PC can't request again, and its certificates are revoked (those that name a CRL) |
 | **Delete** | Takes it off the list |
 
 Pairing codes that haven't been used can be revoked. A PC whose Pal comes from another release is flagged, so you know to update it from the server.
@@ -445,7 +447,7 @@ Pairing codes that haven't been used can be revoked. A PC whose Pal comes from a
 - **Pairing** proves both sides hold the code's secret without sending it, and **pins your root CA**: a server or network in the middle can't plant another CA.
 - **Every request is signed** by the PC's own device key, with a timestamp and a single-use nonce. What a PC may ask for is enforced by the server, not the app.
 - **LAN only**: the server answers the Pal's API only from private addresses (RFC 1918, CGNAT `100.64.0.0/10` for SSE / ZTNA overlays such as Tailscale or Zscaler, link-local, IPv6 ULA), and the Pal connects only to such addresses. Don't publish `/api/pal/` through an internet-facing reverse proxy; use the remote connection instead.
-- **Disconnecting** a PC revokes its certificates; a renewal revokes the certificate it replaces.
+- **Disconnecting** a PC revokes its certificates; a renewal revokes the certificate it replaces. A certificate with no CRL distribution point is never revoked, because nothing would check.
 
 ### Remote connection (PCs away from the LAN)
 
