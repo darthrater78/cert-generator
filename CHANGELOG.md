@@ -6,6 +6,21 @@ What changed in each release of Cert Generator and Cert Generator Pal. The [READ
 
 Each entry lists its changes per deliverable: a `#### Docker` section means the image is published for that version, a `#### Windows EXE` section means the EXE is built and attached, and anything under another heading (such as `#### Internal`) is carried into the notes as-is. Entries before v2.1.0 predate the split and shipped both.
 
+### v2.10.0-dev.3 — 2026-10-06
+
+Third pre-release of 2.10: the Pal's **Connectivity panel is one line per section**, its **revocation guide is laid out properly**, the Pal has the **web app's six themes**, and it **checks that it has really exited** when closed. The CA page's two CRL lifetimes are labelled. Not for production: none of the Pal's changes have run on a real Windows PC yet.
+
+#### Docker
+- **Pal — Connectivity, one line per section.** **Cert server**, **CRL**, **Windows cache** and **This PC** each show one line saying how they are doing. Click a section's name to open it for the addresses, **Test** and **View**, and its links. A section with a problem opens by itself, with a rule in its colour down the side. **Refresh all** and **Log** moved to the panel's heading
+- **Pal — themes.** **Theme** in the footer offers the web app's six themes (Slate, Flashbang, OLED, Graphite, Umber, Ink) and **Match Windows**, the default, which is Slate in light mode and Ink in dark as before. Choosing one restarts the Pal. The accent stays brass
+- **Pal — closing.** Closing the Pal while it is working asks first, because the step in progress would be abandoned. Once the window has closed the Pal writes to its log what was still open, and if the process is still running 5 seconds later it logs that and ends itself
+- **Changed:** the Pal's **How Windows checks** guide is set in the serif at a readable width; its strip is labelled and drawn for the CA's own CRL lifetime; the outcomes are ruled, labelled notes; and the timings are a ledger with leaders
+- **Changed:** a Windows cache row marked **BEHIND** says when the server's newer CRL was issued, in place of a revoked count that could match the cached one
+- **Changed:** on the CA page the two CRL lifetimes are labelled rows, **Published CRL valid for** and **Exported CRL valid for**, with plain values (1 day, 10 years) that line up
+
+#### Internal
+- Pal: `Theme.cs` holds a palette per theme, read once at start from `%LOCALAPPDATA%\CertGeneratorPal\theme.txt`; `tests/test_pal_theme.py` fails when its colours differ from `app/static/theme.css`. `Program.ExitCompletely` is the exit watch; `Elevation.HelperRunning` says whether an administrator step is still running
+
 ### v2.10.0-dev.2 — 2026-10-06
 
 Second pre-release of 2.10: the Pal's **Connectivity panel is split into sections**, the Pal shows **what Windows has cached of a CRL** and can make Windows fetch it again, and each CA's **published CRL lifetime can be shortened**. Also a fix for the Pal **freezing while removing a certificate**. Not for production: none of the Pal's changes have run on a real Windows PC yet.

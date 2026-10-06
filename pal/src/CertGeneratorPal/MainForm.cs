@@ -95,6 +95,14 @@ internal sealed class MainForm : Form
     private Dictionary<string, CrlList?> _windowsCache = [];  // CRL type → the copy Windows holds for its address, null when none
     private DateTimeOffset? _resyncTime;                      // when a re-check was last forced on this PC
     private RevocationGuideDialog? _guide;
+
+    /// <summary>How a Connectivity section is doing; Warning and Danger open it without being asked.</summary>
+    private enum Level { Neutral, Ok, Warning, Danger }
+
+    /// <summary>Sections the user opened or closed by hand, with the level they had then: a change of level drops the choice.</summary>
+    private readonly Dictionary<string, (bool Open, Level At)> _sectionChoice = [];
+    private readonly List<(int First, int Last, Color Ink)> _sectionRules = [];  // open sections with a problem: the rows their left rule spans
+    private (int First, Color Ink)? _openRule;
     private List<AuditItem> _items = [];
     private bool _busy;
 
@@ -133,6 +141,7 @@ internal sealed class MainForm : Form
         header.SetRowSpan(_seal, 4);
         header.Controls.Add(_crlPanel, 0, 4);
         header.SetColumnSpan(_crlPanel, 2);
+        _crlPanel.Paint += PaintSectionRules;
         _drift.LinkClicked += (_, _) => OpenServerDownload();
         header.Controls.Add(_drift, 0, 5);
         header.SetColumnSpan(_drift, 2);
@@ -350,10 +359,70 @@ internal sealed class MainForm : Form
         FitColumnsSoon();
     }
 
+    /// <summary>
+    /// Closing mid-step abandons it, and drops the result of an administrator step already running in its
+    /// own process: ask first. Windows shutting down, or the Pal restarting itself, isn't asked.
+    /// </summary>
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (_busy && e.CloseReason == CloseReason.UserClosing)
+        {
+            var answer = MessageBox.Show(this,
+                $"The Pal is still working:\n\n{_status.Text}\n\nClose anyway? The step in progress is abandoned and may be left half done.",
+                "Cert Generator Pal", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+            e.Cancel = answer != DialogResult.Yes;
+        }
+        base.OnFormClosing(e);
+    }
+
+    /// <summary>The theme list in the footer. A theme is read once at start, so choosing one restarts the Pal.</summary>
+    private FlowLayoutPanel BuildThemePicker()
+    {
+        var picker = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 20, 0) };
+        var label = Theme.Eyebrow("Theme");
+        label.Margin = new Padding(0, 5, 6, 0);
+        var box = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList, Width = 130, FlatStyle = FlatStyle.Flat, Margin = new Padding(0),
+            BackColor = Theme.Surface, ForeColor = Theme.Text, AccessibleName = "Theme",
+        };
+        box.Items.AddRange([.. Theme.Choices]);
+        box.SelectedItem = Theme.Choice;
+        box.SelectionChangeCommitted += (_, _) => ChangeTheme((string)box.SelectedItem!);
+        picker.Controls.Add(label);
+        picker.Controls.Add(box);
+        return picker;
+    }
+
+    private void ChangeTheme(string choice)
+    {
+        if (choice == Theme.Choice)
+        {
+            return;
+        }
+        try
+        {
+            Theme.SaveChoice(choice);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Fail(e);
+            return;
+        }
+        AppLog.Info("Theme: " + choice);
+        if (_busy)
+        {
+            SetStatus("Theme saved. It shows the next time the Pal starts.");
+            return;
+        }
+        Application.Restart();
+    }
+
     private TableLayoutPanel BuildFooter()
     {
-        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
+        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         var links = new LinkLabel { AutoSize = true, Text = $"v{Version}  ·  Help  ·  Troubleshooting  ·  GitHub  ·  Release notes" };
         links.Links.Clear();
@@ -363,6 +432,7 @@ internal sealed class MainForm : Form
         }
         links.LinkClicked += (_, e) => OpenUrl((string)e.Link!.LinkData!);
         footer.Controls.Add(links);
+        footer.Controls.Add(BuildThemePicker());
         _disconnect.LinkClicked += async (_, _) => await DisconnectAsync();
         footer.Controls.Add(_disconnect);
         return footer;
@@ -544,9 +614,9 @@ internal sealed class MainForm : Form
     }
 
     /// <summary>
-    /// Connectivity, in ruled sections with their own links: the cert server, the CRL (the profile in use,
-    /// none until one is picked), what Windows has cached of those CRLs, and this PC. Each row has a status dot
-    /// and what the last check found.
+    /// Connectivity, one line per section: the cert server, the CRL (the profile in use, none until one is
+    /// picked), what Windows has cached of those CRLs, and this PC. A section with a problem opens by itself;
+    /// open, it shows its links and a row per address with a status dot and what the last check found.
     /// </summary>
     private void FillCrlPanel()
     {
@@ -564,13 +634,18 @@ internal sealed class MainForm : Form
             _crlPanel.ResumeLayout();
             return;
         }
-        int row = AddServerRows(0);
+        _sectionRules.Clear();
+        _openRule = null;
+        int row = AddPanelHeading();
+        row = AddServerRows(row);
         row = AddCrlRows(row);
         row = AddCacheRows(row);
         row = AddThisPcRows(row);
+        CloseSectionRule(row);
         _crlPanel.RowCount = row;
         _crlPanel.Visible = true;
         _crlPanel.ResumeLayout();
+        _crlPanel.Invalidate();
         UpdateProfileLock();
     }
 
@@ -595,7 +670,12 @@ internal sealed class MainForm : Form
                     await RecheckAsync();
                 }));
         }
-        int row = AddSection(first, "Cert server", [.. serverLinks]);
+        var (level, summary) = ServerSummary();
+        int row = first;
+        if (!AddSection(ref row, "Cert server", level, summary, [.. serverLinks]))
+        {
+            return row;
+        }
         string serverUrl = _state.ServerUri.GetLeftPart(UriPartial.Authority);
         bool remoteOnly = Connectivity.Route == PalRoute.Relay;
         if (remoteOnly)
@@ -613,46 +693,162 @@ internal sealed class MainForm : Form
         return row;
     }
 
+    /// <summary>The Cert server section in one line: which routes answer.</summary>
+    private (Level Level, string Summary) ServerSummary()
+    {
+        var routes = new List<(string Name, CrlCheck.Result? Check)>();
+        if (Connectivity.Route != PalRoute.Relay)
+        {
+            routes.Add(("Direct", _serverCheck));
+        }
+        if (_state?.Relay is not null)
+        {
+            routes.Add(("Remote", _remoteCheck));
+        }
+        var failed = routes.Where(r => r.Check is { Ok: false }).ToList();
+        if (failed.Count > 0)
+        {
+            // One route down with the other answering is a warning; nothing answering is the failure.
+            return (failed.Count == routes.Count ? Level.Danger : Level.Warning,
+                string.Join("  ·  ", failed.Select(r => $"{r.Name}: {r.Check!.Summary}")));
+        }
+        return routes.Count == 0 || routes.Any(r => r.Check is null)
+            ? (Level.Neutral, "Not checked")
+            : (Level.Ok, string.Join(" and ", routes.Select(r => r.Name)) + " reachable");
+    }
+
     /// <summary>The This PC section: where the keys the Pal makes are stored; the next free row.</summary>
     private int AddThisPcRows(int row)
     {
-        row = AddSection(row, "This PC",
-            PanelLink("Refresh all", "Check the cert server and the CRLs again", async () => await RecheckAsync()),
-            PanelLink("Log", "Show the Pal's log, and turn debug logging on or off", () =>
-            {
-                using var log = new LogDialog();
-                log.ShowDialog(this);
-                return Task.CompletedTask;
-            }));
-        if (_deviceKeyStorage is { } keyStorage)
+        if (_deviceKeyStorage is not { } keyStorage)
         {
-            bool tpm = keyStorage == "tpm";
-            AddStatusRow(row++, "Key storage", null, new CrlCheck.Result(tpm,
-                tpm ? "TPM  ·  keys the Pal makes can't be exported or copied off this PC"
-                    : "Software key store  ·  this PC has no usable TPM; keys are non-exportable, but an administrator here can extract them", ""),
-                null, neutral: !tpm);
+            return row;
         }
+        bool tpm = keyStorage == "tpm";
+        if (!AddSection(ref row, "This PC", tpm ? Level.Ok : Level.Neutral, tpm ? "Keys kept in the TPM" : "Keys kept in the software key store"))
+        {
+            return row;
+        }
+        AddStatusRow(row++, "Key storage", null, new CrlCheck.Result(tpm,
+            tpm ? "TPM  ·  keys the Pal makes can't be exported or copied off this PC"
+                : "Software key store  ·  this PC has no usable TPM; keys are non-exportable, but an administrator here can extract them", ""),
+            null, neutral: !tpm);
         return row;
     }
 
-    /// <summary>A section of the panel: a rule (none above the first), then its name and the links that act on it; the next free row.</summary>
-    private int AddSection(int row, string title, params LinkLabel[] links)
+    /// <summary>The panel's own heading, with the links that act on all of it; the next free row.</summary>
+    private int AddPanelHeading()
     {
-        if (row > 0)
-        {
-            var rule = new Panel { Height = 1, BackColor = Theme.Rule, Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0, 6, 0, 6) };
-            _crlPanel.Controls.Add(rule, 0, row);
-            _crlPanel.SetColumnSpan(rule, 4);
-            row++;
-        }
-        var heading = Theme.Eyebrow(title);
+        var heading = Theme.Eyebrow("Connectivity");
         heading.Margin = new Padding(0, 2, 16, 4);
-        _crlPanel.Controls.Add(heading, 0, row);
+        _crlPanel.Controls.Add(heading, 0, 0);
         var tools = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
-        tools.Controls.AddRange(links);
-        _crlPanel.Controls.Add(tools, 1, row);
+        tools.Controls.Add(PanelLink("Refresh all", "Check the cert server and the CRLs again", async () => await RecheckAsync()));
+        tools.Controls.Add(PanelLink("Log", "Show the Pal's log, and turn debug logging on or off", () =>
+        {
+            using var log = new LogDialog();
+            log.ShowDialog(this);
+            return Task.CompletedTask;
+        }));
+        _crlPanel.Controls.Add(tools, 1, 0);
         _crlPanel.SetColumnSpan(tools, 3);
-        return row + 1;
+        return 1;
+    }
+
+    /// <summary>
+    /// A section of the panel: a hairline, then one line with its name (click to open or close), how it is
+    /// doing, and, when open, the links that act on it. Open by itself when it has a problem, until the user
+    /// says otherwise. <paramref name="row"/> moves to the next free row; false when the section is closed
+    /// and its rows are not wanted.
+    /// </summary>
+    private bool AddSection(ref int row, string title, Level level, string summary, params LinkLabel[] links)
+    {
+        CloseSectionRule(row);
+        var rule = new Panel { Height = 1, BackColor = Theme.Border, Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0, 3, 0, 3) };
+        _crlPanel.Controls.Add(rule, 0, row);
+        _crlPanel.SetColumnSpan(rule, 4);
+        row++;
+
+        bool problem = level is Level.Warning or Level.Danger;
+        bool open = SectionOpen(title, level);
+        Color ink = level switch { Level.Ok => Theme.Success, Level.Warning => Theme.Warning, Level.Danger => Theme.Danger, _ => Theme.TextDim };
+        _crlPanel.Controls.Add(SectionHeading(title, summary, level, open, problem ? ink : Theme.TextDim), 0, row);
+
+        var line = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+        line.Controls.Add(new Label { Text = (level == Level.Neutral ? "○  " : "●  ") + summary, AutoSize = true, ForeColor = ink, Margin = new Padding(0, 2, 20, 2) });
+        foreach (var link in links)
+        {
+            if (open)
+            {
+                link.Margin = new Padding(0, 4, 12, 0);
+                line.Controls.Add(link);
+            }
+            else
+            {
+                link.Dispose();
+            }
+        }
+        _crlPanel.Controls.Add(line, 1, row);
+        _crlPanel.SetColumnSpan(line, 3);
+        row++;
+        if (open && problem)
+        {
+            _openRule = (row, ink);
+        }
+        return open;
+    }
+
+    /// <summary>Open when the user said so for this level, else when the section has a problem.</summary>
+    private bool SectionOpen(string title, Level level)
+    {
+        if (_sectionChoice.TryGetValue(title, out var choice) && choice.At != level)
+        {
+            _sectionChoice.Remove(title);
+        }
+        return _sectionChoice.TryGetValue(title, out choice) ? choice.Open : level is Level.Warning or Level.Danger;
+    }
+
+    /// <summary>A section's name, as the link that opens or closes it.</summary>
+    private LinkLabel SectionHeading(string title, string summary, Level level, bool open, Color ink)
+    {
+        var heading = new LinkLabel
+        {
+            Text = (open ? "▼  " : "►  ") + title.ToUpperInvariant(), AutoSize = true, Font = Theme.MonoSmall, LinkBehavior = LinkBehavior.NeverUnderline,
+            Margin = new Padding(0, 3, 16, 3), AccessibleName = $"{title}: {summary}. {(open ? "Close" : "Open")} this section",
+        };
+        heading.LinkColor = heading.ActiveLinkColor = heading.VisitedLinkColor = ink;
+        heading.LinkClicked += (_, _) =>
+        {
+            _sectionChoice[title] = (!open, level);
+            FillCrlPanel();
+        };
+        _crlTip.SetToolTip(heading, open ? "Hide the detail" : "Show the detail and what you can do here");
+        return heading;
+    }
+
+    /// <summary>The open section's rows end above <paramref name="next"/>: note the span its left rule is drawn over.</summary>
+    private void CloseSectionRule(int next)
+    {
+        if (_openRule is { } rule && next > rule.First)
+        {
+            _sectionRules.Add((rule.First, next - 1, rule.Ink));
+        }
+        _openRule = null;
+    }
+
+    /// <summary>A 3px rule in the section's ink down the left of an open section that has a problem.</summary>
+    private void PaintSectionRules(object? sender, PaintEventArgs e)
+    {
+        int[] heights = _crlPanel.GetRowHeights();
+        foreach (var (first, last, ink) in _sectionRules)
+        {
+            if (last >= heights.Length)
+            {
+                continue;
+            }
+            using var brush = new SolidBrush(ink);
+            e.Graphics.FillRectangle(brush, 6, heights.Take(first).Sum() + 1, 3, heights.Skip(first).Take(last - first + 1).Sum() - 2);
+        }
     }
 
     /// <summary>The CRL section: the profile in use, then the CRLs this server and its Cloudflare Worker publish; the next free row.</summary>
@@ -667,9 +863,13 @@ internal sealed class MainForm : Form
         {
             return row;
         }
-        row = AddSection(row, "CRL", published
+        var (level, summary) = CrlSummary();
+        if (!AddSection(ref row, "CRL", level, summary, published
             ? [PanelLink("Publish CRL now", "Have the server sign its CRL again and publish it now (here and to its Cloudflare Worker)", async () => await PublishCrlAsync())]
-            : []);
+            : []))
+        {
+            return row;
+        }
         if (_state.CrlDp.Length > 0)
         {
             AddProfileCrlRow(row++, _state.CrlDp);
@@ -685,6 +885,23 @@ internal sealed class MainForm : Form
             }
         }
         return row;
+    }
+
+    /// <summary>The CRL section in one line: the profile in use and whether its CRL answers.</summary>
+    private (Level Level, string Summary) CrlSummary()
+    {
+        string type = _state?.CrlDp ?? "";
+        if (type.Length == 0)
+        {
+            return (Level.Neutral, "No CRL profile picked");
+        }
+        if (type == "none")
+        {
+            return (Level.Neutral, "No CRL  ·  certificates from this profile can't be revoked");
+        }
+        string inUse = CrlTypes.Label(type) + " in use  ·  ";
+        return _crlResults.GetValueOrDefault(type) is not { } result ? (Level.Neutral, inUse + "not checked")
+            : (result.Ok ? Level.Ok : Level.Danger, inUse + result.Summary);
     }
 
     /// <summary>The row for the CRL of the profile in use: its status, and Repair or View beside it.</summary>
@@ -725,10 +942,11 @@ internal sealed class MainForm : Form
         {
             return row;
         }
-        row = AddSection(row, "Windows cache",
-            PanelLink("Clear cached CRLs", "Delete your account's cached copies of this CA's CRLs, so Windows fetches them again", async () => await ClearCacheAsync()),
+        var (level, summary) = CacheSummary();
+        if (!AddSection(ref row, "Windows cache", level, summary,
             PanelLink("Force re-check now", "Make every account, service and running program fetch again what it cached before now (asks for administrator approval)",
                 async () => await ForceResyncAsync()),
+            PanelLink("Clear cached CRLs", "Delete your account's cached copies of this CA's CRLs, so Windows fetches them again", async () => await ClearCacheAsync()),
             PanelLink("How Windows checks", "How Windows handles a CRL, and how long a revocation takes to show", () =>
             {
                 if (_guide is null || _guide.IsDisposed)
@@ -741,7 +959,10 @@ internal sealed class MainForm : Form
                 }
                 _guide.Activate();
                 return Task.CompletedTask;
-            }));
+            })))
+        {
+            return row;
+        }
         string inUse = _state?.CrlDp ?? "";
         foreach (var (type, cached) in _windowsCache.OrderBy(c => c.Key == inUse ? 0 : 1).ThenBy(c => c.Key, StringComparer.Ordinal))
         {
@@ -751,6 +972,25 @@ internal sealed class MainForm : Form
             ? new CrlCheck.Result(true, $"{CrlCheck.Date(forced)}  ·  anything Windows cached before then is fetched again", "")
             : new CrlCheck.Result(true, "Never", ""), null, neutral: _resyncTime is null);
         return row;
+    }
+
+    /// <summary>The Windows cache section in one line: whether this PC's copy of the CRL in use is the latest.</summary>
+    private (Level Level, string Summary) CacheSummary()
+    {
+        string type = _state?.CrlDp ?? "";
+        if (_windowsCache.GetValueOrDefault(type) is not { } cached)
+        {
+            int held = _windowsCache.Values.Count(c => c is not null);
+            return (Level.Neutral, held == 0 ? "Nothing cached" : $"Nothing cached for the CRL in use  ·  {held.ToString(CultureInfo.CurrentCulture)} other cached");
+        }
+        string until = cached.NextUpdate is { } next ? CrlCheck.Date(next) : "it is replaced";
+        if (cached.Stale)
+        {
+            return (Level.Neutral, $"This PC's copy ran out {until}  ·  the next check fetches a new one");
+        }
+        return _crlResults.GetValueOrDefault(type)?.Crl is not { } live ? (Level.Neutral, $"This PC uses the CRL from {CrlCheck.Date(cached.ThisUpdate)} until {until}")
+            : cached.IsBehind(live) ? (Level.Warning, $"Behind  ·  this PC uses an older CRL until {until}")
+            : (Level.Ok, $"Current  ·  this PC has the latest CRL, good until {until}");
     }
 
     /// <summary>One CRL's row in the Windows cache section: the copy Windows holds, compared with the live CRL when that was fetched.</summary>
@@ -771,7 +1011,7 @@ internal sealed class MainForm : Form
         else if (cached.IsBehind(live))
         {
             AddStatusRow(row, CrlTypes.Label(type), null,
-                new CrlCheck.Result(true, $"{holds}  ·  the server now lists {live.Revoked.Count.ToString(CultureInfo.CurrentCulture)}", ""), null,
+                new CrlCheck.Result(true, $"{holds}  ·  the server has a newer one from {CrlCheck.Date(live.ThisUpdate)}", ""), null,
                 tag: "BEHIND", ink: Theme.Warning);
         }
         else
@@ -858,7 +1098,7 @@ internal sealed class MainForm : Form
             : result is null ? ("○", Theme.TextDim, url is null ? "No address yet" : "Not checked")
             : result.Ok ? ("●", ink ?? Theme.Success, result.Summary)
             : ("●", Theme.Danger, result.Summary);
-        var name = new Label { Text = $"{dot}  {label}", AutoSize = true, ForeColor = color, Font = Theme.UiBold, Margin = new Padding(0, 2, 16, 2) };
+        var name = new Label { Text = $"{dot}  {label}", AutoSize = true, ForeColor = color, Font = Theme.UiBold, Margin = new Padding(18, 2, 16, 2) };
         var state = new Label
         {
             Text = status + (url is null ? "" : "  ·  " + url),
@@ -868,7 +1108,7 @@ internal sealed class MainForm : Form
         if (tag is not null)
         {
             // A status word beside the name: IN USE marks the profile's own CRL, so the others need no "(not in use)".
-            var cell = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 16, 0) };
+            var cell = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(18, 0, 16, 0) };
             name.Margin = new Padding(0, 2, 6, 2);
             cell.Controls.Add(name);
             cell.Controls.Add(new Label { Text = tag, AutoSize = true, ForeColor = color, Font = Theme.MonoSmall, Margin = new Padding(0, 5, 0, 2) });

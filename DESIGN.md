@@ -90,10 +90,12 @@ These are the tells of generic AI-generated UI. Don't use them here:
 
 ## Pal
 
-`Theme.cs` mirrors the web app: Slate when Windows is in light mode, Ink when it is
-dark, the same tokens, brass accent, Georgia for display and Cascadia Mono / Consolas
-for data. When a token changes in `theme.css` (Slate or Ink), change it in
-`Theme.cs` in the same commit.
+`Theme.cs` mirrors the web app: the same six themes and tokens (Match Windows, the
+default, is Slate when Windows is in light mode and Ink when it is dark), brass
+accent, Georgia for display and Cascadia Mono / Consolas for data. Running text in
+a guide or dialog is the serif, in a column of about 560px. When a token changes in
+`theme.css`, change it in `Theme.cs` in the same commit; `tests/test_pal_theme.py`
+fails when they differ.
 
 ## Checking a change
 

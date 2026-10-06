@@ -573,6 +573,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   flex-wrap: wrap;
 }
 .export-section .field-label { margin-right: 2px; }
+/* the two CRL lifetimes: labels and selects line up, one under the other */
+.crl-line .field-label { min-width: 11.5em; }
+.crl-line select { min-width: 96px; }
+.crl-line + .crl-line { margin-top: 8px; }
 .export-section select, .export-section input {
   padding: 5px 20px 5px 2px;
   background: transparent;

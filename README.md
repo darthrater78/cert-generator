@@ -5,7 +5,7 @@
 
 **Your own certificate authority for the lab, the office and security demos.** Create root and intermediate CAs, issue certificates that match Windows CA templates, revoke them with a CRL clients can actually reach, and get every certificate onto the machine that needs it. Runs as a **Docker web app**.
 
-[GitHub](https://github.com/darthrater78/cert-generator) · [v2.10.0-dev.2 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.10.0-dev.2) · [What's new](CHANGELOG.md) · [Quick start](#quick-start) · [Cert Generator Pal](#cert-generator-pal-windows-pcs)
+[GitHub](https://github.com/darthrater78/cert-generator) · [v2.10.0-dev.3 release notes](https://github.com/darthrater78/cert-generator/releases/tag/v2.10.0-dev.3) · [What's new](CHANGELOG.md) · [Quick start](#quick-start) · [Cert Generator Pal](#cert-generator-pal-windows-pcs)
 
 > [!IMPORTANT]
 > **The standalone Windows EXE is deprecated.** Releases from v2.9.0 on are **Docker only**. [v2.8.0](https://github.com/darthrater78/cert-generator/releases/tag/v2.8.0) is the last EXE build: it stays available, keeps working and gets security patches only. To move to Docker, use **Backup** in the EXE and **Restore** in Docker. Details: [Standalone EXE](#standalone-exe-windows-desktop).
@@ -210,7 +210,7 @@ sudo mkdir -p /opt/docker/cert-generator && sudo chown 1000:1000 /opt/docker/cer
 ```yaml
 services:
   cert-generator:
-    image: ghcr.io/darthrater78/cert-generator:2.10.0-dev.2
+    image: ghcr.io/darthrater78/cert-generator:2.10.0-dev.3
     container_name: cert-generator
     restart: unless-stopped
     security_opt:
@@ -397,6 +397,7 @@ Only what the pairing code allows appears. The CA chain is checked before every 
 | **Force re-check now** | Makes every account, service and running program fetch again what it cached before now (`ChainCacheResyncFiletime`). Asks for administrator approval |
 | **How Windows checks** | A guide to how Windows handles a CRL: when it looks, how long it keeps a copy, and what happens when the copy runs out |
 | **Details** | The full certificate: every field and extension, the chain, and where the key lives |
+| **Theme** (in the footer) | The web app's six themes, or **Match Windows** (Slate in light mode, Ink in dark; the default). Choosing one restarts the Pal |
 | **Refresh** | Re-checks the server, the CRL and the list |
 | **Disconnect this PC** | Removes the pairing and every certificate it installed |
 
@@ -419,7 +420,7 @@ Only what the pairing code allows appears. The CA chain is checked before every 
 <summary><b>CRL profiles, connectivity and the log</b></summary>
 
 - **CRL profiles:** switching profile backs out the current one first (its certificates leave the PC); the root CA stays trusted. **Endpoint-hosted** adds a small listener on the PC that answers its own revocation checks, for laptops away from the LAN. The profile is locked while the server can't be reached.
-- **Connectivity** is four ruled sections. **Cert server** shows **Direct**, and **Remote** through the relay when the PC has one. **CRL** shows the profile's CRL, marked **IN USE**, and the other CRLs the server publishes (a **No CRL** profile says its certificates can't be revoked). **Windows cache** shows the copy of each CRL that Windows itself holds for your account (**BEHIND** when the server has published a newer one, **CURRENT** when it matches) and when a re-check was last forced. **This PC** shows where keys are stored. Each row has a coloured status and **Test**; CRL rows also have **View**.
+- **Connectivity** is one line per section, each saying how that section is doing. Click a section's name to open or close it; a section with a problem opens by itself and shows its links. **Cert server** shows **Direct**, and **Remote** through the relay when the PC has one. **CRL** shows the profile's CRL, marked **IN USE**, and the other CRLs the server publishes (a **No CRL** profile says its certificates can't be revoked). **Windows cache** shows the copy of each CRL that Windows itself holds for your account (**BEHIND** when the server has published a newer one, **CURRENT** when it matches) and when a re-check was last forced. **This PC** shows where keys are stored. Each row has a coloured status and **Test**; CRL rows also have **View**.
 - **Key storage** says whether the keys the Pal makes on this PC live in its **TPM** or in Windows' software key store. The list's **Key** column says the same for each certificate.
 - **Log** shows the Pal's log, with a **Debug logging** switch (every request and check; never keys or pairing codes).
 - **Files:** pairings in `C:\ProgramData\CertGeneratorPal` (written only with administrator approval); the log in `%LOCALAPPDATA%\CertGeneratorPal\pal.log`.
@@ -504,7 +505,7 @@ Certificates issued with the **Cert Generator (Direct)** distribution point name
 - **The app signs the CRL itself**, the first time a certificate names this server. Nothing is signed per request.
 - **It stays current:** each served CRL is valid for 7 days, is re-signed on every revocation, and an hourly check renews it when less than half its life is left.
 - **A revocation reaches clients within 7 days**, because they cache a CRL until its next update.
-- **To shorten that,** set **Published CRL valid** on the CA page to 1, 2, 3, 7 or 14 days. It applies to the CRL this server serves and to the CA's Cloudflare Worker, and the CRL is re-signed at once. A shorter CRL is the only thing that shortens the wait for every client; the cost is that clients have no usable CRL sooner when the server or Worker is down (after about half the lifetime).
+- **To shorten that,** set **Published CRL valid for** on the CA page to 1, 2, 3, 7 or 14 days. It applies to the CRL this server serves and to the CA's Cloudflare Worker, and the CRL is re-signed at once. A shorter CRL is the only thing that shortens the wait for every client; the cost is that clients have no usable CRL sooner when the server or Worker is down (after about half the lifetime).
 
 With an encrypted database, signing needs the CA key, so revoking a certificate of a CA served here is refused while the database is locked, and renewals wait until it is unlocked (the served CRL keeps answering meanwhile). **Export CRL** is for the endpoint-hosted distribution point and offline import: it downloads a CRL with the lifetime you choose and never replaces the one this server serves. After you revoke a certificate whose CRL is endpoint-hosted, the app offers that updated CRL for download. A certificate issued with no CRL distribution point can't be revoked: nothing would check, so **Revoke** is unavailable for it and a disconnected PC's copies are left as they are.
 

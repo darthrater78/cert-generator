@@ -4,22 +4,48 @@ using Microsoft.Win32;
 namespace CertGeneratorPal;
 
 /// <summary>
-/// Cert Generator's look: its Slate theme (light) or Ink theme (dark), following Windows'
-/// app setting, with the brass accent, serif headings and uppercase mono buttons.
+/// Cert Generator's look: the web app's six themes, with the brass accent, serif headings and uppercase
+/// mono buttons. Until one is chosen it follows Windows' app setting: Slate when light, Ink when dark.
+/// The theme is read once, when the Pal starts.
 /// </summary>
 internal static partial class Theme
 {
-    public static readonly bool Dark = IsWindowsDark();
+    /// <summary>One of the web app's themes: the tokens of its block in app/static/theme.css.</summary>
+    private sealed record Palette(string Name, bool Dark, string Bg, string Surface, string SurfaceHover, string Border, string Rule,
+        string Text, string TextDim, string AccentText);
 
-    public static readonly Color Bg = Dark ? Hex("#121821") : Hex("#e9ebee");
-    public static readonly Color Surface = Dark ? Hex("#19202b") : Hex("#f4f5f7");
-    public static readonly Color SurfaceHover = Dark ? Hex("#212a37") : Hex("#dfe2e6");
-    public static readonly Color Border = Dark ? Hex("#2f3a4a") : Hex("#cdd1d7");
-    public static readonly Color Rule = Dark ? Hex("#6f7d91") : Hex("#6b7280");
-    public static readonly Color Text = Dark ? Hex("#e8edf3") : Hex("#14171c");
-    public static readonly Color TextDim = Dark ? Hex("#9aa6b6") : Hex("#535a66");
+    private static readonly Palette[] Palettes =
+    [
+        new("Slate", false, "#e9ebee", "#f4f5f7", "#dfe2e6", "#cdd1d7", "#6b7280", "#14171c", "#535a66", "#785b0d"),
+        new("Flashbang", false, "#ffffff", "#f6f6f9", "#ebebf2", "#dcdce3", "#6b6b76", "#0b0b0f", "#5b5b66", "#81610e"),
+        new("OLED", true, "#000000", "#0d0d0d", "#1c1c1c", "#2c2c2c", "#6b6b6b", "#f2f2f2", "#999999", "#d4a017"),
+        new("Graphite", true, "#1b1c1f", "#232428", "#2c2d32", "#3a3b41", "#7a7b83", "#ececee", "#a2a3ab", "#d4a017"),
+        new("Umber", true, "#1c1915", "#24201b", "#2e2922", "#3d372e", "#857a69", "#efe9df", "#aca395", "#d4a017"),
+        new("Ink", true, "#121821", "#19202b", "#212a37", "#2f3a4a", "#6f7d91", "#e8edf3", "#9aa6b6", "#d4a017"),
+    ];
+
+    public const string MatchWindows = "Match Windows";
+
+    /// <summary>What the theme list offers: following Windows, then each theme by name.</summary>
+    public static IReadOnlyList<string> Choices { get; } = [MatchWindows, .. Palettes.Select(p => p.Name)];
+
+    /// <summary>The choice this run started with.</summary>
+    public static readonly string Choice = ReadChoice();
+
+    private static readonly Palette Current = Palettes.FirstOrDefault(p => p.Name == Choice)
+        ?? Palettes.First(p => p.Name == (IsWindowsDark() ? "Ink" : "Slate"));
+
+    public static readonly bool Dark = Current.Dark;
+
+    public static readonly Color Bg = Hex(Current.Bg);
+    public static readonly Color Surface = Hex(Current.Surface);
+    public static readonly Color SurfaceHover = Hex(Current.SurfaceHover);
+    public static readonly Color Border = Hex(Current.Border);
+    public static readonly Color Rule = Hex(Current.Rule);
+    public static readonly Color Text = Hex(Current.Text);
+    public static readonly Color TextDim = Hex(Current.TextDim);
     public static readonly Color Accent = Hex("#d4a017");
-    public static readonly Color AccentText = Dark ? Hex("#d4a017") : Hex("#785b0d");
+    public static readonly Color AccentText = Hex(Current.AccentText);
     public static readonly Color OnAccent = Hex("#0b0b0f");
     public static readonly Color Success = Dark ? Hex("#8fc29a") : Hex("#2d6a45");
     public static readonly Color Danger = Dark ? Hex("#e8877c") : Hex("#9e2a2b");
@@ -46,6 +72,25 @@ internal static partial class Theme
 
     private static string MonoFamily() =>
         FontFamily.Families.Any(f => f.Name == "Cascadia Mono") ? "Cascadia Mono" : "Consolas";
+
+    private static string ChoiceFile => Path.Combine(Paths.UserDir, "theme.txt");
+
+    /// <summary>The saved theme; following Windows when none was saved, or the file names no theme.</summary>
+    private static string ReadChoice()
+    {
+        try
+        {
+            string saved = File.Exists(ChoiceFile) ? File.ReadAllText(ChoiceFile).Trim() : "";
+            return Palettes.Any(p => p.Name == saved) ? saved : MatchWindows;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return MatchWindows;
+        }
+    }
+
+    /// <summary>Keep <paramref name="choice"/> (one of <see cref="Choices"/>) for the next start.</summary>
+    public static void SaveChoice(string choice) => File.WriteAllText(ChoiceFile, choice);
 
     private static bool IsWindowsDark()
     {

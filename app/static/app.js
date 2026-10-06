@@ -344,7 +344,7 @@ async function selectCA(caId) {
 
   const publishedDays = document.getElementById('publishedCrlDays');
   publishedDays.innerHTML = (ca.crl_days_choices || []).map(d =>
-    '<option value="' + d + '"' + (d === ca.crl_days ? ' selected' : '') + '>Published CRL valid ' + d + (d === 1 ? ' day' : ' days') + '</option>').join('');
+    '<option value="' + d + '"' + (d === ca.crl_days ? ' selected' : '') + '>' + d + (d === 1 ? ' day' : ' days') + '</option>').join('');
   document.getElementById('publishedCrlRow').classList.toggle('hidden', !(SERVER_MODE && ca.crl_maintained));
 
   updateCaPasswordVisibility();

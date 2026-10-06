@@ -102,17 +102,26 @@ Disconnect, Delete) and the pairing codes (unused / used / expired / revoked).
    server), and *Installed by Pal* or *Found*. Actions: **Renew** (Pal-issued; the
    button counts down to when renewal opens), **Details** (full certificate view),
    **Remove**. (*Replace* for found certificates is not built.) See §4 "Store audit".
-5. **Connectivity**, in four ruled sections: **Cert server** (Direct, and Remote
+5. **Connectivity**, one summary line per section, opened by clicking its name
+   (a section at Warning or Danger opens by itself; a choice made by hand holds
+   until the section's level changes): **Cert server** (Direct, and Remote
    through the relay), **CRL** (the profile's CRL marked IN USE, then the other
    published ones), **Windows cache** (the copy of each CRL this account's Windows
    cache holds, read with `CryptRetrieveObjectByUrl` cache-only, BEHIND or CURRENT
    against the live CRL, and `ChainCacheResyncFiletime`) and **This PC** (key
-   storage). Each section carries its own links: **Connect to remote**;
+   storage). An open section shows its own links: **Connect to remote**;
    **Publish CRL now**; **Clear cached CRLs** (`certutil -urlcache <address> delete`
    for this CA's addresses only, unelevated), **Force re-check now** (helper op
    `crl-resync`: `certutil -setreg chain\ChainCacheResyncFiletime @now`) and
-   **How Windows checks** (a non-modal guide); **Refresh all** and **Log**. The CRL profile locks while the server
-   can't be reached.
+   **How Windows checks** (a non-modal guide). **Refresh all** and **Log** sit on
+   the panel's heading. The CRL profile locks while the server can't be reached.
+6. **Footer**: version and links, and **Theme**: the web app's six themes or
+   Match Windows, kept in `%LOCALAPPDATA%\CertGeneratorPal\theme.txt` and read
+   once at start, so choosing one restarts the Pal.
+7. **Closing**: closing mid-step asks first. Once the window has closed,
+   `Program.ExitCompletely` logs what was still open (other windows, an
+   administrator step in its own process) and ends the process if it is still
+   running 5 seconds later, logging that too.
 
 Footer on every screen: version · GitHub · release notes.
 

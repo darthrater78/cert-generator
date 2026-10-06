@@ -57,6 +57,11 @@ internal static class Elevation
     /// </summary>
     public static Task<OpResult> RunAsync(HelperOp op) => Task.Run(() => RunOffThreadAsync(op));
 
+    private static int _helpers;
+
+    /// <summary>Is an administrator step still running in its own process? It outlives the Pal's window.</summary>
+    public static bool HelperRunning => Volatile.Read(ref _helpers) > 0;
+
     private static async Task<OpResult> RunOffThreadAsync(HelperOp op)
     {
         if (IsElevated)
@@ -75,7 +80,15 @@ internal static class Elevation
                 ArgumentList = { "--helper", path },
             };
             using var process = Process.Start(start) ?? throw new PalException("Windows didn't start the administrator step.");
-            await process.WaitForExitAsync().ConfigureAwait(false);
+            Interlocked.Increment(ref _helpers);
+            try
+            {
+                await process.WaitForExitAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _helpers);
+            }
             if (!File.Exists(resultPath))
             {
                 // Exit code 2: the helper refused the operation file, which is what happens when UAC was
