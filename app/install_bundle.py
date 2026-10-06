@@ -217,7 +217,8 @@ def build(*, cert_pem: bytes, key_pem: bytes, template: str, common_name: str,
           crl: tuple[str, bytes] | None = None, placeholder_url: str | None = None) -> tuple[bytes, str]:
     """The bundle zip and its file name. ``ca_chain``: (name, cert PEM), issuing CA first,
     root last, to install; empty to leave the CAs out (already trusted). ``chain_for_pfx``:
-    the full chain, so the .pfx and the server full chain always carry the issuer. ``crl``:
+    the full chain, so the .pfx (except on Windows, where it holds only the certificate) and
+    the server full chain always carry the issuer. ``crl``:
     (issuing CA name, DER) for a certificate whose distribution point is the placeholder,
     so the endpoint gets the revocation list it can't fetch. ``placeholder_url``: that address;
     on Windows the bundle then also sets up a local CRL server answering it (crl_local_server)."""
@@ -245,7 +246,9 @@ def build(*, cert_pem: bytes, key_pem: bytes, template: str, common_name: str,
         files[names["fullchain"]] = b"".join([cert_pem, *(pem for _, pem in chain_for_pfx)])
         files[names["key"]] = crypto_engine.export_private_only(key_pem, "pem")[0]
     else:
-        issuer = chain_for_pfx[0][1] if chain_for_pfx else None
+        # Import-PfxCertificate puts every certificate in the .pfx into the one store it is given,
+        # so on Windows a CA in it would land in Personal: the script installs the CAs instead.
+        issuer = chain_for_pfx[0][1] if chain_for_pfx and os_name != "windows" else None
         files[names["pfx"]] = crypto_engine.export_certificate(cert_pem, key_pem, "pkcs12",
                                                                ca_cert_pem=issuer, password=password)[0]
     win_der = os_name == "windows" and template == "code-signing"

@@ -596,7 +596,7 @@
       <div class="form-group">
         <label for="certCrlDp">Distribution point</label>
         <select id="certCrlDp" data-change="updateCrlDpFields">
-          <option value="server">{% if server_mode %}Cert Generator (LAN){% else %}Cert Generator server (not in the desktop app){% endif %}</option>
+          <option value="server">{% if server_mode %}Cert Generator (Direct){% else %}Cert Generator server (not in the desktop app){% endif %}</option>
           {% if server_mode %}<option value="cloudflare">Cloudflare Worker (this CA)</option>{% endif %}
           <option value="placeholder">Endpoint-hosted (each machine gets a copy)</option>
         </select>
@@ -1005,7 +1005,7 @@
   <div class="modal cf-modal">
     <h3 id="palAddTitle">Add a Windows PC</h3>
     <div id="palAddForm">
-      <p class="form-hint hidden" id="palEditHint">The PC picks up the change the next time it checks in (its Refresh button, or the next time the Pal opens). Certificates it already holds are not touched. Its CRL profiles are fixed when it pairs: to change those, disconnect it and pair it again with a new code.</p>
+      <p class="form-hint hidden" id="palEditHint">The PC picks up the change the next time it checks in (its Refresh button, or the next time the Pal opens). Certificates it already holds are not touched. A CRL profile you add is offered in the Pal after that; one you untick can no longer be used for new certificates.</p>
       <div class="form-row pal-new-only">
         <div class="form-group">
           <label for="palLabel">Note <span class="dim">(optional; the PC reports its own name)</span></label>
@@ -1074,13 +1074,13 @@
           <input type="text" id="palServerUrl" spellcheck="false" autocomplete="off">
         </div>
       </div>
-      <h4 class="pal-new-only">Revocation (CRL) checks the PC may use <button type="button" class="btn btn-ghost btn-sm pal-all" data-action="palAllCrl">All</button></h4>
-      <p class="form-hint pal-new-only" style="margin:-4px 0 6px">A CRL profile is where a PC's certificates check revocation. Each one ticked is offered in the Pal, and the user picks one.</p>
-      <div class="pal-crl-choices pal-new-only" id="palCrlDps">
-        <label class="cf-choice"><input type="checkbox" value="server" checked> <span><strong>Cert Generator (LAN)</strong> <span class="dim">this server answers revocation checks; PCs on your LAN see revocations at once</span></span></label>
+      <h4>Revocation (CRL) checks the PC may use <button type="button" class="btn btn-ghost btn-sm pal-all" data-action="palAllCrl">All</button></h4>
+      <p class="form-hint" style="margin:-4px 0 6px">A CRL profile is where a PC's certificates check revocation. Each one ticked is offered in the Pal, and the user picks one.</p>
+      <div class="pal-crl-choices" id="palCrlDps">
+        <label class="cf-choice"><input type="checkbox" value="server" checked> <span><strong>Cert Generator (Direct)</strong> <span class="dim">this server answers revocation checks; PCs that reach it directly see revocations at once</span></span></label>
         <label class="cf-choice"><input type="checkbox" value="cloudflare"> <span><strong>The CA's Cloudflare Worker</strong> <span class="dim">reachable from anywhere</span></span></label>
         <label class="cf-choice"><input type="checkbox" value="placeholder"> <span><strong>Endpoint-hosted (on each PC)</strong> <span class="dim">works offline; updated when the PC updates its CRL</span></span></label>
-        <label class="cf-choice"><input type="checkbox" value="none"> <span><strong>None</strong> <span class="dim">no revocation checks</span></span></label>
+        <label class="cf-choice"><input type="checkbox" value="none"> <span><strong>None</strong> <span class="dim">no revocation checks; these certificates can't be revoked</span></span></label>
       </div>
       <h4 class="pal-new-only">Away from the LAN</h4>
       <label class="cf-choice pal-new-only"><input type="checkbox" id="palAllowRemote"> <span><strong>Allow remote connection</strong> <span class="dim" id="palAllowRemoteHint">through the remote relay, once the PC has paired on the LAN. Requests stay end-to-end encrypted; Cloudflare can't read them</span></span></label>

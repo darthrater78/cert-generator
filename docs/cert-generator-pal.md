@@ -292,8 +292,14 @@ requested from the person's own account.
 policy (use cases, allowed names, longest lifetime, CRL types) with the same checks as a new
 pairing code, including that the PC's own name still fits. `allow_remote` keeps its own
 switch. The Pal reads the policy from `device` at every check-in, so tiles follow at once.
-The endpoint accepts CRL types too, but the admin page does not offer them: the Pal stores
-its CRL profiles at pairing and does not re-read them yet, so a change would not show there.
+CRL types can be edited too: the Pal reads `crl_dps` from `device` at every check-in, keeps the
+list per user (the profile file is only written elevated) and offers the profiles it names. A
+type that is unticked while in use stays selected in the Pal, but the server refuses new
+requests with it.
+
+**No CRL, no revocation.** A certificate issued without a CRL distribution point (the **None**
+profile) cannot be revoked: the admin's Revoke is refused, and removing it in the Pal or
+disconnecting the PC records it as gone without revoking it.
 
 **Key storage is reported, not attested.** The Pal sends `key_storage` (`tpm` or
 `software`) with `enroll` (the device key) and with each `requests` call (the key
@@ -592,7 +598,7 @@ outer signature; a time outside ±5 min; an inner path outside `/api/pal/v1/`; a
   retried); **Connect to remote** forces the relay for the session. Relay details
   come from the MACed enroll reply or a LAN `GET device` (kept per user in
   `%LOCALAPPDATA%\CertGeneratorPal\relay-<device>.json`), never from an answer
-  that came through the relay. Connectivity shows Cert server · LAN and · Remote.
+  that came through the relay. Connectivity shows Cert server · Direct and · Remote.
 
 ### Server side
 

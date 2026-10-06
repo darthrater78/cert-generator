@@ -51,7 +51,7 @@ public static class CrlTypes
 {
     public static string Label(string crlDp) => crlDp switch
     {
-        "server" => "Cert Generator (LAN)",
+        "server" => "Cert Generator (Direct)",
         "cloudflare" => "Cloudflare Worker",
         "placeholder" => "Endpoint-hosted (on this PC)",
         "none" => "No revocation checks",
@@ -283,6 +283,22 @@ internal sealed class StatusBody
     public string? WindowsUser { get; set; }
     /// <summary>Serial → what uses that certificate on this PC now ("Remote Desktop", "HTTPS 0.0.0.0:443").</summary>
     public Dictionary<string, List<string>>? Binds { get; set; }
+}
+
+/// <summary>What the server did when asked to publish the CA's CRL now.</summary>
+public sealed class PublishReply
+{
+    public string? NextUpdate { get; set; }
+    public int Revoked { get; set; }
+
+    /// <summary>Null when the CA has no Cloudflare Worker.</summary>
+    public PublishPush? Cloudflare { get; set; }
+}
+
+public sealed class PublishPush
+{
+    public bool Pushed { get; set; }
+    public string? Error { get; set; }
 }
 
 internal sealed class RevokeReply

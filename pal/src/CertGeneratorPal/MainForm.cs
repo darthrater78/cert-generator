@@ -452,7 +452,12 @@ internal sealed class MainForm : Form
         }
         foreach (var pairing in DeviceState.LoadAll())
         {
-            foreach (string crl in pairing.CrlDps.Count > 0 ? pairing.CrlDps : [pairing.CrlDp.Length > 0 ? pairing.CrlDp : "server"])
+            var allowed = pairing.CrlDps.Count > 0 ? pairing.CrlDps : [pairing.CrlDp.Length > 0 ? pairing.CrlDp : "server"];
+            if (_state is { CrlDp.Length: > 0 } && pairing.DeviceId == _state.DeviceId && !allowed.Contains(_state.CrlDp))
+            {
+                allowed = [.. allowed, _state.CrlDp];  // in use, though the admin no longer allows it: still shown
+            }
+            foreach (string crl in allowed)
             {
                 var choice = new ProfileChoice(pairing, crl);
                 _profileBox.Items.Add(choice);
@@ -554,8 +559,8 @@ internal sealed class MainForm : Form
         if (_state.Relay is not null)
         {
             bool forced = Connectivity.Route == PalRoute.Relay;
-            tools.Controls.Add(PanelLink(forced ? "Use LAN first" : "Connect to remote",
-                forced ? "Go back to the LAN first, the relay only when the LAN can't be reached"
+            tools.Controls.Add(PanelLink(forced ? "Use direct first" : "Connect to remote",
+                forced ? "Go back to the direct connection first, the relay only when it can't be reached"
                        : "Use only the remote relay for now (to test it, or when the LAN shouldn't be used)",
                 async () =>
                 {
@@ -563,6 +568,11 @@ internal sealed class MainForm : Form
                     AppLog.Info("Route: " + Connectivity.Route);
                     await RecheckAsync();
                 }));
+        }
+        if (_device is not null && (_device.CrlUrls.ContainsKey("server") || _device.CrlUrls.ContainsKey("cloudflare")))
+        {
+            tools.Controls.Add(PanelLink("Publish CRL now", "Have the server sign its CRL again and publish it now (here and to its Cloudflare Worker)",
+                async () => await PublishCrlAsync()));
         }
         tools.Controls.Add(PanelLink("Log", "Show the Pal's log, and turn debug logging on or off", () =>
         {
@@ -578,11 +588,11 @@ internal sealed class MainForm : Form
         bool remoteOnly = Connectivity.Route == PalRoute.Relay;
         if (remoteOnly)
         {
-            AddStatusRow(row++, "Cert server · LAN", serverUrl, new CrlCheck.Result(true, "Not used: connected to remote", ""), null, neutral: true);
+            AddStatusRow(row++, "Cert server · Direct", serverUrl, new CrlCheck.Result(true, "Not used: connected to remote", ""), null, neutral: true);
         }
         else
         {
-            AddStatusRow(row++, "Cert server · LAN", serverUrl, _serverCheck, async () => await TestServerAsync(PalRoute.Lan));
+            AddStatusRow(row++, "Cert server · Direct", serverUrl, _serverCheck, async () => await TestServerAsync(PalRoute.Lan));
         }
         if (_state.Relay is { } relayInfo)
         {
@@ -610,7 +620,21 @@ internal sealed class MainForm : Form
                 _crlTip.SetToolTip(repair, "Reinstall this PC's CRL listener and refresh its CRLs");
                 _crlPanel.Controls.Add(repair, 3, row);
             }
+            else if (type != "none" && url is not null)
+            {
+                AddViewLink(row, type, url);
+            }
             row++;
+        }
+        // The CRLs this server and its Cloudflare Worker publish can be looked at whichever profile is in use.
+        foreach (string type in new[] { "server", "cloudflare" })
+        {
+            if (type != _state.CrlDp && _device?.CrlUrls.GetValueOrDefault(type) is { } url)
+            {
+                _crlResults.TryGetValue(type, out var result);
+                AddStatusRow(row, $"CRL · {CrlTypes.Label(type)} (not in use)", url, result, async () => await TestCrlAsync(type, url));
+                AddViewLink(row++, type, url);
+            }
         }
         if (_deviceKeyStorage is { } keyStorage)
         {
@@ -651,6 +675,15 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void AddViewLink(int row, string type, string url)
+    {
+        var view = new LinkLabel { Text = "View", AutoSize = true, Margin = new Padding(0, 2, 0, 2) };
+        view.LinkColor = view.ActiveLinkColor = view.VisitedLinkColor = Theme.AccentText;
+        view.LinkClicked += async (_, _) => await ViewCrlAsync(type, url);
+        _crlTip.SetToolTip(view, "Show the revoked certificates this CRL lists now");
+        _crlPanel.Controls.Add(view, 3, row);
+    }
+
     private LinkLabel PanelLink(string text, string tip, Func<Task> action)
     {
         var link = new LinkLabel { Text = text, AutoSize = true, Margin = new Padding(0, 0, 12, 4), Font = Theme.MonoSmall };
@@ -688,7 +721,7 @@ internal sealed class MainForm : Form
             await CheckCrlsAsync();
             FillCrlPanel();
             UpdateDrift();
-            SetStatus((_serverCheck is { } lan ? "LAN: " + lan.Summary : "LAN: not used") + (_remoteCheck is { } remote ? " · Remote: " + remote.Summary : "")
+            SetStatus((_serverCheck is { } lan ? "Direct: " + lan.Summary : "Direct: not used") + (_remoteCheck is { } remote ? " · Remote: " + remote.Summary : "")
                 + (_state.CrlDp.Length > 0 && _crlResults.TryGetValue(_state.CrlDp, out var crl) ? " · CRL: " + crl.Summary : ""));
         }
         finally
@@ -711,6 +744,10 @@ internal sealed class MainForm : Form
             watch.Stop();
             _device = device;
             state.RememberRelay(device);  // only when it came over the LAN
+            if (state.RememberCrlDps(device))
+            {
+                FillProfiles();  // the admin changed which CRL profiles this PC may use
+            }
             AppLog.Debug($"Server check {via} {url}: ok in {watch.ElapsedMilliseconds} ms (server v{device.ServerVersion})");
             string ms = watch.ElapsedMilliseconds.ToString(CultureInfo.CurrentCulture);
             return new CrlCheck.Result(true, $"Reachable · {ms} ms",
@@ -730,7 +767,7 @@ internal sealed class MainForm : Form
         {
             return;
         }
-        string name = route == PalRoute.Relay ? "Cert server · Remote" : "Cert server · LAN";
+        string name = route == PalRoute.Relay ? "Cert server · Remote" : "Cert server · Direct";
         UseWaitCursor = true;
         SetStatus($"Testing {name}…");
         var result = await CheckServerAsync(_state, route);
@@ -764,6 +801,75 @@ internal sealed class MainForm : Form
         SetStatus($"{CrlTypes.Label(type)}: {result.Summary}");
         MessageBox.Show(this, result.Detail, $"{CrlTypes.Label(type)}: {result.Summary}", MessageBoxButtons.OK,
             result.Ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+    }
+
+    /// <summary>Ask the server to sign and publish the CA's CRL now, then check the addresses again.</summary>
+    private async Task PublishCrlAsync()
+    {
+        if (_state is null || !BeginBusy("Publishing the CRL…"))
+        {
+            return;
+        }
+        try
+        {
+            using var signer = new DeviceSigner(_state);
+            using var client = _state.Client();
+            var reply = await client.PublishCrlAsync(signer);
+            await CheckCrlsAsync();
+            FillCrlPanel();
+            bool pushFailed = reply.Cloudflare is { Pushed: false };
+            string worker = reply.Cloudflare is null ? ""
+                : pushFailed ? $"\n\nPublishing to the Cloudflare Worker failed: {reply.Cloudflare.Error ?? "unknown error"}. The server retries every hour."
+                : "\n\nThe Cloudflare Worker has it too.";
+            AppLog.Info($"CRL published now: {reply.Revoked} revoked{(pushFailed ? "; Cloudflare push failed" : "")}");
+            SetStatus(pushFailed ? "CRL published; the Cloudflare Worker didn't take it" : "CRL published");
+            MessageBox.Show(this, $"The server signed a new CRL listing {reply.Revoked.ToString(CultureInfo.CurrentCulture)} revoked certificate{(reply.Revoked == 1 ? "" : "s")}."
+                + worker + "\n\nA PC that already fetched the CRL keeps its copy until that copy's next update.",
+                "Publish CRL now", MessageBoxButtons.OK, pushFailed ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+        }
+        catch (Exception e) when (e is PalException or DeviceKeyUnavailableException or HttpRequestException or TaskCanceledException)
+        {
+            Fail(e);
+        }
+        finally
+        {
+            EndBusy();
+        }
+    }
+
+    /// <summary>Download the CRL an address serves now and list what it revokes.</summary>
+    private async Task ViewCrlAsync(string type, string url)
+    {
+        if (_busy)
+        {
+            return;
+        }
+        UseWaitCursor = true;
+        SetStatus($"Getting the CRL: {url}");
+        try
+        {
+            if (CrlList.Parse(await CrlCheck.DownloadAsync(url, type == "placeholder")) is not { } crl)
+            {
+                SetStatus($"{CrlTypes.Label(type)}: answers, but not with a CRL");
+                MessageBox.Show(this, $"{url}\n\nThe reply isn't a CRL Windows can read.", "CRL · " + CrlTypes.Label(type), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            var onThisPc = _items.Where(i => !i.IsCa).GroupBy(i => StoreAudit.NormalizeSerial(i.Serial)).ToDictionary(g => g.Key, g => g.First().Names);
+            SetStatus($"{CrlTypes.Label(type)}: {crl.Revoked.Count.ToString(CultureInfo.CurrentCulture)} revoked");
+            UseWaitCursor = false;
+            using var dialog = new CrlDialog(CrlTypes.Label(type), url, crl, onThisPc);
+            dialog.ShowDialog(this);
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or UriFormatException)
+        {
+            string why = e is TaskCanceledException ? "No answer within 10 seconds." : e.Message;
+            SetStatus($"{CrlTypes.Label(type)}: couldn't get the CRL");
+            MessageBox.Show(this, $"{url}\n\n{why}", "CRL · " + CrlTypes.Label(type), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            UseWaitCursor = false;
+        }
     }
 
     private async Task RepairAsync()
@@ -1056,11 +1162,11 @@ internal sealed class MainForm : Form
         int count = _list.SelectedItems.Count;
         _remove.Enabled = !_busy && count > 0;
         _remove.Text = count > 1 ? $"REMOVE {count}" : "REMOVE";
-        int revocable = _list.SelectedItems.Cast<ListViewItem>().Count(r => r.Tag is AuditItem { IsCa: false, FromPal.Revoked: 0 });
+        int revocable = _list.SelectedItems.Cast<ListViewItem>().Count(r => r.Tag is AuditItem { IsCa: false, HasCrl: true, FromPal.Revoked: 0 });
         _revoke.Enabled = !_busy && revocable > 0;
         _revoke.Text = revocable > 1 ? $"REVOKE {revocable}" : "REVOKE";
-        _crlTip.SetToolTip(_revoke, "Have the server revoke a certificate this PC was issued. It stays on this PC, marked revoked, until you remove it.");
-        _crlTip.SetToolTip(_remove, "Remove from this PC. A certificate this PC was issued is revoked on the server in the same step.");
+        _crlTip.SetToolTip(_revoke, "Have the server revoke a certificate this PC was issued. It stays on this PC, marked revoked, until you remove it. A certificate that names no CRL can't be revoked.");
+        _crlTip.SetToolTip(_remove, "Remove from this PC. A certificate this PC was issued is revoked on the server in the same step, unless it names no CRL.");
         _details.Enabled = item is not null;
         _bind.Enabled = !_busy && item is { CanBind: true };
         _crlTip.SetToolTip(_bind, "Choose what uses this certificate, or take it out of use: Remote Desktop, WinRM, an IIS site or a Remote Desktop Services role. Your admin decides which are allowed. Renewing it moves them to the new certificate.");
@@ -1286,7 +1392,7 @@ internal sealed class MainForm : Form
     /// </summary>
     private async Task RemoveAsync(bool revokeOnly)
     {
-        var items = revokeOnly ? SelectedAll.Where(i => !i.IsCa && i.FromPal is { Revoked: 0 }).ToList() : SelectedAll;
+        var items = revokeOnly ? SelectedAll.Where(i => !i.IsCa && i.HasCrl && i.FromPal is { Revoked: 0 }).ToList() : SelectedAll;
         if (items.Count == 0)
         {
             return;
@@ -1297,6 +1403,8 @@ internal sealed class MainForm : Form
             lines.Add($"• …and {items.Count - 12} more");
         }
         var issuedHere = items.Where(i => !i.IsCa && i.FromPal is { Revoked: 0 }).ToList();
+        var revocable = issuedHere.Where(i => i.HasCrl).ToList();  // one that names no CRL is only reported as removed
+        int noCrl = issuedHere.Count - revocable.Count;
         string one = items.Count == 1 ? "it" : "them";
         string question;
         string warning = "";
@@ -1319,12 +1427,19 @@ internal sealed class MainForm : Form
                 warning += "\n\nIn use: " + string.Join("; ", inUse.Select(i => $"{i.Names} by {string.Join(", ", i.UsedBy)}")) +
                     ". Without it, whatever uses it has no certificate, and Remote Desktop goes back to its own.";
             }
-            if (issuedHere.Count > 0)
+            if (revocable.Count > 0)
             {
-                warning += "\n\nALSO REVOKED: " + (issuedHere.Count == items.Count
+                warning += "\n\nALSO REVOKED: " + (revocable.Count == items.Count
                         ? (items.Count == 1 ? "this PC was issued this certificate, so it is" : "this PC was issued these certificates, so they are")
-                        : $"{issuedHere.Count} of them were issued to this PC and are") +
+                        : $"{revocable.Count} of them were issued to this PC and are") +
                     " revoked on the server in the same step. This can't be undone: request a new one if you need it again.";
+            }
+            if (noCrl > 0)
+            {
+                warning += "\n\nNOT REVOKED: " + (noCrl == items.Count
+                        ? (items.Count == 1 ? "this certificate names" : "these certificates name")
+                        : $"{noCrl} of them name") +
+                    " no CRL, so the server can't revoke " + (noCrl == 1 ? "it" : "them") + ". A copy made elsewhere stays trusted until it expires.";
             }
         }
         if (MessageBox.Show(this, question + "\n\n" + string.Join("\n", lines) + warning, Text, MessageBoxButtons.OKCancel,
@@ -1365,34 +1480,36 @@ internal sealed class MainForm : Form
             string did = revokeOnly ? "" : items.Count == 1 ? "Removed from this PC." : $"Removed {items.Count} certificates from this PC.";
             string revoked = "";
             string? waiting = null;
+            string saved = revocable.Count > 0 ? "revocation" : "removal";
             if (problems.Count == 0 && issuedHere.Count > 0 && _state is not null)
             {
                 // Saved first, so one made while the server can't be reached is still revoked later.
                 PendingRevokes.Add(_state.DeviceId, issuedHere.Select(i => i.Serial));
-                SeenStatus.MarkRevoked(_state.DeviceId, issuedHere.Select(i => i.Serial));  // our own doing: no notice about it later
+                SeenStatus.MarkRevoked(_state.DeviceId, revocable.Select(i => i.Serial));  // our own doing: no notice about it later
                 try
                 {
                     using var signer = new DeviceSigner(_state);
                     using var client = _state.Client();  // the LAN first, then the relay if this PC has one
                     if (await PendingRevokes.FlushAsync(client, signer, _state.DeviceId))
                     {
-                        revoked = issuedHere.Count == 1 ? " Revoked on the server." : $" {issuedHere.Count} revoked on the server.";
+                        revoked = (revocable.Count == 0 ? "" : revocable.Count == 1 && noCrl == 0 ? " Revoked on the server." : $" {revocable.Count} revoked on the server.")
+                            + (noCrl == 0 ? "" : issuedHere.Count == 1 ? " Not revoked: it names no CRL." : $" {noCrl} not revoked: no CRL.");
                     }
                     else
                     {
-                        waiting = (did + " The server can't be reached right now, so the revocation is saved and sent the next time " +
+                        waiting = (did + $" The server can't be reached right now, so the {saved} is saved and sent the next time " +
                                    "the Pal reaches it (Refresh, or the next time it opens).").Trim();
                     }
                 }
                 catch (DeviceKeyUnavailableException e)
                 {
                     AppLog.Error("Couldn't sign the revocation", e);
-                    waiting = (did + " " + Operations.FriendlyMessage(e) + " The revocation is saved and sent at the next check-in.").Trim();
+                    waiting = (did + " " + Operations.FriendlyMessage(e) + $" The {saved} is saved and sent at the next check-in.").Trim();
                 }
             }
             if (problems.Count > 0)
             {
-                Report(OpResult.Failure("Not all removed" + (issuedHere.Count > 0 ? ", and nothing was revoked on the server. " : ". ") + string.Join("\n", problems)));
+                Report(OpResult.Failure("Not all removed" + (revocable.Count > 0 ? ", and nothing was revoked on the server. " : ". ") + string.Join("\n", problems)));
             }
             else if (waiting is not null)
             {

@@ -468,8 +468,6 @@ _REVOKE_NOTES = {
                   f"when their cached copy expires, within {crl_publisher.PUBLISHED_CRL_DAYS} days.",
     "placeholder": "Its CRL is endpoint-hosted, so a machine only sees the revocation once it gets the updated CRL: "
                    "run a new install .zip from Export / install, or import the CRL by hand.",
-    "none": "It has no CRL distribution point, so clients don't check it. Import an updated CRL on "
-            "machines that should stop trusting it.",
     "other": "Its CRL distribution point is an address this app doesn't manage. Publish an updated CRL there.",
 }
 
@@ -510,12 +508,23 @@ def view_crl(ca_id: int):
     })
 
 
+NOT_REVOCABLE = ("This certificate names no CRL, so nothing would ever check that it was revoked. "
+                 "Delete it, or issue its replacement with a CRL distribution point")
+
+
+def revocable(cert: dict[str, Any]) -> bool:
+    """A certificate with no CRL distribution point can't be revoked: no client would look."""
+    return bool(cert.get("crl_dp_url"))
+
+
 @bp.post("/api/certs/<int:cert_id>/revoke")
 def revoke_cert(cert_id: int):
     cert = db.get_cert_summary(cert_id)
     ca = db.get_ca_summary(cert["ca_id"]) if cert else None
     if not cert or not ca or cert["revoked"]:
         return error("Certificate not found or already revoked", 404)
+    if not revocable(cert):
+        return error(NOT_REVOCABLE, 409)
     if ca.get("crl_public") or ca.get("cf_worker"):
         db.require_unlocked()  # re-signing the published CRL needs the CA key: fail before revoking
     db.revoke_cert(cert_id)

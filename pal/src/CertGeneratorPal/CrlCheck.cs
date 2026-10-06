@@ -1,7 +1,7 @@
 using System.Diagnostics;
-using System.Formats.Asn1;
 using System.Globalization;
 using System.Net;
+using CertGeneratorPal.Core;
 
 namespace CertGeneratorPal;
 
@@ -61,45 +61,29 @@ internal static class CrlCheck
         }
     }
 
+    /// <summary>The CRL at an address, for the viewer. Throws what HttpClient throws when it can't be had.</summary>
+    public static async Task<byte[]> DownloadAsync(string url, bool onThisPc)
+    {
+        using var http = new HttpClient(new HttpClientHandler { UseProxy = !onThisPc })
+        {
+            Timeout = TimeSpan.FromSeconds(10),
+            MaxResponseContentBufferSize = 16 * 1024 * 1024,  // a CRL is kilobytes; whatever answers can't fill memory
+        };
+        using var response = await http.GetAsync(url).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+    }
+
+    public static string Date(DateTimeOffset t) => t.ToLocalTime().ToString("d MMM yyyy HH:mm", CultureInfo.CurrentCulture);
+
     /// <summary>This update, next update and the number of revoked serials, read from a DER CRL.</summary>
     private static string? Describe(byte[] der)
     {
-        try
-        {
-            var crl = new AsnReader(der, AsnEncodingRules.DER).ReadSequence();
-            var tbs = crl.ReadSequence();
-            if (tbs.PeekTag().HasSameClassAndValue(Asn1Tag.Integer))
-            {
-                tbs.ReadInteger();  // version
-            }
-            tbs.ReadSequence();  // signature algorithm
-            tbs.ReadEncodedValue();  // issuer
-            DateTimeOffset thisUpdate = ReadTime(tbs);
-            DateTimeOffset? nextUpdate = tbs.HasData && IsTime(tbs.PeekTag()) ? ReadTime(tbs) : null;
-            int revoked = 0;
-            if (tbs.HasData && tbs.PeekTag().HasSameClassAndValue(Asn1Tag.Sequence))
-            {
-                var list = tbs.ReadSequence();
-                while (list.HasData)
-                {
-                    list.ReadEncodedValue();
-                    revoked++;
-                }
-            }
-            string Date(DateTimeOffset t) => t.ToLocalTime().ToString("d MMM yyyy HH:mm", CultureInfo.CurrentCulture);
-            string next = nextUpdate is { } n
-                ? $"Next update: {Date(n)}{(n < DateTimeOffset.UtcNow ? "  (STALE: Windows rejects it)" : "")}"
-                : "Next update: none";
-            return $"Valid CRL. Issued {Date(thisUpdate)}\n{next}\nRevoked certificates: {revoked.ToString(CultureInfo.CurrentCulture)}";
-        }
-        catch (AsnContentException)
+        if (CrlList.Parse(der) is not { } crl)
         {
             return null;
         }
+        string next = crl.NextUpdate is { } n ? $"Next update: {Date(n)}{(crl.Stale ? "  (STALE: Windows rejects it)" : "")}" : "Next update: none";
+        return $"Valid CRL. Issued {Date(crl.ThisUpdate)}\n{next}\nRevoked certificates: {crl.Revoked.Count.ToString(CultureInfo.CurrentCulture)}";
     }
-
-    private static bool IsTime(Asn1Tag tag) => tag.HasSameClassAndValue(Asn1Tag.UtcTime) || tag.HasSameClassAndValue(Asn1Tag.GeneralizedTime);
-
-    private static DateTimeOffset ReadTime(AsnReader reader) =>
-        reader.PeekTag().HasSameClassAndValue(Asn1Tag.UtcTime) ? reader.ReadUtcTime() : reader.ReadGeneralizedTime();
 }

@@ -117,16 +117,21 @@ def test_revoking_republishes_the_served_crl(admin_client, fresh_app):
     assert admin_client.get(f"/api/certs/{cert_id}/crl").get_json()["published_path"] == f"/crl/{ca_id}.crl"
 
 
-@pytest.mark.parametrize(("fields", "kind"), [
-    ({"crl_dp": "placeholder"}, "placeholder"),
-    ({}, "none"),
-])
-def test_revoking_without_this_server_asks_for_an_import(admin_client, fields, kind):
+def test_revoking_without_this_server_asks_for_an_import(admin_client):
     ca_id = _ca(admin_client)
-    cert_id = _issue(admin_client, ca_id, **fields).get_json()["id"]
+    cert_id = _issue(admin_client, ca_id, crl_dp="placeholder").get_json()["id"]
     resp = admin_client.post(f"/api/certs/{cert_id}/revoke").get_json()
-    assert resp["crl_dp"] == kind and resp["download_crl"] is True
+    assert resp["crl_dp"] == "placeholder" and resp["download_crl"] is True
     assert "import" in resp["note"].lower()
+
+
+def test_a_certificate_that_names_no_crl_cannot_be_revoked(admin_client):
+    ca_id = _ca(admin_client)
+    cert_id = _issue(admin_client, ca_id).get_json()["id"]
+    resp = admin_client.post(f"/api/certs/{cert_id}/revoke")
+    assert resp.status_code == 409 and "names no CRL" in resp.get_json()["error"]
+    assert not admin_client.get(f"/api/certs/{cert_id}/details").get_json()["revoked"]
+    assert len(x509.load_der_x509_crl(admin_client.get(f"/api/ca/{ca_id}/crl").data)) == 0
 
 
 def test_placeholder_on_a_served_ca_still_republishes(admin_client, fresh_app):

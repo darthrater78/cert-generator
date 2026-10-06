@@ -72,7 +72,7 @@ Everything in the release: **[CHANGELOG.md](CHANGELOG.md)**.
 
 <table>
 <tr>
-<td width="50%" valign="top"><img alt="The Issue Certificate dialog: the Cert Generator Pal recommendation for Windows PCs at the top, then Include CRL Distribution Point ticked with Cert Generator (LAN) and the address clients fetch the CRL from" src="docs/screenshots/issue-certificate.png" /><br/><sub><b>Issue a certificate</b> from a Windows CA template, with the CRL address it carries.</sub></td>
+<td width="50%" valign="top"><img alt="The Issue Certificate dialog: the Cert Generator Pal recommendation for Windows PCs at the top, then Include CRL Distribution Point ticked with Cert Generator (Direct) and the address clients fetch the CRL from" src="docs/screenshots/issue-certificate.png" /><br/><sub><b>Issue a certificate</b> from a Windows CA template, with the CRL address it carries.</sub></td>
 <td width="50%" valign="top"><img alt="Export / install for a computer certificate on Windows: the choice between installing the CAs with the certificate or the certificate only, the Administrator notice, Download .zip, Download buttons for the CA files and the CRL, and the PowerShell commands with Copy code" src="docs/screenshots/export-install.png" /><br/><sub><b>Export / install</b>: the files and the commands for Windows, macOS or Linux, or a .zip that installs itself.</sub></td>
 </tr>
 <tr>
@@ -175,7 +175,7 @@ Both use the same interface and database format. Where they differ:
 |---|---|---|
 | Access | Browser, from any machine that can reach it | Native window on one PC, no network port |
 | Sign-in | User accounts, optional TOTP 2FA, trusted devices | Optional username + master password (turns on encryption) |
-| CRL distribution point | **Cert Generator (LAN)** (this server), a **Cloudflare Worker**, or **endpoint-hosted** | Endpoint-hosted only: each machine gets the CRL from the install .zip or an import |
+| CRL distribution point | **Cert Generator (Direct)** (this server), a **Cloudflare Worker**, or **endpoint-hosted** | Endpoint-hosted only: each machine gets the CRL from the install .zip or an import |
 | Windows PCs (Cert Generator Pal) | Yes: PCs request and install their own certificates | No |
 | Encryption at rest + recovery key | Optional | Optional |
 
@@ -493,14 +493,14 @@ A certificate can carry a CRL distribution point: the address clients check to l
 
 ### Publishing the CRL
 
-Certificates issued with the **Cert Generator (LAN)** distribution point name `<address>/crl/<CA id>.crl`, where `<address>` is the one typed in the Issue Certificate dialog (it defaults to the address you are using).
+Certificates issued with the **Cert Generator (Direct)** distribution point name `<address>/crl/<CA id>.crl`, where `<address>` is the one typed in the Issue Certificate dialog (it defaults to the address you are using).
 
 - **That path is the only one that answers without signing in.** Unknown, unpublished and never-opted-in CAs all get the same `404`.
 - **The app signs the CRL itself**, the first time a certificate names this server. Nothing is signed per request.
 - **It stays current:** each served CRL is valid for 7 days, is re-signed on every revocation, and an hourly check renews it when less than half its life is left.
 - **A revocation reaches clients within 7 days**, because they cache a CRL until its next update.
 
-With an encrypted database, signing needs the CA key, so revoking a certificate of a CA served here is refused while the database is locked, and renewals wait until it is unlocked (the served CRL keeps answering meanwhile). **Export CRL** is for the endpoint-hosted distribution point and offline import: it downloads a CRL with the lifetime you choose and never replaces the one this server serves. After you revoke a certificate whose CRL is endpoint-hosted, or that has none, the app offers that updated CRL for download.
+With an encrypted database, signing needs the CA key, so revoking a certificate of a CA served here is refused while the database is locked, and renewals wait until it is unlocked (the served CRL keeps answering meanwhile). **Export CRL** is for the endpoint-hosted distribution point and offline import: it downloads a CRL with the lifetime you choose and never replaces the one this server serves. After you revoke a certificate whose CRL is endpoint-hosted, the app offers that updated CRL for download. A certificate issued with no CRL distribution point can't be revoked: nothing would check, so **Revoke** is unavailable for it and a disconnected PC's copies are left as they are.
 
 If clients reach the app through a reverse proxy, expose `/crl/` alone to them and keep everything else private. Allow only `GET` and `HEAD` on `^/crl/[0-9]+\.crl$`. Revocation checks are usually plain HTTP (clients don't fetch a CRL over HTTPS to avoid a circular check), so the CRL vhost is often HTTP while the admin UI stays on HTTPS.
 
