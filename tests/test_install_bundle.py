@@ -59,7 +59,17 @@ def test_windows_bundle_with_ca_chain(admin_client):
     readme = zf.read("README.txt").decode()
     assert "Double-click install.cmd" in readme and "running scripts is disabled" in readme
     key, cert, extra = pkcs12.load_key_and_certificates(zf.read("host.bundle.test.pfx"), b"Bundle-pass-1")
-    assert cert.subject.rfc4514_string() == "CN=host.bundle.test" and len(extra) == 1  # issuer included
+    # no CA in the .pfx: Import-PfxCertificate would put it in Personal, next to the certificate
+    assert cert.subject.rfc4514_string() == "CN=host.bundle.test" and key is not None and extra == []
+
+
+def test_windows_bundle_without_ca_has_no_ca_anywhere(admin_client):
+    ca_id = _create_ca(admin_client)
+    zf = _open(_bundle(admin_client, _issue(admin_client, ca_id), os="windows", include_ca=False))
+    assert not [n for n in zf.namelist() if n.startswith("ca-")]
+    assert pkcs12.load_key_and_certificates(zf.read("host.bundle.test.pfx"), b"Bundle-pass-1")[2] == []
+    script = zf.read("install.ps1").decode()
+    assert "Import-Certificate" not in script and "LocalMachine\\Root" not in script
 
 
 def test_windows_bundle_for_a_user_cert_without_ca_needs_no_admin(admin_client):

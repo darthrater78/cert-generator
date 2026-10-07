@@ -1,7 +1,8 @@
 """Keeps a CA's published CRL current: the one /crl/<id>.crl serves, for CAs whose
 certificates name this server as their distribution point, and the one its Cloudflare
 Worker serves (crl_worker). Clients cache a CRL until its next update, so the published
-one is short-lived and re-signed on every revocation and before it runs out."""
+one is short-lived (7 days unless the CA is set otherwise) and re-signed on every
+revocation and at half its life."""
 from __future__ import annotations
 
 import logging
@@ -12,8 +13,9 @@ from . import crypto_engine, db
 
 log = logging.getLogger("cert-generator")
 
-PUBLISHED_CRL_DAYS = 7
-RENEW_WHEN_LEFT = timedelta(days=PUBLISHED_CRL_DAYS / 2)
+PUBLISHED_CRL_DAYS = 7  # the default; a CA can be set to any of CRL_DAYS_CHOICES
+CRL_DAYS_CHOICES = (1, 2, 3, 7, 14)
+RENEW_WHEN_LEFT = timedelta(days=PUBLISHED_CRL_DAYS / 2)  # for a default CRL: every CRL is renewed at half its own life
 RENEW_CHECK_SECONDS = 3600
 
 
@@ -42,7 +44,7 @@ def sign(ca_id: int) -> str | None:
         ca_cert_pem=ca["cert_pem"],
         ca_key_pem=ca["key_pem"],
         revoked_serials=db.list_revoked_serials(ca_id),
-        crl_lifetime_days=PUBLISHED_CRL_DAYS,
+        crl_lifetime_days=db.get_crl_days(ca_id),
     )
     db.publish_crl(ca_id, crl_der)
     next_update = crypto_engine.crl_next_update(crl_der)
@@ -53,13 +55,13 @@ def sign(ca_id: int) -> str | None:
 def _due(crl_der: bytes | None, now: datetime) -> bool:
     if crl_der is None:
         return True
-    next_update = datetime.strptime(crypto_engine.crl_next_update(crl_der), "%Y-%m-%dT%H:%M:%SZ")
-    return next_update.replace(tzinfo=timezone.utc) - now <= RENEW_WHEN_LEFT
+    issued, next_update = crypto_engine.crl_validity(crl_der)
+    return next_update - now <= (next_update - issued) / 2
 
 
 def renew_due(now: datetime | None = None) -> list[int]:
-    """Re-sign every published CRL that is missing or within RENEW_WHEN_LEFT of its next
-    update, and retry Cloudflare pushes that failed."""
+    """Re-sign every published CRL that is missing or has half its life or less left, and
+    retry Cloudflare pushes that failed."""
     from . import crl_worker
 
     now = now or datetime.now(timezone.utc)

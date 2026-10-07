@@ -102,10 +102,26 @@ Disconnect, Delete) and the pairing codes (unused / used / expired / revoked).
    server), and *Installed by Pal* or *Found*. Actions: **Renew** (Pal-issued; the
    button counts down to when renewal opens), **Details** (full certificate view),
    **Remove**. (*Replace* for found certificates is not built.) See §4 "Store audit".
-5. **Connectivity:** the cert server over the LAN and through the relay, and the
-   CRL of the profile in use, each with a status and **Test**; **Refresh**, and
-   **Log** with a debug-logging switch. The CRL profile locks while the server
-   can't be reached.
+5. **Connectivity**, one summary line per section, opened by clicking its name
+   (a section at Warning or Danger opens by itself; a choice made by hand holds
+   until the section's level changes): **Cert server** (Direct, and Remote
+   through the relay), **CRL** (the profile's CRL marked IN USE, then the other
+   published ones), **Windows cache** (the copy of each CRL this account's Windows
+   cache holds, read with `CryptRetrieveObjectByUrl` cache-only, BEHIND or CURRENT
+   against the live CRL, and `ChainCacheResyncFiletime`) and **This PC** (key
+   storage). An open section shows its own links: **Connect to remote**;
+   **Publish CRL now**; **Clear cached CRLs** (`certutil -urlcache <address> delete`
+   for this CA's addresses only, unelevated), **Force re-check now** (helper op
+   `crl-resync`: `certutil -setreg chain\ChainCacheResyncFiletime @now`) and
+   **How Windows checks** (a non-modal guide). **Refresh all** and **Log** sit on
+   the panel's heading. The CRL profile locks while the server can't be reached.
+6. **Footer**: version and links, and **Theme**: the web app's six themes or
+   Match Windows, kept in `%LOCALAPPDATA%\CertGeneratorPal\theme.txt` and read
+   once at start, so choosing one restarts the Pal.
+7. **Closing**: closing mid-step asks first. Once the window has closed,
+   `Program.ExitCompletely` logs what was still open (other windows, an
+   administrator step in its own process) and ends the process if it is still
+   running 5 seconds later, logging that too.
 
 Footer on every screen: version · GitHub · release notes.
 
@@ -292,8 +308,14 @@ requested from the person's own account.
 policy (use cases, allowed names, longest lifetime, CRL types) with the same checks as a new
 pairing code, including that the PC's own name still fits. `allow_remote` keeps its own
 switch. The Pal reads the policy from `device` at every check-in, so tiles follow at once.
-The endpoint accepts CRL types too, but the admin page does not offer them: the Pal stores
-its CRL profiles at pairing and does not re-read them yet, so a change would not show there.
+CRL types can be edited too: the Pal reads `crl_dps` from `device` at every check-in, keeps the
+list per user (the profile file is only written elevated) and offers the profiles it names. A
+type that is unticked while in use stays selected in the Pal, but the server refuses new
+requests with it.
+
+**No CRL, no revocation.** A certificate issued without a CRL distribution point (the **None**
+profile) cannot be revoked: the admin's Revoke is refused, and removing it in the Pal or
+disconnecting the PC records it as gone without revoking it.
 
 **Key storage is reported, not attested.** The Pal sends `key_storage` (`tpm` or
 `software`) with `enroll` (the device key) and with each `requests` call (the key
@@ -592,7 +614,7 @@ outer signature; a time outside ±5 min; an inner path outside `/api/pal/v1/`; a
   retried); **Connect to remote** forces the relay for the session. Relay details
   come from the MACed enroll reply or a LAN `GET device` (kept per user in
   `%LOCALAPPDATA%\CertGeneratorPal\relay-<device>.json`), never from an answer
-  that came through the relay. Connectivity shows Cert server · LAN and · Remote.
+  that came through the relay. Connectivity shows Direct and Remote under Cert server.
 
 ### Server side
 

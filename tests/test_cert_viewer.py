@@ -53,7 +53,7 @@ def test_details_never_include_the_private_key(admin_client):
 
 
 def test_details_show_revocation(admin_client):
-    _, cert_id = _issue(admin_client, common_name="gone.viewer.test")
+    _, cert_id = _issue(admin_client, common_name="gone.viewer.test", crl_dp="placeholder")
     admin_client.post(f"/api/certs/{cert_id}/revoke")
     d = admin_client.get(f"/api/certs/{cert_id}/details").get_json()
     assert d["revoked"] and d["revoked_at"]

@@ -383,7 +383,7 @@ def test_san_handling(admin_client):
 
 def test_crl_uses_revocation_time(admin_client):
     ca_id = _create_ca(admin_client)
-    cert_id = admin_client.post(f"/api/ca/{ca_id}/certs", json={"common_name": "leaf.test"}).get_json()["id"]
+    cert_id = admin_client.post(f"/api/ca/{ca_id}/certs", json={"common_name": "leaf.test", "crl_dp": "placeholder"}).get_json()["id"]
     with sqlite3.connect(db.DB_PATH) as conn:
         conn.execute("UPDATE certificates SET created_at = '2020-01-01T00:00:00Z' WHERE id = ?", (cert_id,))
     admin_client.post(f"/api/certs/{cert_id}/revoke")

@@ -342,6 +342,11 @@ async function selectCA(caId) {
       ? '<span class="badge badge-expired">Expired</span>'
       : '<span class="badge badge-active">Active</span>');
 
+  const publishedDays = document.getElementById('publishedCrlDays');
+  publishedDays.innerHTML = (ca.crl_days_choices || []).map(d =>
+    '<option value="' + d + '"' + (d === ca.crl_days ? ' selected' : '') + '>' + d + (d === 1 ? ' day' : ' days') + '</option>').join('');
+  document.getElementById('publishedCrlRow').classList.toggle('hidden', !(SERVER_MODE && ca.crl_maintained));
+
   updateCaPasswordVisibility();
   renderCloudflarePanel(ca);
   loadCerts(caId);
@@ -395,7 +400,9 @@ async function loadCerts(caId) {
           ? '<button type="button" class="import-chip" data-action="toggleImportHelp" data-arg="' + c.id + '" aria-haspopup="dialog" aria-expanded="false">' +
             (c.revoked ? 'Export ▾' : 'Export / install ▾') + '</button> '
           : '<span class="key-chip" title="Requested by Cert Generator Pal: the private key was made on that PC and never left it, so there is nothing to export here.">Key on PC</span> ') +
-        (!c.revoked ? '<button class="btn btn-ghost btn-sm" data-action="revokeCert" data-arg="' + c.id + '\">Revoke</button> ' : '<span></span>') +
+        (c.revoked ? '<span></span>' : crlDpKey(c.crl_dp) === 'none'
+          ? '<button class="btn btn-ghost btn-sm" disabled title="This certificate names no CRL, so nothing would check that it was revoked. Delete it, or issue its replacement with a CRL distribution point.">Revoke</button> '
+          : '<button class="btn btn-ghost btn-sm" data-action="revokeCert" data-arg="' + c.id + '\">Revoke</button> ') +
         '<button class="btn btn-danger btn-sm" data-action="deleteCert" data-arg="' + c.id + '\">Delete</button>' +
       '</div></td></tr>';
   }).join('');
@@ -590,10 +597,10 @@ function certStatusBadge(notAfter, revoked) {
 
 // Where a certificate tells clients to check revocation, and whether anything answers there.
 const CRL_DP_LABELS = {
-  none: ['badge-algo', 'None', 'No distribution point: clients can only learn of a revocation from a CRL you import yourself.'],
+  none: ['badge-algo', 'None', 'No distribution point: nothing checks revocation, so this certificate can\'t be revoked.'],
   placeholder: ['badge-expired', 'Endpoint-hosted', 'Endpoint-hosted: no server answers this address. Each machine needs the CRL: ' +
     'use the install .zip (Export / install ▾), which on Windows also answers the address locally, or import an exported CRL.'],
-  server_live: ['badge-active', 'Cert Generator (LAN)', 'Served by this Cert Generator server, which keeps the CRL current automatically.'],
+  server_live: ['badge-active', 'Cert Generator (Direct)', 'Served by this Cert Generator server, which keeps the CRL current automatically.'],
   cloudflare_live: ['badge-active', 'Cloudflare Worker', 'Served by this CA\'s Cloudflare Worker, which the app keeps current on every revocation.'],
   cloudflare_pending: ['badge-expired', 'Not published', 'Points at this CA\'s Cloudflare Worker, but the last publish failed or hasn\'t happened yet. Use Publish now on the CA page.'],
   server_pending: ['badge-expired', 'Not published', 'Points at this server, but no CRL is published yet. It publishes once the database is unlocked.'],
@@ -888,6 +895,13 @@ async function revokeCert(certId) {
   }
 }
 
+async function setPublishedCrlDays(_arg, el) {
+  const days = Number(el.value);
+  const res = await api('/api/ca/' + currentCAId + '/crl/lifetime', { method: 'POST', body: JSON.stringify({ days }) });
+  if (res.ok) toast('Published CRL re-signed: valid ' + days + (days === 1 ? ' day' : ' days'));
+  await selectCA(currentCAId);
+}
+
 function servedCrlBadge(nextUpdate) {
   if (!nextUpdate) return '<span class="badge badge-expired">Not published</span>';
   const overdue = new Date(nextUpdate) < new Date();
@@ -978,15 +992,18 @@ async function copyCrlPem() {
 }
 
 async function deleteCert(certId) {
-  let revoked = false;
+  let cert;
   try {
-    revoked = Boolean((await (await api('/api/certs/' + certId)).json()).revoked);
+    cert = await (await api('/api/certs/' + certId)).json();
   } catch (e) {
     toast(e.message, 'error');
     return;
   }
-  const question = revoked
+  const question = cert.revoked
     ? 'Permanently delete this certificate? It stays on the CA\'s CRL until it expires.'
+    : crlDpKey(cert.crl_dp) === 'none'
+    ? 'This certificate names no CRL, so it can\'t be revoked: clients keep trusting it until it expires even after you delete it.' +
+      '\n\nDelete it anyway?'
     : 'This certificate is not revoked, so clients keep trusting it until it expires even after you delete it. ' +
       'Revoke it first to put it on the CRL.\n\nDelete it anyway?';
   if (!confirm(question)) return;
@@ -2853,7 +2870,7 @@ function palCertSummary(d) {
   return rows.length ? '<ul class="pal-list">' + rows.join('') + '</ul>' : '<span class="dim">Nothing yet</span>';
 }
 
-const PAL_CRL_LABELS = { server: 'Cert Generator (LAN)', cloudflare: 'Cloudflare', placeholder: 'Endpoint-hosted', none: 'No CRL' };
+const PAL_CRL_LABELS = { server: 'Cert Generator (Direct)', cloudflare: 'Cloudflare', placeholder: 'Endpoint-hosted', none: 'No CRL' };
 
 function palUseCaseChips(policy) {
   const chips = Object.entries(PAL_USE_CASES)
@@ -3026,7 +3043,8 @@ function renderPalDevices(devices) {
     return;
   }
   box.innerHTML = devices.map(d => {
-    const live = d.certs.filter(c => c.state !== 'revoked' && c.state !== 'expired').length;
+    // Disconnecting revokes these; a certificate that names no CRL can't be revoked.
+    const live = d.certs.filter(c => c.state !== 'revoked' && c.state !== 'expired' && c.revocable).length;
     const data = ' data-id="' + escapeHtml(d.id) + '" data-label="' + escapeHtml(d.label) + '" data-certs="' + live + '"';
     return '<div class="pal-device' + (d.revoked_at ? ' revoked' : '') + '">' +
       '<div class="pal-device-head">' +
@@ -3221,7 +3239,9 @@ async function createPalCode() {
   const editId = document.getElementById('palAddForm').dataset.editId;
   if (editId) {
     const device = palDeviceIndex.get(editId);
-    if (device) body.crl_dps = device.policy.crl_dps;  // fixed at pairing: sent back as they are, default first
+    // The default (the first one) stays first while it is still ticked.
+    const first = device && (device.policy.crl_dps || [])[0];
+    if (body.crl_dps.includes(first)) body.crl_dps = [first, ...body.crl_dps.filter(m => m !== first)];
     await savePalDevice(editId, body);
     return;
   }
@@ -3553,6 +3573,7 @@ const UI_ACTIONS = new Set([
   'showSSHGuideTab',
   'setImportOs',
   'setImportTrusted',
+  'setPublishedCrlDays',
   'showUnlockRecovery',
   'submitReauth',
   'setAccent',

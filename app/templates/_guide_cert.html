@@ -261,7 +261,7 @@
 
     <h4>Distribution Points</h4>
     <ul>
-      <li><strong>This server</strong> (Docker version only) &mdash; <code>&lt;address&gt;/crl/&lt;CA id&gt;.crl</code>, an address your clients can reach. That path answers without signing in. This server signs that CRL itself: valid for 7 days, re-signed on every revocation, and renewed before it runs out.</li>
+      <li><strong>This server</strong> (Docker version only) &mdash; <code>&lt;address&gt;/crl/&lt;CA id&gt;.crl</code>, an address your clients can reach. That path answers without signing in. This server signs that CRL itself: valid for 7 days unless you choose 1 to 14 on the CA page, re-signed on every revocation, and renewed at half its life.</li>
       <li><strong>Cloudflare Worker</strong> (Docker version only) &mdash; the CA's own Worker serves the CRL on the internet, and the app pushes a new one on every revocation. Set it up under <strong>Tools › Cloudflare</strong> and on the CA page.</li>
       <li><strong>Endpoint-hosted</strong> &mdash; <code>http://pki.&lt;domain&gt;/crl/&lt;CA&gt;.crl</code>, an address no server answers. Each machine gets the CRL itself, for endpoints that can reach neither this server nor Cloudflare. Use the certificate's install .zip (below), or import an exported CRL by hand.</li>
     </ul>
@@ -295,7 +295,7 @@
 
     <h4>Important: No OCSP</h4>
     <p>There is no OCSP responder, and the CRL is never signed per request. With <strong>this server</strong>, clients must be able to reach the address in the certificate; expose only <code>/crl/</code> through your reverse proxy (see the README). Endpoint-hosted CRLs suit posture and security demos, lab and test environments, and machines you control.</p>
-    <div class="step-warn">This is <strong>not</strong> equivalent to a production PKI. With this server or a Cloudflare Worker, a revocation reaches clients when their cached CRL expires (up to 7 days); endpoint-hosted, only after each machine gets the updated CRL.</div>
+    <div class="step-warn">This is <strong>not</strong> equivalent to a production PKI. With this server or a Cloudflare Worker, a revocation reaches clients when their cached CRL expires (up to 7 days, or the lifetime you set on the CA page); endpoint-hosted, only after each machine gets the updated CRL.</div>
 
     <h4>PowerShell Import (Alternative)</h4>
     <p>You can also import the CRL via PowerShell:</p>

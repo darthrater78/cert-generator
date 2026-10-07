@@ -193,6 +193,7 @@ _MIGRATIONS = (
     ("certificate_authorities", "crl_next_update", "TEXT"),
     ("certificate_authorities", "crl_der", "BLOB"),
     ("certificate_authorities", "crl_public", "INTEGER NOT NULL DEFAULT 0"),
+    ("certificate_authorities", "crl_days", "INTEGER NOT NULL DEFAULT 7"),  # how long each published CRL is valid
     ("certificates", "crl_dp_url", "TEXT"),  # '' = none; NULL = not yet read from cert_pem
     # The CA's Cloudflare CRL Worker (server mode); see app/cloudflare.py
     ("certificate_authorities", "cf_worker", "TEXT"),        # script name; NULL = no Worker
@@ -640,8 +641,8 @@ def get_ca_summary(ca_id: int) -> dict[str, Any] | None:
     """id, name, domain and CRL state, without the key: readable while locked."""
     with _connect() as conn:
         row = conn.execute(
-            "SELECT id, parent_ca_id, name, domain, crl_public, crl_next_update, cf_worker, cf_dp_url, cf_hostname, "
-            "cf_crl_path FROM certificate_authorities WHERE id = ?", (ca_id,),
+            "SELECT id, parent_ca_id, name, domain, crl_public, crl_days, crl_next_update, cf_worker, cf_dp_url, "
+            "cf_hostname, cf_crl_path FROM certificate_authorities WHERE id = ?", (ca_id,),
         ).fetchone()
         return dict(row) if row else None
 
@@ -670,6 +671,18 @@ def set_crl_public(ca_id: int) -> None:
     """Opt the CA in to /crl/<id>.crl: a certificate now names this server as its distribution point."""
     with _connect() as conn:
         conn.execute("UPDATE certificate_authorities SET crl_public = 1 WHERE id = ?", (ca_id,))
+
+
+def get_crl_days(ca_id: int) -> int:
+    """How long each CRL the app publishes for this CA is valid, in days."""
+    with _connect() as conn:
+        row = conn.execute("SELECT crl_days FROM certificate_authorities WHERE id = ?", (ca_id,)).fetchone()
+        return int(row["crl_days"]) if row else 7
+
+
+def set_crl_days(ca_id: int, days: int) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE certificate_authorities SET crl_days = ? WHERE id = ?", (days, ca_id))
 
 
 def is_crl_public(ca_id: int) -> bool:
@@ -1552,17 +1565,22 @@ def _restore_cas(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
         conn.execute(
             """INSERT INTO certificate_authorities
                (id, parent_ca_id, name, domain, algorithm, not_before, not_after, serial, cert_pem, key_pem, created_at,
-                crl_next_update, crl_der, crl_public,
+                crl_next_update, crl_der, crl_public, crl_days,
                 cf_worker, cf_account_id, cf_crl_path, cf_hostname, cf_domain_id, cf_dp_url, cf_pushed_sha256,
                 cf_pushed_at, cf_push_error)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ca["id"], ca.get("parent_ca_id"), ca["name"], ca["domain"],
              ca["algorithm"], ca["not_before"], ca["not_after"], ca["serial"],
              ca["cert_pem"], _maybe_encrypt(ca["key_pem"]), ca["created_at"],
-             ca.get("crl_next_update"), ca.get("crl_der"), int(bool(ca.get("crl_public"))),
+             ca.get("crl_next_update"), ca.get("crl_der"), int(bool(ca.get("crl_public"))), _restored_crl_days(ca.get("crl_days")),
              # The Worker link survives a restore; the token isn't in backups, so reconnect to manage it.
              *(_text_or_none(ca.get(c)) for c in CF_COLUMNS)),
         )
+
+
+def _restored_crl_days(value: Any) -> int:
+    """A backup's published-CRL lifetime, or the default when it has none (an older backup) or an odd one."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 14 else 7
 
 
 def _text_or_none(value: Any) -> str | None:

@@ -383,7 +383,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input[type="checkbo
 .form-row.full { grid-template-columns: 1fr; }
 .form-row[hidden], .form-group[hidden] { display: none; }
 .form-row .full-span { grid-column: 1 / -1; margin-top: -6px; overflow-wrap: anywhere; }
-.form-group { display: flex; flex-direction: column; gap: 2px; }
+.form-group { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .form-group label, .field-label {
   font: italic 13px var(--font-serif);
   color: var(--text-dim);
@@ -573,6 +573,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   flex-wrap: wrap;
 }
 .export-section .field-label { margin-right: 2px; }
+/* the two CRL lifetimes: labels and selects line up, one under the other */
+.crl-line .field-label { min-width: 11.5em; }
+.crl-line select { min-width: 96px; }
+.crl-line + .crl-line { margin-top: 8px; }
 .export-section select, .export-section input {
   padding: 5px 20px 5px 2px;
   background: transparent;

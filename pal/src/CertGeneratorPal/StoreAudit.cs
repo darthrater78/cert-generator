@@ -13,6 +13,9 @@ internal sealed class AuditItem
     public required bool IsCa { get; init; }
     public required bool IsRoot { get; init; }
     public string Serial => Cert.SerialNumber;
+
+    /// <summary>It names a CRL distribution point. One that doesn't can't be revoked: nothing would check.</summary>
+    public bool HasCrl => Cert.Extensions["2.5.29.31"] is not null;
     public string Names { get; init; } = "";
     public DeviceCert? FromPal { get; set; }
     public string ServerStatus { get; set; } = "unknown";

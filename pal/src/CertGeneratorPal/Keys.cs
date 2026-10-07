@@ -64,7 +64,7 @@ internal static class Keys
     /// <summary>Where a key lives, as the server records it: "tpm" or "software".</summary>
     public static string Storage(CngKey key) => key.Provider == CngProvider.MicrosoftPlatformCryptoProvider ? "tpm" : "software";
 
-    /// <summary>The same for a certificate in a store; null when it has no key here or this process may not read it.</summary>
+    /// <summary>The same for a certificate in a store, whoever made its key; null when it has no key here or Windows doesn't say.</summary>
     public static string? Storage(System.Security.Cryptography.X509Certificates.X509Certificate2 cert)
     {
         if (!cert.HasPrivateKey)
@@ -73,12 +73,46 @@ internal static class Keys
         }
         try
         {
-            using var ecdsa = System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions.GetECDsaPrivateKey(cert) as ECDsaCng;
-            return ecdsa is null ? null : Storage(ecdsa.Key);
+            using var ecdsa = System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions.GetECDsaPrivateKey(cert);
+            using var rsa = ecdsa is null ? System.Security.Cryptography.X509Certificates.RSACertificateExtensions.GetRSAPrivateKey(cert) : null;
+            if (((ecdsa as ECDsaCng)?.Key ?? (rsa as RSACng)?.Key) is { } key)
+            {
+                return Storage(key);
+            }
         }
         catch (CryptographicException)
         {
-            return null;  // a machine key, and the Pal isn't elevated
+            // a machine key, and the Pal isn't elevated: the certificate still names its provider
+        }
+        return ProviderStorage(cert);
+    }
+
+    /// <summary>
+    /// From the certificate's key provider property, which names the provider without opening the key:
+    /// so an imported machine certificate (an install .zip, a .pfx) is read without administrator rights.
+    /// </summary>
+    private static string? ProviderStorage(System.Security.Cryptography.X509Certificates.X509Certificate2 cert)
+    {
+        uint size = 0;
+        if (!NativeMethods.CertGetCertificateContextProperty(cert.Handle, NativeMethods.CertKeyProvInfoPropId, IntPtr.Zero, ref size) || size == 0)
+        {
+            return null;
+        }
+        IntPtr info = System.Runtime.InteropServices.Marshal.AllocHGlobal((int)size);
+        try
+        {
+            if (!NativeMethods.CertGetCertificateContextProperty(cert.Handle, NativeMethods.CertKeyProvInfoPropId, info, ref size))
+            {
+                return null;
+            }
+            // CRYPT_KEY_PROV_INFO: the container name, then the provider name.
+            string? provider = System.Runtime.InteropServices.Marshal.PtrToStringUni(System.Runtime.InteropServices.Marshal.ReadIntPtr(info, IntPtr.Size));
+            return string.IsNullOrEmpty(provider) || provider.Contains("Smart Card", StringComparison.OrdinalIgnoreCase) ? null
+                : provider == CngProvider.MicrosoftPlatformCryptoProvider.Provider ? "tpm" : "software";
+        }
+        finally
+        {
+            System.Runtime.InteropServices.Marshal.FreeHGlobal(info);
         }
     }
 

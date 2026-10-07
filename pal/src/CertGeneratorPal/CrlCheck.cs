@@ -1,14 +1,15 @@
 using System.Diagnostics;
-using System.Formats.Asn1;
 using System.Globalization;
 using System.Net;
+using CertGeneratorPal.Core;
 
 namespace CertGeneratorPal;
 
 /// <summary>Does a revocation (CRL) address answer, and with what? For the status rows and their Test links.</summary>
 internal static class CrlCheck
 {
-    public sealed record Result(bool Ok, string Summary, string Detail);
+    /// <param name="Crl">The CRL the address answered with, when it did.</param>
+    public sealed record Result(bool Ok, string Summary, string Detail, CrlList? Crl = null);
 
     /// <param name="onThisPc">The endpoint-hosted address: it must be answered by this PC's own listener, not the network.</param>
     public static async Task<Result> TestAsync(string url, bool onThisPc)
@@ -46,10 +47,11 @@ internal static class CrlCheck
                     : $"The address answered {code} {response.ReasonPhrase}.";
                 return new(false, summary, $"{url}\n\n{why}\nTime: {timing}");
             }
-            string? about = Describe(body);
+            var crl = CrlList.Parse(body);
+            string? about = crl is null ? null : Describe(crl);
             return new(about is not null, about is not null ? $"Reachable · {timing}" : "Answers, but not with a CRL",
                 $"{url}\n\nHTTP {(int)response.StatusCode} · {body.Length.ToString("N0", CultureInfo.CurrentCulture)} bytes · {timing}\n" +
-                (about ?? "The reply isn't a CRL Windows can read."));
+                (about ?? "The reply isn't a CRL Windows can read."), crl);
         }
         catch (TaskCanceledException)
         {
@@ -61,45 +63,25 @@ internal static class CrlCheck
         }
     }
 
-    /// <summary>This update, next update and the number of revoked serials, read from a DER CRL.</summary>
-    private static string? Describe(byte[] der)
+    /// <summary>The CRL at an address, for the viewer. Throws what HttpClient throws when it can't be had.</summary>
+    public static async Task<byte[]> DownloadAsync(string url, bool onThisPc)
     {
-        try
+        using var http = new HttpClient(new HttpClientHandler { UseProxy = !onThisPc })
         {
-            var crl = new AsnReader(der, AsnEncodingRules.DER).ReadSequence();
-            var tbs = crl.ReadSequence();
-            if (tbs.PeekTag().HasSameClassAndValue(Asn1Tag.Integer))
-            {
-                tbs.ReadInteger();  // version
-            }
-            tbs.ReadSequence();  // signature algorithm
-            tbs.ReadEncodedValue();  // issuer
-            DateTimeOffset thisUpdate = ReadTime(tbs);
-            DateTimeOffset? nextUpdate = tbs.HasData && IsTime(tbs.PeekTag()) ? ReadTime(tbs) : null;
-            int revoked = 0;
-            if (tbs.HasData && tbs.PeekTag().HasSameClassAndValue(Asn1Tag.Sequence))
-            {
-                var list = tbs.ReadSequence();
-                while (list.HasData)
-                {
-                    list.ReadEncodedValue();
-                    revoked++;
-                }
-            }
-            string Date(DateTimeOffset t) => t.ToLocalTime().ToString("d MMM yyyy HH:mm", CultureInfo.CurrentCulture);
-            string next = nextUpdate is { } n
-                ? $"Next update: {Date(n)}{(n < DateTimeOffset.UtcNow ? "  (STALE: Windows rejects it)" : "")}"
-                : "Next update: none";
-            return $"Valid CRL. Issued {Date(thisUpdate)}\n{next}\nRevoked certificates: {revoked.ToString(CultureInfo.CurrentCulture)}";
-        }
-        catch (AsnContentException)
-        {
-            return null;
-        }
+            Timeout = TimeSpan.FromSeconds(10),
+            MaxResponseContentBufferSize = 16 * 1024 * 1024,  // a CRL is kilobytes; whatever answers can't fill memory
+        };
+        using var response = await http.GetAsync(url).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
     }
 
-    private static bool IsTime(Asn1Tag tag) => tag.HasSameClassAndValue(Asn1Tag.UtcTime) || tag.HasSameClassAndValue(Asn1Tag.GeneralizedTime);
+    public static string Date(DateTimeOffset t) => t.ToLocalTime().ToString("d MMM yyyy HH:mm", CultureInfo.CurrentCulture);
 
-    private static DateTimeOffset ReadTime(AsnReader reader) =>
-        reader.PeekTag().HasSameClassAndValue(Asn1Tag.UtcTime) ? reader.ReadUtcTime() : reader.ReadGeneralizedTime();
+    /// <summary>This update, next update and the number of revoked serials.</summary>
+    private static string Describe(CrlList crl)
+    {
+        string next = crl.NextUpdate is { } n ? $"Next update: {Date(n)}{(crl.Stale ? "  (STALE: Windows rejects it)" : "")}" : "Next update: none";
+        return $"Valid CRL. Issued {Date(crl.ThisUpdate)}\n{next}\nRevoked certificates: {crl.Revoked.Count.ToString(CultureInfo.CurrentCulture)}";
+    }
 }

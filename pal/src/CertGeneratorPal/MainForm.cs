@@ -86,12 +86,23 @@ internal sealed class MainForm : Form
     {
         public override string ToString() => CrlDp.Length == 0
             ? "None: pick a CRL profile"
-            : $"{Pairing.CaName}  ·  {CrlTypes.Label(CrlDp)}  ·  {Pairing.ServerUri.Host}";
+            : $"{Pairing.CaName}  ·  {(CrlDp == "none" ? "" : "CRL: ")}{CrlTypes.Label(CrlDp)}  ·  {Pairing.ServerUri.Host}";
     }
 
     private DeviceState? _state;
     private DeviceInfo? _device;
     private Dictionary<string, bool> _crlAnswering = [];
+    private Dictionary<string, CrlList?> _windowsCache = [];  // CRL type → the copy Windows holds for its address, null when none
+    private DateTimeOffset? _resyncTime;                      // when a re-check was last forced on this PC
+    private RevocationGuideDialog? _guide;
+
+    /// <summary>How a Connectivity section is doing; Warning and Danger open it without being asked.</summary>
+    private enum Level { Neutral, Ok, Warning, Danger }
+
+    /// <summary>Sections the user opened or closed by hand, with the level they had then: a change of level drops the choice.</summary>
+    private readonly Dictionary<string, (bool Open, Level At)> _sectionChoice = [];
+    private readonly List<(int First, int Last, Color Ink)> _sectionRules = [];  // open sections with a problem: the rows their left rule spans
+    private (int First, Color Ink)? _openRule;
     private List<AuditItem> _items = [];
     private bool _busy;
 
@@ -130,6 +141,7 @@ internal sealed class MainForm : Form
         header.SetRowSpan(_seal, 4);
         header.Controls.Add(_crlPanel, 0, 4);
         header.SetColumnSpan(_crlPanel, 2);
+        _crlPanel.Paint += PaintSectionRules;
         _drift.LinkClicked += (_, _) => OpenServerDownload();
         header.Controls.Add(_drift, 0, 5);
         header.SetColumnSpan(_drift, 2);
@@ -347,10 +359,70 @@ internal sealed class MainForm : Form
         FitColumnsSoon();
     }
 
+    /// <summary>
+    /// Closing mid-step abandons it, and drops the result of an administrator step already running in its
+    /// own process: ask first. Windows shutting down, or the Pal restarting itself, isn't asked.
+    /// </summary>
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (_busy && e.CloseReason == CloseReason.UserClosing)
+        {
+            var answer = MessageBox.Show(this,
+                $"The Pal is still working:\n\n{_status.Text}\n\nClose anyway? The step in progress is abandoned and may be left half done.",
+                "Cert Generator Pal", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+            e.Cancel = answer != DialogResult.Yes;
+        }
+        base.OnFormClosing(e);
+    }
+
+    /// <summary>The theme list in the footer. A theme is read once at start, so choosing one restarts the Pal.</summary>
+    private FlowLayoutPanel BuildThemePicker()
+    {
+        var picker = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 20, 0) };
+        var label = Theme.Eyebrow("Theme");
+        label.Margin = new Padding(0, 5, 6, 0);
+        var box = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList, Width = 130, FlatStyle = FlatStyle.Flat, Margin = new Padding(0),
+            BackColor = Theme.Surface, ForeColor = Theme.Text, AccessibleName = "Theme",
+        };
+        box.Items.AddRange([.. Theme.Choices]);
+        box.SelectedItem = Theme.Choice;
+        box.SelectionChangeCommitted += (_, _) => ChangeTheme((string)box.SelectedItem!);
+        picker.Controls.Add(label);
+        picker.Controls.Add(box);
+        return picker;
+    }
+
+    private void ChangeTheme(string choice)
+    {
+        if (choice == Theme.Choice)
+        {
+            return;
+        }
+        try
+        {
+            Theme.SaveChoice(choice);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Fail(e);
+            return;
+        }
+        AppLog.Info("Theme: " + choice);
+        if (_busy)
+        {
+            SetStatus("Theme saved. It shows the next time the Pal starts.");
+            return;
+        }
+        Application.Restart();
+    }
+
     private TableLayoutPanel BuildFooter()
     {
-        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
+        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         var links = new LinkLabel { AutoSize = true, Text = $"v{Version}  ·  Help  ·  Troubleshooting  ·  GitHub  ·  Release notes" };
         links.Links.Clear();
@@ -360,6 +432,7 @@ internal sealed class MainForm : Form
         }
         links.LinkClicked += (_, e) => OpenUrl((string)e.Link!.LinkData!);
         footer.Controls.Add(links);
+        footer.Controls.Add(BuildThemePicker());
         _disconnect.LinkClicked += async (_, _) => await DisconnectAsync();
         footer.Controls.Add(_disconnect);
         return footer;
@@ -452,7 +525,12 @@ internal sealed class MainForm : Form
         }
         foreach (var pairing in DeviceState.LoadAll())
         {
-            foreach (string crl in pairing.CrlDps.Count > 0 ? pairing.CrlDps : [pairing.CrlDp.Length > 0 ? pairing.CrlDp : "server"])
+            var allowed = pairing.CrlDps.Count > 0 ? pairing.CrlDps : [pairing.CrlDp.Length > 0 ? pairing.CrlDp : "server"];
+            if (_state is { CrlDp.Length: > 0 } && pairing.DeviceId == _state.DeviceId && !allowed.Contains(_state.CrlDp))
+            {
+                allowed = [.. allowed, _state.CrlDp];  // in use, though the admin no longer allows it: still shown
+            }
+            foreach (string crl in allowed)
             {
                 var choice = new ProfileChoice(pairing, crl);
                 _profileBox.Items.Add(choice);
@@ -511,11 +589,20 @@ internal sealed class MainForm : Form
     private async Task CheckCrlsAsync()
     {
         _crlResults = [];
+        await ReadWindowsCacheAsync();
         if (_device is null || _state is null || !_device.CrlUrls.TryGetValue(_state.CrlDp, out string? url))
         {
             return;
         }
         _crlResults[_state.CrlDp] = await CrlCheck.TestAsync(url, _state.CrlDp == "placeholder");
+    }
+
+    /// <summary>What Windows has cached for each of this CA's CRL addresses, and when a re-check was last forced.</summary>
+    private async Task ReadWindowsCacheAsync()
+    {
+        var urls = _device?.CrlUrls.Where(u => u.Key != "none").ToList() ?? [];
+        (_windowsCache, _resyncTime) = await Task.Run(() =>
+            (urls.ToDictionary(u => u.Key, u => WindowsCrlCache.Read(u.Value)), WindowsCrlCache.ResyncTime()));
     }
 
     /// <summary>Switching CRL profile talks to the server (and backs certificates out): locked while it can't be reached.</summary>
@@ -527,8 +614,9 @@ internal sealed class MainForm : Form
     }
 
     /// <summary>
-    /// Connectivity: the cert server, then the CRL profile in use (none until one is picked). Each row has a
-    /// status dot, what the last check found, and a Test link.
+    /// Connectivity, one line per section: the cert server, the CRL (the profile in use, none until one is
+    /// picked), what Windows has cached of those CRLs, and this PC. A section with a problem opens by itself;
+    /// open, it shows its links and a row per address with a status dot and what the last check found.
     /// </summary>
     private void FillCrlPanel()
     {
@@ -546,16 +634,34 @@ internal sealed class MainForm : Form
             _crlPanel.ResumeLayout();
             return;
         }
-        var heading = Theme.Eyebrow("Connectivity");
-        heading.Margin = new Padding(0, 2, 16, 4);
-        _crlPanel.Controls.Add(heading, 0, 0);
-        var tools = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
-        tools.Controls.Add(PanelLink("Refresh", "Check the cert server and CRL again", async () => await RecheckAsync()));
+        _sectionRules.Clear();
+        _openRule = null;
+        int row = AddPanelHeading();
+        row = AddServerRows(row);
+        row = AddCrlRows(row);
+        row = AddCacheRows(row);
+        row = AddThisPcRows(row);
+        CloseSectionRule(row);
+        _crlPanel.RowCount = row;
+        _crlPanel.Visible = true;
+        _crlPanel.ResumeLayout();
+        _crlPanel.Invalidate();
+        UpdateProfileLock();
+    }
+
+    /// <summary>The Cert server section: the direct route, and the relay when this PC has one; the next free row.</summary>
+    private int AddServerRows(int first)
+    {
+        if (_state is null)
+        {
+            return first;
+        }
+        var serverLinks = new List<LinkLabel>();
         if (_state.Relay is not null)
         {
             bool forced = Connectivity.Route == PalRoute.Relay;
-            tools.Controls.Add(PanelLink(forced ? "Use LAN first" : "Connect to remote",
-                forced ? "Go back to the LAN first, the relay only when the LAN can't be reached"
+            serverLinks.Add(PanelLink(forced ? "Use direct first" : "Connect to remote",
+                forced ? "Go back to the direct connection first, the relay only when it can't be reached"
                        : "Use only the remote relay for now (to test it, or when the LAN shouldn't be used)",
                 async () =>
                 {
@@ -564,6 +670,80 @@ internal sealed class MainForm : Form
                     await RecheckAsync();
                 }));
         }
+        var (level, summary) = ServerSummary();
+        int row = first;
+        if (!AddSection(ref row, "Cert server", level, summary, [.. serverLinks]))
+        {
+            return row;
+        }
+        string serverUrl = _state.ServerUri.GetLeftPart(UriPartial.Authority);
+        bool remoteOnly = Connectivity.Route == PalRoute.Relay;
+        if (remoteOnly)
+        {
+            AddStatusRow(row++, "Direct", serverUrl, new CrlCheck.Result(true, "Not used: connected to remote", ""), null, neutral: true);
+        }
+        else
+        {
+            AddStatusRow(row++, "Direct", serverUrl, _serverCheck, async () => await TestServerAsync(PalRoute.Lan));
+        }
+        if (_state.Relay is { } relayInfo)
+        {
+            AddStatusRow(row++, "Remote", relayInfo.Url, _remoteCheck, async () => await TestServerAsync(PalRoute.Relay));
+        }
+        return row;
+    }
+
+    /// <summary>The Cert server section in one line: which routes answer.</summary>
+    private (Level Level, string Summary) ServerSummary()
+    {
+        var routes = new List<(string Name, CrlCheck.Result? Check)>();
+        if (Connectivity.Route != PalRoute.Relay)
+        {
+            routes.Add(("Direct", _serverCheck));
+        }
+        if (_state?.Relay is not null)
+        {
+            routes.Add(("Remote", _remoteCheck));
+        }
+        var failed = routes.Where(r => r.Check is { Ok: false }).ToList();
+        if (failed.Count > 0)
+        {
+            // One route down with the other answering is a warning; nothing answering is the failure.
+            return (failed.Count == routes.Count ? Level.Danger : Level.Warning,
+                string.Join("  ·  ", failed.Select(r => $"{r.Name}: {r.Check!.Summary}")));
+        }
+        return routes.Count == 0 || routes.Any(r => r.Check is null)
+            ? (Level.Neutral, "Not checked")
+            : (Level.Ok, string.Join(" and ", routes.Select(r => r.Name)) + " reachable");
+    }
+
+    /// <summary>The This PC section: where the keys the Pal makes are stored; the next free row.</summary>
+    private int AddThisPcRows(int row)
+    {
+        if (_deviceKeyStorage is not { } keyStorage)
+        {
+            return row;
+        }
+        bool tpm = keyStorage == "tpm";
+        if (!AddSection(ref row, "This PC", tpm ? Level.Ok : Level.Neutral, tpm ? "Keys kept in the TPM" : "Keys kept in the software key store"))
+        {
+            return row;
+        }
+        AddStatusRow(row++, "Key storage", null, new CrlCheck.Result(tpm,
+            tpm ? "TPM  ·  keys the Pal makes can't be exported or copied off this PC"
+                : "Software key store  ·  this PC has no usable TPM; keys are non-exportable, but an administrator here can extract them", ""),
+            null, neutral: !tpm);
+        return row;
+    }
+
+    /// <summary>The panel's own heading, with the links that act on all of it; the next free row.</summary>
+    private int AddPanelHeading()
+    {
+        var heading = Theme.Eyebrow("Connectivity");
+        heading.Margin = new Padding(0, 2, 16, 4);
+        _crlPanel.Controls.Add(heading, 0, 0);
+        var tools = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+        tools.Controls.Add(PanelLink("Refresh all", "Check the cert server and the CRLs again", async () => await RecheckAsync()));
         tools.Controls.Add(PanelLink("Log", "Show the Pal's log, and turn debug logging on or off", () =>
         {
             using var log = new LogDialog();
@@ -572,74 +752,372 @@ internal sealed class MainForm : Form
         }));
         _crlPanel.Controls.Add(tools, 1, 0);
         _crlPanel.SetColumnSpan(tools, 3);
+        return 1;
+    }
 
-        string serverUrl = _state.ServerUri.GetLeftPart(UriPartial.Authority);
-        int row = 1;
-        bool remoteOnly = Connectivity.Route == PalRoute.Relay;
-        if (remoteOnly)
+    /// <summary>
+    /// A section of the panel: a hairline, then one line with its name (click to open or close), how it is
+    /// doing, and, when open, the links that act on it. Open by itself when it has a problem, until the user
+    /// says otherwise. <paramref name="row"/> moves to the next free row; false when the section is closed
+    /// and its rows are not wanted.
+    /// </summary>
+    private bool AddSection(ref int row, string title, Level level, string summary, params LinkLabel[] links)
+    {
+        CloseSectionRule(row);
+        var rule = new Panel { Height = 1, BackColor = Theme.Border, Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0, 3, 0, 3) };
+        _crlPanel.Controls.Add(rule, 0, row);
+        _crlPanel.SetColumnSpan(rule, 4);
+        row++;
+
+        bool problem = level is Level.Warning or Level.Danger;
+        bool open = SectionOpen(title, level);
+        Color ink = level switch { Level.Ok => Theme.Success, Level.Warning => Theme.Warning, Level.Danger => Theme.Danger, _ => Theme.TextDim };
+        _crlPanel.Controls.Add(SectionHeading(title, summary, level, open, problem ? ink : Theme.TextDim), 0, row);
+
+        var line = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+        line.Controls.Add(new Label { Text = (level == Level.Neutral ? "○  " : "●  ") + summary, AutoSize = true, ForeColor = ink, Margin = new Padding(0, 2, 20, 2) });
+        foreach (var link in links)
         {
-            AddStatusRow(row++, "Cert server · LAN", serverUrl, new CrlCheck.Result(true, "Not used: connected to remote", ""), null, neutral: true);
-        }
-        else
-        {
-            AddStatusRow(row++, "Cert server · LAN", serverUrl, _serverCheck, async () => await TestServerAsync(PalRoute.Lan));
-        }
-        if (_state.Relay is { } relayInfo)
-        {
-            AddStatusRow(row++, "Cert server · Remote", relayInfo.Url, _remoteCheck, async () => await TestServerAsync(PalRoute.Relay));
-        }
-        if (_state.CrlDp.Length > 0)
-        {
-            string type = _state.CrlDp;
-            string? url = _device?.CrlUrls.GetValueOrDefault(type);
-            _crlResults.TryGetValue(type, out var result);
-            string label = "CRL · " + CrlTypes.Label(type);
-            if (type == "none")
+            if (open)
             {
-                AddStatusRow(row, label, null, new CrlCheck.Result(true, "No revocation checks", ""), null, neutral: true);
+                link.Margin = new Padding(0, 4, 12, 0);
+                line.Controls.Add(link);
             }
             else
             {
-                AddStatusRow(row, label, url, result, url is null ? null : async () => await TestCrlAsync(type, url));
+                link.Dispose();
             }
-            if (type == "placeholder" && result is { Ok: false })
-            {
-                var repair = new LinkLabel { Text = "Repair", AutoSize = true, Margin = new Padding(0, 2, 0, 2) };
-                repair.LinkColor = repair.ActiveLinkColor = repair.VisitedLinkColor = Theme.AccentText;
-                repair.LinkClicked += async (_, _) => await RepairAsync();
-                _crlTip.SetToolTip(repair, "Reinstall this PC's CRL listener and refresh its CRLs");
-                _crlPanel.Controls.Add(repair, 3, row);
-            }
-            row++;
         }
-        if (_deviceKeyStorage is { } keyStorage)
+        _crlPanel.Controls.Add(line, 1, row);
+        _crlPanel.SetColumnSpan(line, 3);
+        row++;
+        if (open && problem)
         {
-            bool tpm = keyStorage == "tpm";
-            AddStatusRow(row++, "Key storage", null, new CrlCheck.Result(tpm,
-                tpm ? "TPM  ·  keys the Pal makes can't be exported or copied off this PC"
-                    : "Software key store  ·  this PC has no usable TPM; keys are non-exportable, but an administrator here can extract them", ""),
-                null, neutral: !tpm);
+            _openRule = (row, ink);
         }
-        _crlPanel.RowCount = row;
-        _crlPanel.Visible = true;
-        _crlPanel.ResumeLayout();
-        UpdateProfileLock();
+        return open;
     }
 
-    private void AddStatusRow(int row, string label, string? url, CrlCheck.Result? result, Func<Task>? test, bool neutral = false)
+    /// <summary>Open when the user said so for this level, else when the section has a problem.</summary>
+    private bool SectionOpen(string title, Level level)
+    {
+        if (_sectionChoice.TryGetValue(title, out var choice) && choice.At != level)
+        {
+            _sectionChoice.Remove(title);
+        }
+        return _sectionChoice.TryGetValue(title, out choice) ? choice.Open : level is Level.Warning or Level.Danger;
+    }
+
+    /// <summary>A section's name, as the link that opens or closes it.</summary>
+    private LinkLabel SectionHeading(string title, string summary, Level level, bool open, Color ink)
+    {
+        var heading = new LinkLabel
+        {
+            Text = (open ? "▼  " : "►  ") + title.ToUpperInvariant(), AutoSize = true, Font = Theme.MonoSmall, LinkBehavior = LinkBehavior.NeverUnderline,
+            Margin = new Padding(0, 3, 16, 3), AccessibleName = $"{title}: {summary}. {(open ? "Close" : "Open")} this section",
+        };
+        heading.LinkColor = heading.ActiveLinkColor = heading.VisitedLinkColor = ink;
+        heading.LinkClicked += (_, _) =>
+        {
+            _sectionChoice[title] = (!open, level);
+            FillCrlPanel();
+        };
+        _crlTip.SetToolTip(heading, open ? "Hide the detail" : "Show the detail and what you can do here");
+        return heading;
+    }
+
+    /// <summary>The open section's rows end above <paramref name="next"/>: note the span its left rule is drawn over.</summary>
+    private void CloseSectionRule(int next)
+    {
+        if (_openRule is { } rule && next > rule.First)
+        {
+            _sectionRules.Add((rule.First, next - 1, rule.Ink));
+        }
+        _openRule = null;
+    }
+
+    /// <summary>A 3px rule in the section's ink down the left of an open section that has a problem.</summary>
+    private void PaintSectionRules(object? sender, PaintEventArgs e)
+    {
+        int[] heights = _crlPanel.GetRowHeights();
+        foreach (var (first, last, ink) in _sectionRules)
+        {
+            if (last >= heights.Length)
+            {
+                continue;
+            }
+            using var brush = new SolidBrush(ink);
+            e.Graphics.FillRectangle(brush, 6, heights.Take(first).Sum() + 1, 3, heights.Skip(first).Take(last - first + 1).Sum() - 2);
+        }
+    }
+
+    /// <summary>The CRL section: the profile in use, then the CRLs this server and its Cloudflare Worker publish; the next free row.</summary>
+    private int AddCrlRows(int row)
+    {
+        if (_state is null)
+        {
+            return row;
+        }
+        bool published = _device is not null && (_device.CrlUrls.ContainsKey("server") || _device.CrlUrls.ContainsKey("cloudflare"));
+        if (_state.CrlDp.Length == 0 && !published)
+        {
+            return row;
+        }
+        var (level, summary) = CrlSummary();
+        if (!AddSection(ref row, "CRL", level, summary, published
+            ? [PanelLink("Publish CRL now", "Have the server sign its CRL again and publish it now (here and to its Cloudflare Worker)", async () => await PublishCrlAsync())]
+            : []))
+        {
+            return row;
+        }
+        if (_state.CrlDp.Length > 0)
+        {
+            AddProfileCrlRow(row++, _state.CrlDp);
+        }
+        // The CRLs this server and its Cloudflare Worker publish can be looked at whichever profile is in use.
+        foreach (string type in new[] { "server", "cloudflare" })
+        {
+            if (type != _state.CrlDp && _device?.CrlUrls.GetValueOrDefault(type) is { } url)
+            {
+                _crlResults.TryGetValue(type, out var result);
+                AddStatusRow(row, CrlTypes.Label(type), url, result, async () => await TestCrlAsync(type, url));
+                AddViewLink(row++, type, url);
+            }
+        }
+        return row;
+    }
+
+    /// <summary>The CRL section in one line: the profile in use and whether its CRL answers.</summary>
+    private (Level Level, string Summary) CrlSummary()
+    {
+        string type = _state?.CrlDp ?? "";
+        if (type.Length == 0)
+        {
+            return (Level.Neutral, "No CRL profile picked");
+        }
+        if (type == "none")
+        {
+            return (Level.Neutral, "No CRL  ·  certificates from this profile can't be revoked");
+        }
+        string inUse = CrlTypes.Label(type) + " in use  ·  ";
+        return _crlResults.GetValueOrDefault(type) is not { } result ? (Level.Neutral, inUse + "not checked")
+            : (result.Ok ? Level.Ok : Level.Danger, inUse + result.Summary);
+    }
+
+    /// <summary>The row for the CRL of the profile in use: its status, and Repair or View beside it.</summary>
+    private void AddProfileCrlRow(int row, string type)
+    {
+        string? url = _device?.CrlUrls.GetValueOrDefault(type);
+        _crlResults.TryGetValue(type, out var result);
+        string label = CrlTypes.Label(type);
+        if (type == "none")
+        {
+            AddStatusRow(row, label, null, new CrlCheck.Result(true, "Certificates from this profile can't be revoked", ""), null, neutral: true, tag: "IN USE");
+        }
+        else
+        {
+            AddStatusRow(row, label, url, result, url is null ? null : async () => await TestCrlAsync(type, url), tag: "IN USE");
+        }
+        if (type == "placeholder" && result is { Ok: false })
+        {
+            var repair = new LinkLabel { Text = "Repair", AutoSize = true, Margin = new Padding(0, 2, 0, 2) };
+            repair.LinkColor = repair.ActiveLinkColor = repair.VisitedLinkColor = Theme.AccentText;
+            repair.LinkClicked += async (_, _) => await RepairAsync();
+            _crlTip.SetToolTip(repair, "Reinstall this PC's CRL listener and refresh its CRLs");
+            _crlPanel.Controls.Add(repair, 3, row);
+        }
+        else if (type != "none" && url is not null)
+        {
+            AddViewLink(row, type, url);
+        }
+    }
+
+    /// <summary>
+    /// The Windows cache section: one row per CRL address this CA has, saying which copy Windows holds
+    /// (BEHIND or CURRENT once the live CRL has been fetched to compare), then when a re-check was last forced.
+    /// </summary>
+    private int AddCacheRows(int row)
+    {
+        if (_windowsCache.Count == 0)
+        {
+            return row;
+        }
+        var (level, summary) = CacheSummary();
+        if (!AddSection(ref row, "Windows cache", level, summary,
+            PanelLink("Force re-check now", "Make every account, service and running program fetch again what it cached before now (asks for administrator approval)",
+                async () => await ForceResyncAsync()),
+            PanelLink("Clear cached CRLs", "Delete your account's cached copies of this CA's CRLs, so Windows fetches them again", async () => await ClearCacheAsync()),
+            PanelLink("How Windows checks", "How Windows handles a CRL, and how long a revocation takes to show", () =>
+            {
+                if (_guide is null || _guide.IsDisposed)
+                {
+                    // The lifetime is on the CRL itself: the in-use one when it was fetched, else any Windows holds.
+                    var crl = _crlResults.GetValueOrDefault(_state?.CrlDp ?? "")?.Crl ?? _windowsCache.Values.FirstOrDefault(c => c is not null);
+                    int days = crl?.NextUpdate is { } next ? (int)Math.Round((next - crl.ThisUpdate).TotalDays) : 0;
+                    _guide = days > 0 ? new RevocationGuideDialog(days) : new RevocationGuideDialog();
+                    _guide.Show(this);
+                }
+                _guide.Activate();
+                return Task.CompletedTask;
+            })))
+        {
+            return row;
+        }
+        string inUse = _state?.CrlDp ?? "";
+        foreach (var (type, cached) in _windowsCache.OrderBy(c => c.Key == inUse ? 0 : 1).ThenBy(c => c.Key, StringComparer.Ordinal))
+        {
+            AddCacheRow(row++, type, cached);
+        }
+        AddStatusRow(row++, "Forced re-check", null, _resyncTime is { } forced
+            ? new CrlCheck.Result(true, $"{CrlCheck.Date(forced)}  ·  anything Windows cached before then is fetched again", "")
+            : new CrlCheck.Result(true, "Never", ""), null, neutral: _resyncTime is null);
+        return row;
+    }
+
+    /// <summary>The Windows cache section in one line: whether this PC's copy of the CRL in use is the latest.</summary>
+    private (Level Level, string Summary) CacheSummary()
+    {
+        string type = _state?.CrlDp ?? "";
+        if (_windowsCache.GetValueOrDefault(type) is not { } cached)
+        {
+            int held = _windowsCache.Values.Count(c => c is not null);
+            return (Level.Neutral, held == 0 ? "Nothing cached" : $"Nothing cached for the CRL in use  ·  {held.ToString(CultureInfo.CurrentCulture)} other cached");
+        }
+        string until = cached.NextUpdate is { } next ? CrlCheck.Date(next) : "it is replaced";
+        if (cached.Stale)
+        {
+            return (Level.Neutral, $"This PC's copy ran out {until}  ·  the next check fetches a new one");
+        }
+        return _crlResults.GetValueOrDefault(type)?.Crl is not { } live ? (Level.Neutral, $"This PC uses the CRL from {CrlCheck.Date(cached.ThisUpdate)} until {until}")
+            : cached.IsBehind(live) ? (Level.Warning, $"Behind  ·  this PC uses an older CRL until {until}")
+            : (Level.Ok, $"Current  ·  this PC has the latest CRL, good until {until}");
+    }
+
+    /// <summary>One CRL's row in the Windows cache section: the copy Windows holds, compared with the live CRL when that was fetched.</summary>
+    private void AddCacheRow(int row, string type, CrlList? cached)
+    {
+        if (cached is null)
+        {
+            AddStatusRow(row, CrlTypes.Label(type), null, new CrlCheck.Result(true, "Not cached", ""), null, neutral: true);
+            return;
+        }
+        string holds = $"Windows holds the CRL from {CrlCheck.Date(cached.ThisUpdate)}  ·  {cached.Revoked.Count.ToString(CultureInfo.CurrentCulture)} revoked"
+            + (cached.NextUpdate is { } next ? (cached.Stale ? "  ·  ran out " : "  ·  uses it until ") + CrlCheck.Date(next) : "");
+        var live = _crlResults.GetValueOrDefault(type)?.Crl;
+        if (cached.Stale || live is null)
+        {
+            AddStatusRow(row, CrlTypes.Label(type), null, new CrlCheck.Result(true, holds, ""), null, neutral: true);
+        }
+        else if (cached.IsBehind(live))
+        {
+            AddStatusRow(row, CrlTypes.Label(type), null,
+                new CrlCheck.Result(true, $"{holds}  ·  the server has a newer one from {CrlCheck.Date(live.ThisUpdate)}", ""), null,
+                tag: "BEHIND", ink: Theme.Warning);
+        }
+        else
+        {
+            AddStatusRow(row, CrlTypes.Label(type), null, new CrlCheck.Result(true, holds, ""), null, tag: "CURRENT");
+        }
+        var view = new LinkLabel { Text = "View", AutoSize = true, Margin = new Padding(0, 2, 0, 2) };
+        view.LinkColor = view.ActiveLinkColor = view.VisitedLinkColor = Theme.AccentText;
+        view.LinkClicked += (_, _) => ViewCached(type, cached);
+        _crlTip.SetToolTip(view, "Show the revoked certificates on the copy Windows holds");
+        _crlPanel.Controls.Add(view, 3, row);
+    }
+
+    private void ViewCached(string type, CrlList cached)
+    {
+        var onThisPc = _items.Where(i => !i.IsCa).GroupBy(i => StoreAudit.NormalizeSerial(i.Serial)).ToDictionary(g => g.Key, g => g.First().Names);
+        using var dialog = new CrlDialog("Windows cache · " + CrlTypes.Label(type), _device?.CrlUrls.GetValueOrDefault(type) ?? "", cached, onThisPc);
+        dialog.ShowDialog(this);
+    }
+
+    /// <summary>Clear cached CRLs: this CA's addresses only (the server's, and any an installed certificate names).</summary>
+    private async Task ClearCacheAsync()
+    {
+        if (_device is null || !BeginBusy("Clearing Windows' cached CRLs…"))
+        {
+            return;
+        }
+        try
+        {
+            var urls = _device.CrlUrls.Where(u => u.Key != "none").Select(u => u.Value)
+                .Concat(_items.Where(i => !i.IsCa).SelectMany(i => StoreAudit.CrlUrls(i.Cert))).Distinct().ToList();
+            await Task.Run(() => WindowsCrlCache.Clear(urls));
+            await ReadWindowsCacheAsync();
+            FillCrlPanel();
+            int left = _windowsCache.Values.Count(c => c is not null);
+            SetStatus(left == 0
+                ? "Cleared: Windows fetches this CA's CRLs again the next time something checks a certificate."
+                : $"Windows still holds {left} of this CA's CRLs. See the log.");
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            Fail(e);
+        }
+        finally
+        {
+            EndBusy();
+        }
+    }
+
+    private async Task ForceResyncAsync()
+    {
+        if (!BeginBusy(Elevation.IsElevated ? "Forcing a re-check…" : "Forcing a re-check… approve the Windows prompt."))
+        {
+            return;
+        }
+        try
+        {
+            var result = await Elevation.RunAsync(new HelperOp { Op = "crl-resync" });
+            await ReadWindowsCacheAsync();
+            FillCrlPanel();
+            if (result.Ok)
+            {
+                SetStatus(result.Message);
+            }
+            else
+            {
+                Report(result);
+            }
+        }
+        catch (Exception e) when (e is not OutOfMemoryException)
+        {
+            Fail(e);
+        }
+        finally
+        {
+            EndBusy();
+        }
+    }
+
+    private void AddStatusRow(int row, string label, string? url, CrlCheck.Result? result, Func<Task>? test, bool neutral = false,
+        string? tag = null, Color? ink = null)
     {
         (string dot, Color color, string status) = neutral ? ("○", Theme.TextDim, result?.Summary ?? "")
             : result is null ? ("○", Theme.TextDim, url is null ? "No address yet" : "Not checked")
-            : result.Ok ? ("●", Theme.Success, result.Summary)
+            : result.Ok ? ("●", ink ?? Theme.Success, result.Summary)
             : ("●", Theme.Danger, result.Summary);
-        var name = new Label { Text = $"{dot}  {label}", AutoSize = true, ForeColor = color, Font = Theme.UiBold, Margin = new Padding(0, 2, 16, 2) };
+        var name = new Label { Text = $"{dot}  {label}", AutoSize = true, ForeColor = color, Font = Theme.UiBold, Margin = new Padding(18, 2, 16, 2) };
         var state = new Label
         {
             Text = status + (url is null ? "" : "  ·  " + url),
-            AutoSize = true, ForeColor = neutral || result is null ? Theme.TextDim : result.Ok ? Theme.Success : Theme.Danger,
+            AutoSize = true, ForeColor = neutral || result is null ? Theme.TextDim : result.Ok ? ink ?? Theme.Success : Theme.Danger,
             Margin = new Padding(0, 2, 16, 2),
         };
-        _crlPanel.Controls.Add(name, 0, row);
+        if (tag is not null)
+        {
+            // A status word beside the name: IN USE marks the profile's own CRL, so the others need no "(not in use)".
+            var cell = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(18, 0, 16, 0) };
+            name.Margin = new Padding(0, 2, 6, 2);
+            cell.Controls.Add(name);
+            cell.Controls.Add(new Label { Text = tag, AutoSize = true, ForeColor = color, Font = Theme.MonoSmall, Margin = new Padding(0, 5, 0, 2) });
+            _crlPanel.Controls.Add(cell, 0, row);
+        }
+        else
+        {
+            _crlPanel.Controls.Add(name, 0, row);
+        }
         _crlPanel.Controls.Add(state, 1, row);
         if (test is not null && url is not null)
         {
@@ -649,6 +1127,15 @@ internal sealed class MainForm : Form
             _crlTip.SetToolTip(link, "Check " + url + " now");
             _crlPanel.Controls.Add(link, 2, row);
         }
+    }
+
+    private void AddViewLink(int row, string type, string url)
+    {
+        var view = new LinkLabel { Text = "View", AutoSize = true, Margin = new Padding(0, 2, 0, 2) };
+        view.LinkColor = view.ActiveLinkColor = view.VisitedLinkColor = Theme.AccentText;
+        view.LinkClicked += async (_, _) => await ViewCrlAsync(type, url);
+        _crlTip.SetToolTip(view, "Show the revoked certificates this CRL lists now");
+        _crlPanel.Controls.Add(view, 3, row);
     }
 
     private LinkLabel PanelLink(string text, string tip, Func<Task> action)
@@ -688,7 +1175,7 @@ internal sealed class MainForm : Form
             await CheckCrlsAsync();
             FillCrlPanel();
             UpdateDrift();
-            SetStatus((_serverCheck is { } lan ? "LAN: " + lan.Summary : "LAN: not used") + (_remoteCheck is { } remote ? " · Remote: " + remote.Summary : "")
+            SetStatus((_serverCheck is { } lan ? "Direct: " + lan.Summary : "Direct: not used") + (_remoteCheck is { } remote ? " · Remote: " + remote.Summary : "")
                 + (_state.CrlDp.Length > 0 && _crlResults.TryGetValue(_state.CrlDp, out var crl) ? " · CRL: " + crl.Summary : ""));
         }
         finally
@@ -711,6 +1198,10 @@ internal sealed class MainForm : Form
             watch.Stop();
             _device = device;
             state.RememberRelay(device);  // only when it came over the LAN
+            if (state.RememberCrlDps(device))
+            {
+                FillProfiles();  // the admin changed which CRL profiles this PC may use
+            }
             AppLog.Debug($"Server check {via} {url}: ok in {watch.ElapsedMilliseconds} ms (server v{device.ServerVersion})");
             string ms = watch.ElapsedMilliseconds.ToString(CultureInfo.CurrentCulture);
             return new CrlCheck.Result(true, $"Reachable · {ms} ms",
@@ -730,7 +1221,7 @@ internal sealed class MainForm : Form
         {
             return;
         }
-        string name = route == PalRoute.Relay ? "Cert server · Remote" : "Cert server · LAN";
+        string name = route == PalRoute.Relay ? "Cert server · Remote" : "Cert server · Direct";
         UseWaitCursor = true;
         SetStatus($"Testing {name}…");
         var result = await CheckServerAsync(_state, route);
@@ -764,6 +1255,75 @@ internal sealed class MainForm : Form
         SetStatus($"{CrlTypes.Label(type)}: {result.Summary}");
         MessageBox.Show(this, result.Detail, $"{CrlTypes.Label(type)}: {result.Summary}", MessageBoxButtons.OK,
             result.Ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+    }
+
+    /// <summary>Ask the server to sign and publish the CA's CRL now, then check the addresses again.</summary>
+    private async Task PublishCrlAsync()
+    {
+        if (_state is null || !BeginBusy("Publishing the CRL…"))
+        {
+            return;
+        }
+        try
+        {
+            using var signer = new DeviceSigner(_state);
+            using var client = _state.Client();
+            var reply = await client.PublishCrlAsync(signer);
+            await CheckCrlsAsync();
+            FillCrlPanel();
+            bool pushFailed = reply.Cloudflare is { Pushed: false };
+            string worker = reply.Cloudflare is null ? ""
+                : pushFailed ? $"\n\nPublishing to the Cloudflare Worker failed: {reply.Cloudflare.Error ?? "unknown error"}. The server retries every hour."
+                : "\n\nThe Cloudflare Worker has it too.";
+            AppLog.Info($"CRL published now: {reply.Revoked} revoked{(pushFailed ? "; Cloudflare push failed" : "")}");
+            SetStatus(pushFailed ? "CRL published; the Cloudflare Worker didn't take it" : "CRL published");
+            MessageBox.Show(this, $"The server signed a new CRL listing {reply.Revoked.ToString(CultureInfo.CurrentCulture)} revoked certificate{(reply.Revoked == 1 ? "" : "s")}."
+                + worker + "\n\nA PC that already fetched the CRL keeps its copy until that copy's next update.",
+                "Publish CRL now", MessageBoxButtons.OK, pushFailed ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+        }
+        catch (Exception e) when (e is PalException or DeviceKeyUnavailableException or HttpRequestException or TaskCanceledException)
+        {
+            Fail(e);
+        }
+        finally
+        {
+            EndBusy();
+        }
+    }
+
+    /// <summary>Download the CRL an address serves now and list what it revokes.</summary>
+    private async Task ViewCrlAsync(string type, string url)
+    {
+        if (_busy)
+        {
+            return;
+        }
+        UseWaitCursor = true;
+        SetStatus($"Getting the CRL: {url}");
+        try
+        {
+            if (CrlList.Parse(await CrlCheck.DownloadAsync(url, type == "placeholder")) is not { } crl)
+            {
+                SetStatus($"{CrlTypes.Label(type)}: answers, but not with a CRL");
+                MessageBox.Show(this, $"{url}\n\nThe reply isn't a CRL Windows can read.", "CRL · " + CrlTypes.Label(type), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            var onThisPc = _items.Where(i => !i.IsCa).GroupBy(i => StoreAudit.NormalizeSerial(i.Serial)).ToDictionary(g => g.Key, g => g.First().Names);
+            SetStatus($"{CrlTypes.Label(type)}: {crl.Revoked.Count.ToString(CultureInfo.CurrentCulture)} revoked");
+            UseWaitCursor = false;
+            using var dialog = new CrlDialog(CrlTypes.Label(type), url, crl, onThisPc);
+            dialog.ShowDialog(this);
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or UriFormatException)
+        {
+            string why = e is TaskCanceledException ? "No answer within 10 seconds." : e.Message;
+            SetStatus($"{CrlTypes.Label(type)}: couldn't get the CRL");
+            MessageBox.Show(this, $"{url}\n\n{why}", "CRL · " + CrlTypes.Label(type), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            UseWaitCursor = false;
+        }
     }
 
     private async Task RepairAsync()
@@ -802,43 +1362,7 @@ internal sealed class MainForm : Form
             revokedByServer = [];
             try
             {
-                _device = null;
-                await CheckBothAsync(state);  // sets _device from whichever route answered
-                if (!ServerReachable || _device is null)
-                {
-                    throw new PalException((_serverCheck ?? _remoteCheck)?.Summary + ".");
-                }
-                using var signer = new DeviceSigner(state);
-                // The LAN just failed: go straight to the relay rather than waiting for it again.
-                using var client = state.Client(_serverCheck is { Ok: true } ? null : PalRoute.Relay);
-                if (ChainCheck.RootMatches(_device.Chain, state.RootSha256))
-                {
-                    state.Chain = _device.Chain;  // picks up a new intermediate; saved by the next elevated step
-                }
-                await PendingRevokes.FlushAsync(client, signer, state.DeviceId);  // removals made while the server was out of reach
-                _items = await Task.Run(() => StoreAudit.Run(state));
-                // Where each key lives goes along, so the admin sees which are in the TPM.
-                var keys = new Dictionary<string, string>();
-                var reported = _device.Certs.Where(c => c.KeyStorage is not null)
-                    .GroupBy(c => StoreAudit.NormalizeSerial(c.Serial)).ToDictionary(g => g.Key, g => g.First().KeyStorage!);
-                foreach (var item in _items.Where(i => !i.IsCa))
-                {
-                    if (Keys.Storage(item.Cert) is { } storage)
-                    {
-                        keys[item.Serial] = storage;
-                        item.KeyStorage = storage;
-                    }
-                    else
-                    {
-                        item.KeyStorage = reported.GetValueOrDefault(StoreAudit.NormalizeSerial(item.Serial), "");
-                    }
-                }
-                _deviceKeyStorage = signer.KeyStorage;
-                var uses = _items.Where(i => i.UsedBy.Count > 0).GroupBy(i => i.Serial)
-                    .ToDictionary(g => g.Key, g => g.SelectMany(i => i.UsedBy).Distinct().ToList());
-                status = await client.StatusAsync(signer, _items.Select(i => i.Serial).Distinct().ToList(), _deviceKeyStorage, keys, LocalIdentity.AccountName, uses);
-                _crlAnswering = await LocalCrlServer.ProbeAsync(_device.SelfHosted);
-                await CheckCrlsAsync();
+                status = await AuditWithServerAsync(state);
             }
             catch (Exception e) when (e is PalException or DeviceKeyUnavailableException or HttpRequestException)
             {
@@ -872,15 +1396,75 @@ internal sealed class MainForm : Form
         }
         if (revokedByServer.Count > 0)
         {
-            // Something the server did since this PC last looked: say so, once.
-            string it = revokedByServer.Count == 1 ? "it" : "them";
-            MessageBox.Show(this,
-                (revokedByServer.Count == 1 ? "Your admin revoked a certificate on this PC:" : $"Your admin revoked {revokedByServer.Count} certificates on this PC:") +
-                "\n\n" + string.Join("\n", revokedByServer.Take(12).Select(i => $"• {i.Names}  ({i.UseLabel})")) +
-                $"\n\nNothing that checks revocation trusts {it} any more. Select {it} and choose Remove to take {it} off this PC, " +
-                "then request a new certificate if you still need one.",
-                Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            ShowRevokedByServer(revokedByServer);
         }
+    }
+
+    /// <summary>
+    /// The refresh's server half: check the routes, send waiting removals, audit the stores and report them;
+    /// the server's status for each serial. Throws what the caller turns into "Server: …".
+    /// </summary>
+    private async Task<Dictionary<string, string>> AuditWithServerAsync(DeviceState state)
+    {
+        _device = null;
+        await CheckBothAsync(state);  // sets _device from whichever route answered
+        if (!ServerReachable || _device is null)
+        {
+            throw new PalException((_serverCheck ?? _remoteCheck)?.Summary + ".");
+        }
+        using var signer = await Task.Run(() => new DeviceSigner(state));  // the TPM again: off the window's thread
+        // The LAN just failed: go straight to the relay rather than waiting for it again.
+        using var client = state.Client(_serverCheck is { Ok: true } ? null : PalRoute.Relay);
+        if (ChainCheck.RootMatches(_device.Chain, state.RootSha256))
+        {
+            state.Chain = _device.Chain;  // picks up a new intermediate; saved by the next elevated step
+        }
+        await Task.Run(() => PendingRevokes.FlushAsync(client, signer, state.DeviceId));  // removals made while the server was out of reach
+        var items = _items = await Task.Run(() => StoreAudit.Run(state));
+        // Where each key lives goes along, so the admin sees which are in the TPM.
+        var keys = new Dictionary<string, string>();
+        var reported = _device.Certs.Where(c => c.KeyStorage is not null)
+            .GroupBy(c => StoreAudit.NormalizeSerial(c.Serial)).ToDictionary(g => g.Key, g => g.First().KeyStorage!);
+        string deviceKeyStorage = _deviceKeyStorage = await Task.Run(() =>
+        {
+            ReadKeyStorage(items, reported, keys);
+            return signer.KeyStorage;
+        });
+        var uses = _items.Where(i => i.UsedBy.Count > 0).GroupBy(i => i.Serial)
+            .ToDictionary(g => g.Key, g => g.SelectMany(i => i.UsedBy).Distinct().ToList());
+        var status = await Task.Run(() => client.StatusAsync(signer, items.Select(i => i.Serial).Distinct().ToList(), deviceKeyStorage, keys, LocalIdentity.AccountName, uses));
+        _crlAnswering = await LocalCrlServer.ProbeAsync(_device.SelfHosted);
+        await CheckCrlsAsync();
+        return status;
+    }
+
+    /// <summary>Where each certificate's key lives (opens each private key, so off the window's thread); the server's word where Windows won't say.</summary>
+    private static void ReadKeyStorage(List<AuditItem> items, Dictionary<string, string> reported, Dictionary<string, string> keys)
+    {
+        foreach (var item in items.Where(i => !i.IsCa))
+        {
+            if (Keys.Storage(item.Cert) is { } storage)
+            {
+                keys[item.Serial] = storage;
+                item.KeyStorage = storage;
+            }
+            else
+            {
+                item.KeyStorage = reported.GetValueOrDefault(StoreAudit.NormalizeSerial(item.Serial), "");
+            }
+        }
+    }
+
+    /// <summary>Something the server did since this PC last looked: say so, once.</summary>
+    private void ShowRevokedByServer(List<AuditItem> revokedByServer)
+    {
+        string it = revokedByServer.Count == 1 ? "it" : "them";
+        MessageBox.Show(this,
+            (revokedByServer.Count == 1 ? "Your admin revoked a certificate on this PC:" : $"Your admin revoked {revokedByServer.Count} certificates on this PC:") +
+            "\n\n" + string.Join("\n", revokedByServer.Take(12).Select(i => $"• {i.Names}  ({i.UseLabel})")) +
+            $"\n\nNothing that checks revocation trusts {it} any more. Select {it} and choose Remove to take {it} off this PC, " +
+            "then request a new certificate if you still need one.",
+            Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 
     private void UpdateTiles()
@@ -1056,11 +1640,11 @@ internal sealed class MainForm : Form
         int count = _list.SelectedItems.Count;
         _remove.Enabled = !_busy && count > 0;
         _remove.Text = count > 1 ? $"REMOVE {count}" : "REMOVE";
-        int revocable = _list.SelectedItems.Cast<ListViewItem>().Count(r => r.Tag is AuditItem { IsCa: false, FromPal.Revoked: 0 });
+        int revocable = _list.SelectedItems.Cast<ListViewItem>().Count(r => r.Tag is AuditItem { IsCa: false, HasCrl: true, FromPal.Revoked: 0 });
         _revoke.Enabled = !_busy && revocable > 0;
         _revoke.Text = revocable > 1 ? $"REVOKE {revocable}" : "REVOKE";
-        _crlTip.SetToolTip(_revoke, "Have the server revoke a certificate this PC was issued. It stays on this PC, marked revoked, until you remove it.");
-        _crlTip.SetToolTip(_remove, "Remove from this PC. A certificate this PC was issued is revoked on the server in the same step.");
+        _crlTip.SetToolTip(_revoke, "Have the server revoke a certificate this PC was issued. It stays on this PC, marked revoked, until you remove it. A certificate that names no CRL can't be revoked.");
+        _crlTip.SetToolTip(_remove, "Remove from this PC. A certificate this PC was issued is revoked on the server in the same step, unless it names no CRL.");
         _details.Enabled = item is not null;
         _bind.Enabled = !_busy && item is { CanBind: true };
         _crlTip.SetToolTip(_bind, "Choose what uses this certificate, or take it out of use: Remote Desktop, WinRM, an IIS site or a Remote Desktop Services role. Your admin decides which are allowed. Renewing it moves them to the new certificate.");
@@ -1284,19 +1868,14 @@ internal sealed class MainForm : Form
     /// the ones this PC was issued: a removed certificate must not stay valid. Revoke
     /// (<paramref name="revokeOnly"/>) has the server revoke them and leaves them here, marked revoked.
     /// </summary>
-    private async Task RemoveAsync(bool revokeOnly)
+    /// <summary>The confirmation for Remove or Revoke: what goes, what still uses it, and what the server revokes (or can't).</summary>
+    private static string RemoveQuestion(List<AuditItem> items, List<AuditItem> revocable, int noCrl, bool revokeOnly)
     {
-        var items = revokeOnly ? SelectedAll.Where(i => !i.IsCa && i.FromPal is { Revoked: 0 }).ToList() : SelectedAll;
-        if (items.Count == 0)
-        {
-            return;
-        }
         var lines = items.Take(12).Select(i => $"• {i.Names}  ({i.StoreLabel})").ToList();
         if (items.Count > 12)
         {
             lines.Add($"• …and {items.Count - 12} more");
         }
-        var issuedHere = items.Where(i => !i.IsCa && i.FromPal is { Revoked: 0 }).ToList();
         string one = items.Count == 1 ? "it" : "them";
         string question;
         string warning = "";
@@ -1319,80 +1898,51 @@ internal sealed class MainForm : Form
                 warning += "\n\nIn use: " + string.Join("; ", inUse.Select(i => $"{i.Names} by {string.Join(", ", i.UsedBy)}")) +
                     ". Without it, whatever uses it has no certificate, and Remote Desktop goes back to its own.";
             }
-            if (issuedHere.Count > 0)
+            if (revocable.Count > 0)
             {
-                warning += "\n\nALSO REVOKED: " + (issuedHere.Count == items.Count
+                warning += "\n\nALSO REVOKED: " + (revocable.Count == items.Count
                         ? (items.Count == 1 ? "this PC was issued this certificate, so it is" : "this PC was issued these certificates, so they are")
-                        : $"{issuedHere.Count} of them were issued to this PC and are") +
+                        : $"{revocable.Count} of them were issued to this PC and are") +
                     " revoked on the server in the same step. This can't be undone: request a new one if you need it again.";
             }
+            if (noCrl > 0)
+            {
+                warning += "\n\nNOT REVOKED: " + (noCrl == items.Count
+                        ? (items.Count == 1 ? "this certificate names" : "these certificates name")
+                        : $"{noCrl} of them name") +
+                    " no CRL, so the server can't revoke " + (noCrl == 1 ? "it" : "them") + ". A copy made elsewhere stays trusted until it expires.";
+            }
         }
-        if (MessageBox.Show(this, question + "\n\n" + string.Join("\n", lines) + warning, Text, MessageBoxButtons.OKCancel,
-                MessageBoxIcon.Warning) != DialogResult.OK || !BeginBusy(revokeOnly ? "Revoking…" : "Removing…"))
+        return question + "\n\n" + string.Join("\n", lines) + warning;
+    }
+
+    private async Task RemoveAsync(bool revokeOnly)
+    {
+        var items = revokeOnly ? SelectedAll.Where(i => !i.IsCa && i.HasCrl && i.FromPal is { Revoked: 0 }).ToList() : SelectedAll;
+        if (items.Count == 0)
+        {
+            return;
+        }
+        var issuedHere = items.Where(i => !i.IsCa && i.FromPal is { Revoked: 0 }).ToList();
+        var revocable = issuedHere.Where(i => i.HasCrl).ToList();  // one that names no CRL is only reported as removed
+        int noCrl = issuedHere.Count - revocable.Count;
+        if (MessageBox.Show(this, RemoveQuestion(items, revocable, noCrl, revokeOnly), Text, MessageBoxButtons.OKCancel,
+                MessageBoxIcon.Warning) != DialogResult.OK
+            || !BeginBusy(revokeOnly ? "Revoking…"
+                : !Elevation.IsElevated && items.Any(i => i.Location == StoreLocation.LocalMachine) ? "Removing… approve the Windows prompt." : "Removing…"))
         {
             return;
         }
         try
         {
-            var problems = new List<string>();
-            if (!revokeOnly)
-            {
-                var machine = items.Where(i => i.Location == StoreLocation.LocalMachine).ToList();
-                if (machine.Count > 0)
-                {
-                    var result = await Elevation.RunAsync(new HelperOp
-                    {
-                        Op = "remove",
-                        Targets = machine.Select(i => new RemoveTarget { Store = i.StoreName, Thumbprint = i.Cert.Thumbprint }).ToList(),
-                    });
-                    if (!result.Ok)
-                    {
-                        problems.Add(result.Message);
-                    }
-                }
-                foreach (var item in items.Where(i => i.Location == StoreLocation.CurrentUser))
-                {
-                    try
-                    {
-                        Operations.Remove(StoreLocation.CurrentUser, item.StoreName, item.Cert.Thumbprint);
-                    }
-                    catch (Exception e) when (e is System.Security.Cryptography.CryptographicException or UnauthorizedAccessException)
-                    {
-                        problems.Add($"{item.Names}: {Operations.FriendlyMessage(e)}");
-                    }
-                }
-            }
+            var problems = revokeOnly ? [] : await RemoveFromPcAsync(items);
             string did = revokeOnly ? "" : items.Count == 1 ? "Removed from this PC." : $"Removed {items.Count} certificates from this PC.";
-            string revoked = "";
-            string? waiting = null;
-            if (problems.Count == 0 && issuedHere.Count > 0 && _state is not null)
-            {
-                // Saved first, so one made while the server can't be reached is still revoked later.
-                PendingRevokes.Add(_state.DeviceId, issuedHere.Select(i => i.Serial));
-                SeenStatus.MarkRevoked(_state.DeviceId, issuedHere.Select(i => i.Serial));  // our own doing: no notice about it later
-                try
-                {
-                    using var signer = new DeviceSigner(_state);
-                    using var client = _state.Client();  // the LAN first, then the relay if this PC has one
-                    if (await PendingRevokes.FlushAsync(client, signer, _state.DeviceId))
-                    {
-                        revoked = issuedHere.Count == 1 ? " Revoked on the server." : $" {issuedHere.Count} revoked on the server.";
-                    }
-                    else
-                    {
-                        waiting = (did + " The server can't be reached right now, so the revocation is saved and sent the next time " +
-                                   "the Pal reaches it (Refresh, or the next time it opens).").Trim();
-                    }
-                }
-                catch (DeviceKeyUnavailableException e)
-                {
-                    AppLog.Error("Couldn't sign the revocation", e);
-                    waiting = (did + " " + Operations.FriendlyMessage(e) + " The revocation is saved and sent at the next check-in.").Trim();
-                }
-            }
+            var (revoked, waiting) = problems.Count == 0 && issuedHere.Count > 0 && _state is not null
+                ? await TellServerAsync(_state, issuedHere, revocable, did)
+                : ("", null);
             if (problems.Count > 0)
             {
-                Report(OpResult.Failure("Not all removed" + (issuedHere.Count > 0 ? ", and nothing was revoked on the server. " : ". ") + string.Join("\n", problems)));
+                Report(OpResult.Failure("Not all removed" + (revocable.Count > 0 ? ", and nothing was revoked on the server. " : ". ") + string.Join("\n", problems)));
             }
             else if (waiting is not null)
             {
@@ -1413,6 +1963,81 @@ internal sealed class MainForm : Form
         }
         await RefreshAsync();
     }
+
+    /// <summary>Take the certificates off this PC: the computer's stores through the administrator step, the user's own directly. What couldn't be removed.</summary>
+    private static async Task<List<string>> RemoveFromPcAsync(List<AuditItem> items)
+    {
+        var problems = new List<string>();
+        var machine = items.Where(i => i.Location == StoreLocation.LocalMachine).ToList();
+        if (machine.Count > 0)
+        {
+            var result = await Elevation.RunAsync(new HelperOp
+            {
+                Op = "remove",
+                Targets = machine.Select(i => new RemoveTarget { Store = i.StoreName, Thumbprint = i.Cert.Thumbprint }).ToList(),
+            });
+            if (!result.Ok)
+            {
+                problems.Add(result.Message);
+            }
+        }
+        problems.AddRange(await RemoveFromUserStoresAsync(items));
+        return problems;
+    }
+
+    /// <summary>
+    /// Report removed certificates to the server, which revokes the ones that name a CRL. What to say when it
+    /// was told, or (Waiting) that it is saved for the next check-in.
+    /// </summary>
+    private static async Task<(string Revoked, string? Waiting)> TellServerAsync(DeviceState state, List<AuditItem> issuedHere, List<AuditItem> revocable, string did)
+    {
+        int noCrl = issuedHere.Count - revocable.Count;
+        string saved = revocable.Count > 0 ? "revocation" : "removal";
+        // Saved first, so one made while the server can't be reached is still revoked later.
+        PendingRevokes.Add(state.DeviceId, issuedHere.Select(i => i.Serial));
+        SeenStatus.MarkRevoked(state.DeviceId, revocable.Select(i => i.Serial));  // our own doing: no notice about it later
+        try
+        {
+            if (await SendRevocationsAsync(state))
+            {
+                return ((revocable.Count == 0 ? "" : revocable.Count == 1 && noCrl == 0 ? " Revoked on the server." : $" {revocable.Count} revoked on the server.")
+                    + (noCrl == 0 ? "" : issuedHere.Count == 1 ? " Not revoked: it names no CRL." : $" {noCrl} not revoked: no CRL."), null);
+            }
+            return ("", (did + $" The server can't be reached right now, so the {saved} is saved and sent the next time " +
+                         "the Pal reaches it (Refresh, or the next time it opens).").Trim());
+        }
+        catch (DeviceKeyUnavailableException e)
+        {
+            AppLog.Error("Couldn't sign the revocation", e);
+            return ("", (did + " " + Operations.FriendlyMessage(e) + $" The {saved} is saved and sent at the next check-in.").Trim());
+        }
+    }
+
+    /// <summary>Remove from the user's own stores; what couldn't be. Off the window's thread: deleting a key in the TPM can take a while.</summary>
+    private static Task<List<string>> RemoveFromUserStoresAsync(List<AuditItem> items) => Task.Run(() =>
+    {
+        var failed = new List<string>();
+        foreach (var item in items.Where(i => i.Location == StoreLocation.CurrentUser))
+        {
+            try
+            {
+                Operations.Remove(StoreLocation.CurrentUser, item.StoreName, item.Cert.Thumbprint);
+            }
+            catch (Exception e) when (e is System.Security.Cryptography.CryptographicException or UnauthorizedAccessException)
+            {
+                failed.Add($"{item.Names}: {Operations.FriendlyMessage(e)}");
+            }
+        }
+        return failed;
+    });
+
+    /// <summary>Send the saved revocations; false when the server can't be reached. Signs with the TPM key, so not on the window's thread.</summary>
+    private static Task<bool> SendRevocationsAsync(DeviceState state) => Task.Run(async () =>
+    {
+        using var signer = new DeviceSigner(state);
+        using var client = state.Client();  // the LAN first, then the relay if this PC has one
+        return await PendingRevokes.FlushAsync(client, signer, state.DeviceId).ConfigureAwait(false);
+    });
 
     /// <summary>Bind… on <paramref name="item"/> (the selected certificate when null): bind it to more roles, or take it out of one.</summary>
     private async Task BindAsync(AuditItem? item = null)

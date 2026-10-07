@@ -76,6 +76,20 @@ internal static class Operations
             ?? throw new PalException("CRL profile not found. It may have been removed.");
         if (crlDp.Length > 0 && !target.CrlDps.Contains(crlDp) && target.CrlDps.Count > 0)
         {
+            // The admin may have allowed it since pairing: ask the server (Activate then saves the answer).
+            try
+            {
+                using var signer = new DeviceSigner(target);
+                using var client = target.Client();
+                target.RememberCrlDps(await client.GetDeviceAsync(signer).ConfigureAwait(false));
+            }
+            catch (Exception e) when (e is PalException or DeviceKeyUnavailableException or HttpRequestException or TaskCanceledException)
+            {
+                AppLog.Info("Couldn't ask the server which CRL profiles are allowed: " + e.Message);
+            }
+        }
+        if (crlDp.Length > 0 && !target.CrlDps.Contains(crlDp) && target.CrlDps.Count > 0)
+        {
             throw new PalException($"Revocation type not allowed. This pairing allows {string.Join(", ", target.CrlDps.Select(CrlTypes.Label))}.");
         }
         var notes = new List<string>();

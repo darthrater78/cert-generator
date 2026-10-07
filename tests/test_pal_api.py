@@ -39,7 +39,7 @@ def _code(client, ca_id, **overrides):
     body = {
         "label": "pc01", "ca_id": ca_id, "server_url": "http://10.0.0.252:5000",
         "use_cases": {"web-server": "auto", "computer": "auto", "user": "approve", "code-signing": "off"},
-        "dns": ["*.lan", "10.0.0.0/24"], "users": ["*@lan"], "max_days": 90, "crl_dp": "none",
+        "dns": ["*.lan", "10.0.0.0/24"], "users": ["*@lan"], "max_days": 90, "crl_dp": "placeholder",
     }
     body.update(overrides)
     return client.post("/api/pal/codes", json=body)
@@ -685,6 +685,29 @@ def test_self_hosted_crls(admin_client):
     assert crl.get_revoked_certificate_by_serial_number(cert.serial_number) is not None
 
 
+def test_a_pc_can_have_the_crl_published_now(admin_client):
+    ca_id = _make_ca(admin_client)
+    device = FakePal(admin_client, _code(admin_client, ca_id, crl_dp="placeholder").get_json()["pairing_code"])
+    device.enroll()
+    resp = device.signed("POST", "/api/pal/v1/crl/publish", {})
+    assert resp.status_code == 409 and "Nothing to publish" in resp.get_json()["error"]  # nothing names this server yet
+
+    served = FakePal(admin_client, _code(admin_client, ca_id, crl_dp="server").get_json()["pairing_code"])
+    assert served.enroll(served.enroll_body(hostname="pc02", fqdn="pc02.lan")).status_code == 201
+    issued = served.request("computer", {})[0].get_json()
+    before = x509.load_der_x509_crl(admin_client.get(f"/crl/{ca_id}.crl").data)
+    admin_client.post(f"/api/certs/{issued['cert_id']}/revoke")
+    reply = served.signed("POST", "/api/pal/v1/crl/publish", {})
+    assert reply.status_code == 200 and reply.get_json()["revoked"] == 1 and reply.get_json()["cloudflare"] is None
+    after = x509.load_der_x509_crl(admin_client.get(f"/crl/{ca_id}.crl").data)
+    assert len(before) == 0 and len(after) == 1 and reply.get_json()["next_update"]
+    assert any("asked for the CRL to be published now" in e["message"] for e in admin_client.get("/api/activity").get_json())
+    # Each publish signs a CRL and may call Cloudflare: a PC can't loop on it.
+    assert served.signed("POST", "/api/pal/v1/crl/publish", {}).status_code == 200
+    again = served.signed("POST", "/api/pal/v1/crl/publish", {})
+    assert again.status_code == 429 and "Just published" in again.get_json()["error"]
+
+
 def test_self_hosted_crls_need_unlocked_server(paired, monkeypatch):
     _, device, _ = paired
 
@@ -933,6 +956,35 @@ def test_a_pc_revokes_the_certificates_it_removes_and_only_its_own(paired):
     # Revoking again is harmless, and the name is free for a new request.
     assert device.signed("POST", "/api/pal/v1/revoke", {"serials": [mine["serial"]]}).get_json()["revoked"] == []
     assert device.request("computer", {})[0].status_code == 201
+
+
+def test_a_certificate_with_no_crl_is_never_revoked(admin_client):
+    ca_id = _make_ca(admin_client)
+    device = FakePal(admin_client, _code(admin_client, ca_id, crl_dp="none").get_json()["pairing_code"])
+    assert device.enroll().status_code == 201
+    cert = device.request("computer", {})[0].get_json()
+    listed = admin_client.get("/api/pal/devices").get_json()[0]["certs"][0]
+    assert listed["revocable"] is False
+
+    # Removed in the Pal: recorded as gone (the name is free again), not revoked.
+    resp = device.signed("POST", "/api/pal/v1/revoke", {"serials": [cert["serial"]]})
+    assert resp.status_code == 200 and resp.get_json()["revoked"] == []
+    assert device.request("computer", {})[0].status_code == 201
+    # Disconnecting the PC revokes nothing either, and the admin can't revoke by hand.
+    assert admin_client.post(f"/api/pal/devices/{device.device_id}/revoke", json={}).get_json()["revoked_certs"] == 0
+    certs = admin_client.get(f"/api/ca/{ca_id}/certs").get_json()
+    assert len(certs) == 2 and not any(c["revoked"] for c in certs)
+    assert admin_client.post(f"/api/certs/{certs[0]['id']}/revoke").status_code == 409
+
+
+def test_a_crl_profile_can_be_added_to_a_connected_pc(paired):
+    client, device, _ = paired
+    assert device.request("computer", {}, crl_dp="none")[0].status_code == 403  # not allowed by the pairing code
+    body = {"use_cases": {"computer": "auto"}, "dns": ["*.lan"], "users": [], "max_days": 90,
+            "crl_dps": ["placeholder", "none"]}
+    assert client.put(f"/api/pal/devices/{device.device_id}/policy", json=body).status_code == 200
+    assert device.signed("GET", "/api/pal/v1/device").get_json()["crl_dps"] == ["placeholder", "none"]  # default kept first
+    assert device.request("computer", {}, crl_dp="none")[0].status_code == 201
 
 
 def test_a_certificate_that_disappears_from_a_pc_is_flagged_not_revoked(paired):

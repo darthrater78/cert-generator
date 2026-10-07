@@ -31,7 +31,7 @@ from ..security import AttemptLimiter, RateLimiter
 from ..web import error, json_body, parse_int, str_field
 from .. import crl_local_server, relay, relay_collector
 from .pki import (CRL_DP_MODES, DEFAULT_CRL_DAYS, MAX_LIFETIME_DAYS, _placeholder_crl_url, crl_dp_url_for,
-                  parse_crl_base_url, publish_after_issue)
+                  parse_crl_base_url, publish_after_issue, revocable)
 
 log = logging.getLogger("cert-generator")
 
@@ -50,6 +50,9 @@ MAX_LABEL_LEN = 64
 # A PC makes a handful of calls per action; the limit only stops floods.
 DEVICE_RATE_LIMIT_PER_MINUTE = 120
 _device_limiter = RateLimiter(DEVICE_RATE_LIMIT_PER_MINUTE)
+# Publish now, per CA: each one signs a CRL and may call Cloudflare.
+PUBLISH_RATE_LIMIT_PER_MINUTE = 2
+_publish_limiter = RateLimiter(PUBLISH_RATE_LIMIT_PER_MINUTE)
 # Wrong pairing proofs, per code id and per address.
 _enroll_limiter = AttemptLimiter()
 
@@ -63,6 +66,7 @@ CLOCK_WRONG = "Clock wrong. This PC's clock is more than 5 minutes off the serve
 
 def reset_limiters() -> None:
     _device_limiter.reset()
+    _publish_limiter.reset()
     _enroll_limiter.reset()
 
 
@@ -468,6 +472,29 @@ def self_hosted_crls():
     return jsonify({"crls": crls})
 
 
+@bp.post(DEVICE_PREFIX + "crl/publish")
+def publish_crl_now():
+    """A PC asks for its CA's CRL to be signed and published again now (Publish now in the Pal):
+    the one this server serves and the one its Cloudflare Worker serves. Signing needs the CA
+    key, so a locked server answers 423."""
+    device, err = _signed_device()
+    if err:
+        return err
+    ca_id = device["ca_id"]
+    if not db.is_crl_maintained(ca_id):
+        return error("Nothing to publish. This CA's CRL isn't published by the server or a Cloudflare Worker", 409)
+    if not _publish_limiter.allow(str(ca_id)):
+        return error("Just published. The CRL was published a moment ago: try again in a minute", 429)
+    next_update = crl_publisher.publish(ca_id)  # raises DatabaseLocked while locked
+    worker = db.get_ca_worker(ca_id)
+    log.info("PC %s asked for the CRL to be published now", device["label"])
+    return jsonify({
+        "next_update": next_update,
+        "revoked": len(db.list_revoked_serials(ca_id)),
+        "cloudflare": None if worker is None else {"pushed": not worker["cf_push_error"], "error": worker["cf_push_error"]},
+    })
+
+
 @bp.post(DEVICE_PREFIX + "requests")
 def create_request():
     device, err = _signed_device()
@@ -558,7 +585,7 @@ def _duplicate_refusal(device: dict[str, Any], use_case: str, names: pal.Names, 
         if live:
             until = max(_parse_time(c["not_after"]) for c in live)
             return (f"Already issued. This PC already has a {label} certificate for {names.common_name}, valid until "
-                    f"{until:%d %b %Y}. Renew it near expiry, or ask your admin to revoke it if it was lost")
+                    f"{until:%d %b %Y}. Renew it near expiry, or ask your admin to revoke or delete it if it was lost")
         pending = [r for r in db.list_pal_requests(status="pending", device_id=device["id"])
                    if r["use_case"] == use_case and json.loads(r["names"]).get("common_name") == names.common_name]
         if pending:
@@ -586,7 +613,7 @@ def _revoke_superseded(device: dict[str, Any], row: dict[str, Any], new_cert_id:
     """A new certificate replaces copies the PC no longer holds: revoke them, so only one is ever live."""
     names = json.loads(row["names"])
     gone = [c for c in _live_certs(device, row["use_case"], pal.Names(names["common_name"], names["san"]))
-            if c["id"] != new_cert_id and c["pal_present"] == 0]
+            if c["id"] != new_cert_id and c["pal_present"] == 0 and revocable(c)]
     for cert in gone:
         db.revoke_cert(cert["id"])
         log.info("Pal certificate %d revoked: superseded by %d (no longer on device %s)", cert["id"], new_cert_id, device["id"])
@@ -739,7 +766,8 @@ def revoke_own_certs():
     if not isinstance(serials, list) or len(serials) > pal.MAX_SERIALS:
         return error(f"serials must be a list of at most {pal.MAX_SERIALS} hex strings")
     wanted = {pal.normalize_serial(raw) for raw in serials if isinstance(raw, str)} - {None}
-    certs = [c for c in db.list_pal_device_certs(device["id"]) if c["serial"] in wanted and not c["revoked"]]
+    removed = [c for c in db.list_pal_device_certs(device["id"]) if c["serial"] in wanted and not c["revoked"]]
+    certs = [c for c in removed if revocable(c)]  # one that names no CRL is only recorded as removed
     cas = {c["ca_id"] for c in certs}
     if any((db.get_ca_summary(ca_id) or {}).get("crl_public") or (db.get_ca_summary(ca_id) or {}).get("cf_worker") for ca_id in cas):
         db.require_unlocked()  # re-signing a published CRL needs the CA key: fail before revoking
@@ -747,7 +775,7 @@ def revoke_own_certs():
         db.revoke_cert(cert["id"])
         log.info("PC %s removed its %s certificate for %s: revoked", device["label"],
                  pal.TEMPLATE_USE_CASES.get(cert["template"], cert["template"]), cert["common_name"])
-    db.mark_pal_removed([c["id"] for c in certs])
+    db.mark_pal_removed([c["id"] for c in removed])
     for ca_id in cas:
         crl_publisher.publish(ca_id)
     return jsonify({"revoked": [c["serial"] for c in certs]})
@@ -884,6 +912,7 @@ def list_devices():
             "use_case": pal.TEMPLATE_USE_CASES.get(cert["template"], cert["template"]),
             "name": cert["common_name"],
             "state": _cert_state(cert, now),
+            "revocable": revocable(cert),
             "key_storage": cert["pal_key_storage"],
             "asked_by": cert["pal_user"],
             "used_for": json.loads(cert["pal_binds"]) if cert["pal_binds"] else [],
@@ -916,7 +945,7 @@ def revoke_device(device_id: str):
 
 def _disconnect(device_id: str, revoke_certs: bool) -> int:
     """Stop the device's requests, and revoke its certificates; how many were revoked."""
-    certs = [c for c in db.list_pal_device_certs(device_id) if not c["revoked"]] if revoke_certs else []
+    certs = [c for c in db.list_pal_device_certs(device_id) if not c["revoked"] and revocable(c)] if revoke_certs else []
     if certs:
         db.require_unlocked()  # re-signing CRLs needs the CA keys: fail before changing anything
     db.revoke_pal_device(device_id)

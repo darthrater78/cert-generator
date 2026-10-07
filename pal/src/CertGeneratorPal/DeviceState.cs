@@ -55,6 +55,14 @@ internal sealed class DeviceState
             {
                 all.Add(legacy);
             }
+            foreach (var pairing in all)
+            {
+                // Revocation types the admin changed after pairing are kept per user, like the relay.
+                if (ReadCrlDpsCache(pairing.DeviceId) is { Count: > 0 } allowed)
+                {
+                    pairing.CrlDps = allowed;
+                }
+            }
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
@@ -110,6 +118,46 @@ internal sealed class DeviceState
         {
             return null;
         }
+    }
+
+    private static string CrlDpsCacheFile(string deviceId) => Path.Combine(Paths.UserDir, "crl-" + deviceId + ".json");
+
+    private static List<string>? ReadCrlDpsCache(string deviceId)
+    {
+        try
+        {
+            string path = CrlDpsCacheFile(deviceId);
+            return File.Exists(path) ? JsonSerializer.Deserialize<List<string>>(File.ReadAllBytes(path), Json.Options) : null;
+        }
+        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Keep the revocation types the server now allows this PC (the admin can edit them after pairing).
+    /// True when they changed. The server checks the type on every request, so this list only decides
+    /// which profiles are offered.
+    /// </summary>
+    public bool RememberCrlDps(DeviceInfo device)
+    {
+        ArgumentNullException.ThrowIfNull(device);
+        if (device.CrlDps.Count == 0 || device.CrlDps.SequenceEqual(CrlDps))
+        {
+            return false;
+        }
+        CrlDps = [.. device.CrlDps];
+        try
+        {
+            AtomicWrite(CrlDpsCacheFile(DeviceId), JsonSerializer.SerializeToUtf8Bytes(CrlDps, Json.Options));
+            AppLog.Info("CRL profiles allowed now: " + string.Join(", ", CrlDps));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            AppLog.Error("Couldn't save the allowed CRL profiles", e);
+        }
+        return true;
     }
 
     /// <summary>Keep the relay details the server sent over the LAN (never ones that arrived through the relay itself).</summary>

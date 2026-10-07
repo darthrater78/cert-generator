@@ -18,3 +18,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+
+  - package-ecosystem: "nuget"
+    directory: "/pal"
+    schedule:
+      interval: "weekly"

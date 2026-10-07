@@ -222,6 +222,10 @@ public sealed class PalClient : IDisposable
     public async Task<List<string>> RevokeAsync(IDeviceSigner signer, IReadOnlyCollection<string> serials, CancellationToken token = default) =>
         (await SignedAsync<RevokeReply>(signer, HttpMethod.Post, "revoke", new StatusBody { Serials = [.. serials] }, token).ConfigureAwait(false)).Revoked;
 
+    /// <summary>Have the server sign and publish the CA's CRL again now: the one it serves, and its Cloudflare Worker's.</summary>
+    public Task<PublishReply> PublishCrlAsync(IDeviceSigner signer, CancellationToken token = default) =>
+        SignedAsync<PublishReply>(signer, HttpMethod.Post, "crl/publish", new Dictionary<string, string>(), token);
+
     private async Task<T> SignedAsync<T>(IDeviceSigner signer, HttpMethod method, string relative, object? payload, CancellationToken token)
     {
         byte[] body = payload is null ? [] : JsonSerializer.SerializeToUtf8Bytes(payload, payload.GetType(), Json.Options);
