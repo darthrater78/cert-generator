@@ -1,6 +1,6 @@
 # Cert Generator Pal, the Windows companion app, built here so the server can offer it
 # for download on the LAN (/pal/CertGeneratorPal.exe). Self-contained: the PC needs no .NET.
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.401@sha256:e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317 AS pal
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.403@sha256:de4fe90a98845d75910b9769662465c84de1a934665c431279d1382b2bddc02b AS pal
 WORKDIR /src
 COPY pal/ pal/
 # The Pal takes its version from the server's (pal/Directory.Build.props).
